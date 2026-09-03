@@ -11,7 +11,8 @@ func (f fakeRepo) Create(_ context.Context, name string) (User, error) {
 	f.user.Name = name
 	return f.user, nil
 }
-func (f fakeRepo) GetByID(context.Context, int64) (User, error) { return f.user, nil }
+func (f fakeRepo) GetByID(context.Context, int64) (User, error)            { return f.user, nil }
+func (f fakeRepo) Update(context.Context, int64, UserUpdate) (User, error) { return f.user, nil }
 
 func TestRegisterTrimsAndValidatesName(t *testing.T) {
 	s := NewService(fakeRepo{})

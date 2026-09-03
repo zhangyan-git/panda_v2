@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panda-dev/panda-v2/backend/platform/auth"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/domain"
 )
 
@@ -25,6 +26,9 @@ func (f fakeRepository) Create(context.Context, string) (domain.User, error) {
 	return f.user, f.err
 }
 func (f fakeRepository) GetByID(context.Context, int64) (domain.User, error) { return f.user, f.err }
+func (f fakeRepository) Update(context.Context, int64, domain.UserUpdate) (domain.User, error) {
+	return f.user, f.err
+}
 
 func TestRegister(t *testing.T) {
 	h := New(domain.NewService(fakeRepository{user: domain.User{ID: 1, Name: "Alice", CreatedAt: time.Now()}}))
@@ -109,5 +113,67 @@ func TestHandlersRejectWrongMethod(t *testing.T) {
 	}
 	if errors.Is(nil, domain.ErrNotFound) {
 		t.Fatal("unexpected error")
+	}
+}
+
+func TestProfileRequiresMatchingBearerUserToken(t *testing.T) {
+	authorizer, err := auth.NewService([]byte("test-secret-that-is-at-least-32-bytes"), "test", time.Hour, 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := domain.User{ID: 1, Name: "Alice"}
+	h := New(domain.NewService(fakeRepository{user: user}))
+
+	token, err := authorizer.SignAccess("account-1", "1", "account-1", "tenant-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/users/1", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	auth.Bearer(authorizer)(http.HandlerFunc(h.Profile)).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	for name, header := range map[string]string{
+		"missing": "",
+		"invalid": "Bearer invalid",
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/v1/users/1", nil)
+			request.Header.Set("Authorization", header)
+			response := httptest.NewRecorder()
+			auth.Bearer(authorizer)(http.HandlerFunc(h.Profile)).ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+
+	otherToken, err := authorizer.SignAccess("account-2", "2", "account-2", "tenant-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/v1/users/1", nil)
+	request.Header.Set("Authorization", "Bearer "+otherToken)
+	response = httptest.NewRecorder()
+	auth.Bearer(authorizer)(http.HandlerFunc(h.Profile)).ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestUpdateRejectsInvalidPatchBodies(t *testing.T) {
+	for _, body := range []string{"null", `{}`, `{"status":"disabled"}`} {
+		t.Run(body, func(t *testing.T) {
+			h := New(domain.NewService(fakeRepository{user: domain.User{ID: 1}}))
+			res := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPatch, "/v1/users/1", strings.NewReader(body))
+			h.Update(res, req)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+			}
+		})
 	}
 }

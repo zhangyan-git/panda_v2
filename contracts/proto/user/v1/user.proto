@@ -1,6 +1,53 @@
 syntax = "proto3";
+
 package panda.user.v1;
+
 option go_package = "github.com/panda-dev/panda-v2/contracts/proto/user/v1";
 
-// Contract placeholder; domain methods are added only after business scope approval.
-service UserService {}
+message UserProfile {
+  string user_id = 1;
+  string name = 2;
+  string nickname = 3;
+  string avatar_url = 4;
+  string email = 5;
+  string gender = 6;
+  string birthday = 7;
+  string occupation = 8;
+  repeated string hobbies = 9;
+  string region_code = 10;
+  string region_name = 11;
+  string status = 12;
+  string created_at = 13;
+  string updated_at = 14;
+}
+
+message GetProfileRequest {
+  string user_id = 1;
+}
+
+message GetProfileResponse {
+  UserProfile profile = 1;
+}
+
+message UpdateProfileRequest {
+  string user_id = 1;
+  string name = 2;
+  string nickname = 3;
+  string avatar_url = 4;
+  string email = 5;
+  string gender = 6;
+  string birthday = 7;
+  string occupation = 8;
+  repeated string hobbies = 9;
+  string region_code = 10;
+  string region_name = 11;
+}
+
+message UpdateProfileResponse {
+  UserProfile profile = 1;
+}
+
+service UserService {
+  rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
+  rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
+}
