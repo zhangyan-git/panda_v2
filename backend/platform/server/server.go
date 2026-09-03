@@ -103,6 +103,9 @@ func RunWithOptions(cfg config.Config, options runtime.Options) error {
 	h := health.New()
 	httpServer := khttp.NewServer(khttp.Address(cfg.HTTPAddress), khttp.Timeout(5*time.Second))
 	registerHealthRoutes(httpServer, h, cfg)
+	if options.HTTPRoutes != nil {
+		options.HTTPRoutes(httpServer)
+	}
 	grpcServer := kgrpc.NewServer(kgrpc.Address(cfg.GRPCAddress))
 	grpcEndpoint, err := grpcServer.Endpoint()
 	if err != nil {

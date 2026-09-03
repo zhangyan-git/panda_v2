@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestLoadRedisDB(t *testing.T) {
 	tests := []struct {
@@ -31,5 +35,87 @@ func TestLoadRedisDB(t *testing.T) {
 				t.Fatalf("RedisDB = %d, want %d", cfg.RedisDB, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoadReadsDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("DATABASE_URL='postgres://localhost/panda'\nREDIS_DB=3\n# comment\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldDir) })
+	previousDatabaseURL, hadDatabaseURL := os.LookupEnv("DATABASE_URL")
+	previousRedisDB, hadRedisDB := os.LookupEnv("REDIS_DB")
+	_ = os.Unsetenv("DATABASE_URL")
+	_ = os.Unsetenv("REDIS_DB")
+	t.Cleanup(func() {
+		if hadDatabaseURL {
+			_ = os.Setenv("DATABASE_URL", previousDatabaseURL)
+		} else {
+			_ = os.Unsetenv("DATABASE_URL")
+		}
+		if hadRedisDB {
+			_ = os.Setenv("REDIS_DB", previousRedisDB)
+		} else {
+			_ = os.Unsetenv("REDIS_DB")
+		}
+	})
+
+	cfg, err := Load("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabaseURL != "postgres://localhost/panda" || cfg.RedisDB != 3 {
+		t.Fatalf("config = %#v", cfg)
+	}
+}
+
+func TestLoadEnvironmentOverridesDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("DATABASE_URL=file-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldDir) })
+	t.Setenv("DATABASE_URL", "environment-value")
+
+	cfg, err := Load("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabaseURL != "environment-value" {
+		t.Fatalf("DatabaseURL = %q", cfg.DatabaseURL)
+	}
+}
+
+func TestLoadRejectsInvalidDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("not-an-assignment\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldDir) })
+
+	if _, err := Load("test"); err == nil {
+		t.Fatal("expected .env parsing error")
 	}
 }

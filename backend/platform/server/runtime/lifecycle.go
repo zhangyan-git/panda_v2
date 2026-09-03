@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	khttp "github.com/go-kratos/kratos/v2/transport/http"
 	"github.com/panda-dev/panda-v2/backend/platform/cache"
 	"github.com/panda-dev/panda-v2/backend/platform/database"
 	"github.com/panda-dev/panda-v2/backend/platform/messaging"
@@ -29,6 +30,7 @@ type Options struct {
 	Observability    observability.Providers
 	Instance         registry.Instance
 	ConsumerHandler  messaging.Handler
+	HTTPRoutes       func(*khttp.Server)
 	StartupTimeout   time.Duration
 	ShutdownTimeout  time.Duration
 	OwnDatabase      bool
@@ -51,6 +53,7 @@ type Lifecycle struct {
 	providers                                                          observability.Providers
 	instance                                                           registry.Instance
 	handler                                                            messaging.Handler
+	httpRoutes                                                         func(*khttp.Server)
 	startupTimeout, shutdownTimeout                                    time.Duration
 	ownDatabase, ownCache, ownMessaging, ownRegistry, ownObservability bool
 	consumerCancel                                                     context.CancelFunc
@@ -71,7 +74,7 @@ func New(options Options) *Lifecycle {
 	return &Lifecycle{
 		db: options.Database, redis: options.Cache, publisher: options.Publisher,
 		consumer: options.Consumer, messaging: options.Messaging, messagingCleanup: options.MessagingCleanup, registry: options.Registry,
-		providers: options.Observability, instance: options.Instance, handler: options.ConsumerHandler,
+		providers: options.Observability, instance: options.Instance, handler: options.ConsumerHandler, httpRoutes: options.HTTPRoutes,
 		startupTimeout: options.StartupTimeout, shutdownTimeout: options.ShutdownTimeout,
 		ownDatabase: options.OwnDatabase, ownCache: options.OwnCache, ownMessaging: options.OwnMessaging,
 		ownRegistry: options.OwnRegistry, ownObservability: options.OwnObservability,
