@@ -4,6 +4,8 @@ go 1.23
 
 require (
 	github.com/go-kratos/kratos/v2 v2.8.4
+	github.com/golang-jwt/jwt/v5 v5.2.1
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.5.5
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/redis/go-redis/v9 v9.16.0
@@ -31,7 +33,6 @@ require (
 	github.com/go-playground/form/v4 v4.2.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.25.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

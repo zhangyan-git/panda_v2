@@ -10,12 +10,17 @@ import (
 )
 
 type Config struct {
-	ServiceName, Version, Environment string
-	HTTPAddress, GRPCAddress          string
-	RegistryEndpoint                  string
-	DatabaseURL, RedisAddress         string
-	RedisPassword                     string
-	RedisDB                           int
+	ServiceName, Version, Environment        string
+	HTTPAddress, GRPCAddress                 string
+	RegistryEndpoint                         string
+	DatabaseURL, RedisAddress                string
+	RedisPassword                            string
+	RedisDB                                  int
+	JWTSecret, JWTIssuer                     string
+	AccountServiceURL, UserServiceURL        string
+	DevAccountInitEnabled                    bool
+	DevAdminUsername, DevAdminPassword       string
+	DevMerchantUsername, DevMerchantPassword string
 }
 
 func Load(service string) (Config, error) {
@@ -43,7 +48,7 @@ func Load(service string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{ServiceName: service, Version: version, Environment: env, HTTPAddress: addr, GRPCAddress: grpcAddr, RegistryEndpoint: registryEndpoint, DatabaseURL: os.Getenv("DATABASE_URL"), RedisAddress: os.Getenv("REDIS_ADDR"), RedisPassword: os.Getenv("REDIS_PASSWORD"), RedisDB: redisDB}, nil
+	return Config{ServiceName: service, Version: version, Environment: env, HTTPAddress: addr, GRPCAddress: grpcAddr, RegistryEndpoint: registryEndpoint, DatabaseURL: os.Getenv("DATABASE_URL"), RedisAddress: os.Getenv("REDIS_ADDR"), RedisPassword: os.Getenv("REDIS_PASSWORD"), RedisDB: redisDB, JWTSecret: os.Getenv("JWT_SECRET"), JWTIssuer: os.Getenv("JWT_ISSUER"), AccountServiceURL: os.Getenv("ACCOUNT_SERVICE_URL"), UserServiceURL: os.Getenv("USER_SERVICE_URL"), DevAccountInitEnabled: parseBoolEnv("DEV_ACCOUNT_INIT_ENABLED"), DevAdminUsername: os.Getenv("DEV_ADMIN_USERNAME"), DevAdminPassword: os.Getenv("DEV_ADMIN_PASSWORD"), DevMerchantUsername: os.Getenv("DEV_MERCHANT_USERNAME"), DevMerchantPassword: os.Getenv("DEV_MERCHANT_PASSWORD")}, nil
 }
 
 // loadDotEnv loads the first .env found from the current directory upward.
@@ -112,6 +117,15 @@ func parseDotEnv(path string) error {
 		return fmt.Errorf("read .env: %w", err)
 	}
 	return nil
+}
+
+func parseBoolEnv(key string) bool {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return false
+	}
+	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+	return err == nil && parsed
 }
 
 func parseRedisDB(value string) (int, error) {

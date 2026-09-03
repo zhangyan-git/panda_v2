@@ -1,3 +1,3 @@
 # gateway-service
 
-Platform skeleton only. Domain APIs and persistence are intentionally unimplemented.
+The gateway forwards `POST /v1/auth/login` to the account service and protected `GET`/`PATCH /v1/users/{id}` requests to the user service. Configure `ACCOUNT_SERVICE_URL` and `USER_SERVICE_URL` with downstream base URLs (for example, `http://account-service:8080` and `http://user-service:8080`). The gateway preserves the client `Authorization` header for user requests, strips all other client headers, and never forwards internal identity headers. Downstream responses are passed through safely; timeouts return 504 and connection failures return 502. Other authenticated `/v1/` routes return 501.
