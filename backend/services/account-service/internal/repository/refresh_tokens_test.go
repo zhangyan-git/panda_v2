@@ -44,8 +44,10 @@ func TestPostgreSQLRefreshTokenStoreConsumeIsAtomic(t *testing.T) {
 
 func TestPostgreSQLRefreshTokenStoreRegisterDoesNotStorePlaintext(t *testing.T) {
 	var args []any
+	var registerQuery string
 	store := &PostgreSQLRefreshTokenStore{exec: func(_ context.Context, query string, values ...any) (pgconn.CommandTag, error) {
 		args = values
+		registerQuery = query
 		if query == "" {
 			t.Fatal("empty query")
 		}
@@ -59,6 +61,10 @@ func TestPostgreSQLRefreshTokenStoreRegisterDoesNotStorePlaintext(t *testing.T) 
 		if arg == "refresh-token-plaintext" {
 			t.Fatal("refresh token plaintext was persisted")
 		}
+	}
+	// account_id 列是 uuid 类型，插入表达式必须显式 cast，否则 text 无法隐式转换会导致 INSERT 失败。
+	if !contains(registerQuery, "::uuid") {
+		t.Fatalf("register query must cast account_id to uuid: %s", registerQuery)
 	}
 }
 

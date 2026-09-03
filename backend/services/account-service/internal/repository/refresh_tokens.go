@@ -29,7 +29,7 @@ func (s *PostgreSQLRefreshTokenStore) Register(ctx context.Context, record handl
 	if s.exec == nil {
 		return errors.New("refresh token store executor is nil")
 	}
-	_, err := s.exec(ctx, `INSERT INTO refresh_tokens (jti, account_id, user_id, expires_at) VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4) ON CONFLICT (jti) DO UPDATE SET account_id = EXCLUDED.account_id, user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at, revoked = FALSE, consumed = FALSE`, record.JTI, record.AccountID, record.UserID, record.ExpiresAt)
+	_, err := s.exec(ctx, `INSERT INTO refresh_tokens (jti, account_id, user_id, expires_at) VALUES ($1, NULLIF($2, '')::uuid, NULLIF($3, ''), $4) ON CONFLICT (jti) DO UPDATE SET account_id = EXCLUDED.account_id, user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at, revoked = FALSE, consumed = FALSE`, record.JTI, record.AccountID, record.UserID, record.ExpiresAt)
 	return err
 }
 
