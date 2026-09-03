@@ -41,6 +41,14 @@ func New(ctx context.Context, url string) (Pool, error) {
 // PGXPool adapts pgxpool.Pool to the platform lifecycle contract.
 type PGXPool struct{ pool *pgxpool.Pool }
 
+// Pool exposes the underlying pgx pool to repositories that need SQL access.
+func (p *PGXPool) Pool() *pgxpool.Pool {
+	if p == nil {
+		return nil
+	}
+	return p.pool
+}
+
 func (p *PGXPool) Ping(ctx context.Context) error {
 	if p == nil || p.pool == nil {
 		return errors.New("database pool is nil")

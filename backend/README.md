@@ -1,5 +1,15 @@
 # Panda V2 backend
 
+## Local configuration
+
+本地开发可以在项目根目录创建 `.env` 文件（该文件已被 Git 忽略），后端启动时会自动读取。可从模板开始：
+
+```bash
+cp deploy/config/.env.example .env
+```
+
+修改其中的本地 PostgreSQL 参数后，直接运行后端服务即可。已有环境变量优先于 `.env` 文件中的值，因此 CI、容器和生产环境仍可通过环境变量配置；不要把真实密码写入 `.env.example` 或提交到 Git。
+
 ## Service registry
 
 Services register with etcd when `REGISTRY_ENDPOINT` is set. The value accepts a comma-separated list of etcd endpoints, for example:
