@@ -1,0 +1,10 @@
+# secrets and local state
+.env
+.env.*
+!.env.example
+*.local
+node_modules/
+dist/
+coverage/
+.omc/
+.DS_Store

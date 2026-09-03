@@ -1,0 +1,1 @@
+{"private":true,"scripts":{"typecheck":"pnpm -r typecheck","build":"pnpm -r build","test":"pnpm -r test"},"packageManager":"pnpm@9.15.0"}

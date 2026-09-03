@@ -1,0 +1,4 @@
+packages:
+  - admin-web
+  - merchant-web
+  - packages/*

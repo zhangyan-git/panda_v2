@@ -1,0 +1,6 @@
+syntax = "proto3";
+package panda.coupon.v1;
+option go_package = "github.com/panda-dev/panda-v2/contracts/proto/coupon/v1";
+
+// Contract placeholder; domain methods are added only after business scope approval.
+service CouponService {}
