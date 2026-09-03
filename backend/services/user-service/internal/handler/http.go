@@ -3,12 +3,15 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/domain"
 )
+
+const maxRegisterBodyBytes = 1 << 20
 
 type Handler struct{ service *domain.Service }
 
@@ -22,7 +25,13 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRegisterBodyBytes))
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}

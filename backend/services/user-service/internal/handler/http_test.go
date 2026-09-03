@@ -13,11 +13,17 @@ import (
 )
 
 type fakeRepository struct {
-	user domain.User
-	err  error
+	user        domain.User
+	err         error
+	createCalls *int
 }
 
-func (f fakeRepository) Create(context.Context, string) (domain.User, error) { return f.user, f.err }
+func (f fakeRepository) Create(context.Context, string) (domain.User, error) {
+	if f.createCalls != nil {
+		*f.createCalls++
+	}
+	return f.user, f.err
+}
 func (f fakeRepository) GetByID(context.Context, int64) (domain.User, error) { return f.user, f.err }
 
 func TestRegister(t *testing.T) {
@@ -27,6 +33,42 @@ func TestRegister(t *testing.T) {
 	h.Register(res, req)
 	if res.Code != http.StatusCreated || !strings.Contains(res.Body.String(), `"name":"Alice"`) {
 		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestRegisterRejectsTrailingJSONData(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"trailing garbage", `{"name":"Alice"} garbage`},
+		{"multiple JSON values", `{"name":"Alice"}{"name":"Bob"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := New(domain.NewService(fakeRepository{user: domain.User{ID: 1, Name: "Alice"}}))
+			res := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(tt.body))
+			h.Register(res, req)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+			}
+		})
+	}
+}
+
+func TestRegisterRejectsOversizedBody(t *testing.T) {
+	createCalls := 0
+	h := New(domain.NewService(fakeRepository{createCalls: &createCalls}))
+	body := `{"name":"` + strings.Repeat("a", maxRegisterBodyBytes) + `"}`
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
+	h.Register(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+	if createCalls != 0 {
+		t.Fatalf("create calls=%d, want 0", createCalls)
 	}
 }
 
