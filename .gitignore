@@ -6,5 +6,6 @@
 node_modules/
 dist/
 coverage/
+*.tsbuildinfo
 .omc/
 .DS_Store

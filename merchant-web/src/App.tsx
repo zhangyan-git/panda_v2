@@ -1,0 +1,16 @@
+import { Alert, Card, Layout, Typography } from 'antd';
+
+export function App() {
+  return (
+    <Layout style={{ minHeight: '100vh', padding: 32 }}>
+      <Card>
+        <Typography.Title level={2}>Panda V2</Typography.Title>
+        <Alert
+          message="Platform skeleton"
+          description="业务页面和领域流程将在范围确认后实现。"
+          type="info"
+        />
+      </Card>
+    </Layout>
+  );
+}
