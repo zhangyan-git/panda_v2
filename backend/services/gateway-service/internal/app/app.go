@@ -32,13 +32,13 @@ func Run(service string) error {
 		return err
 	}
 	return server.RunWithOptions(cfg, runtime.Options{HTTPRoutes: func(s *khttp.Server) {
-		s.HandlePrefix("/v1/", NewHTTPHandler(authorizer, WithAccountServiceURL(cfg.AccountServiceURL), WithUserServiceURL(cfg.UserServiceURL)))
+		s.HandlePrefix("/v1/", NewHTTPHandler(authorizer, WithAccountServiceURL(cfg.AccountServiceURL), WithUserServiceURL(cfg.UserServiceURL), WithMerchantServiceURL(cfg.MerchantServiceURL)))
 	}})
 }
 
 type handlerOptions struct {
-	accountServiceURL, userServiceURL string
-	httpClient                        *http.Client
+	accountServiceURL, userServiceURL, merchantServiceURL string
+	httpClient                                            *http.Client
 }
 type HTTPHandlerOption func(*handlerOptions)
 
@@ -47,6 +47,9 @@ func WithAccountServiceURL(value string) HTTPHandlerOption {
 }
 func WithUserServiceURL(value string) HTTPHandlerOption {
 	return func(o *handlerOptions) { o.userServiceURL = strings.TrimRight(value, "/") }
+}
+func WithMerchantServiceURL(value string) HTTPHandlerOption {
+	return func(o *handlerOptions) { o.merchantServiceURL = strings.TrimRight(value, "/") }
 }
 func WithHTTPClient(client *http.Client) HTTPHandlerOption {
 	return func(o *handlerOptions) { o.httpClient = client }
@@ -68,17 +71,31 @@ func NewHTTPHandler(authorizer *auth.Service, options ...HTTPHandlerOption) http
 		mux.HandleFunc(path, accountAuthForwarder(settings.accountServiceURL, path, settings.httpClient))
 	}
 	mux.Handle("/v1/users/", auth.Bearer(authorizer)(userProxy(settings.userServiceURL, settings.httpClient)))
+	merchantProxy := auth.Bearer(authorizer)(userProxyWithMethods(settings.merchantServiceURL, settings.httpClient, "merchant service", true))
+	mux.Handle("/v1/merchant/", merchantProxy)
+	for _, path := range []string{"/v1/admin/merchants", "/v1/admin/stores", "/v1/admin/merchant-accounts"} {
+		mux.Handle(path, merchantProxy)
+		mux.Handle(path+"/", merchantProxy)
+	}
 	return mux
 }
 
 func userProxy(baseURL string, client *http.Client) http.Handler {
+	return userProxyWithMethods(baseURL, client, "user service", false)
+}
+
+func userProxyWithMethods(baseURL string, client *http.Client, serviceName string, allowWriteMethods bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodPatch {
+		allowed := r.Method == http.MethodGet || r.Method == http.MethodPatch
+		if allowWriteMethods {
+			allowed = allowed || r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete
+		}
+		if !allowed {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
 		if baseURL == "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user service unavailable"})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": serviceName + " unavailable"})
 			return
 		}
 		target := baseURL + r.URL.Path

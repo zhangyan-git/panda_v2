@@ -175,6 +175,26 @@ func TestHTTPHandlerProxiesAuthenticatedUserProfile(t *testing.T) {
 	}
 }
 
+func TestHTTPHandlerProxiesAuthenticatedMerchantRoutes(t *testing.T) {
+	authorizer := testAuthorizer(t)
+	token, _ := authorizer.SignAccess("account-1", "merchant-1", "account-1", "tenant-1", nil)
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "http://merchant.test"+req.URL.Path || req.Header.Get("Authorization") != "Bearer "+token {
+			t.Fatalf("request = %s %s authorization=%q", req.Method, req.URL, req.Header.Get("Authorization"))
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewBufferString(`{"ok":true}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+	})}
+	for _, path := range []string{"/v1/merchant/profile", "/v1/admin/merchants", "/v1/admin/stores/1", "/v1/admin/merchant-accounts"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		NewHTTPHandler(authorizer, WithMerchantServiceURL("http://merchant.test"), WithHTTPClient(client)).ServeHTTP(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", path, response.Code)
+		}
+	}
+}
+
 func TestHTTPHandlerUserProxyMapsErrors(t *testing.T) {
 	for _, tt := range []struct {
 		name string
