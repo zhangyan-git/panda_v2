@@ -7,6 +7,7 @@ import (
 )
 
 func TestLoadRedisDB(t *testing.T) {
+	t.Setenv("PANDA_ENV", "test")
 	tests := []struct {
 		name    string
 		value   string
@@ -39,6 +40,7 @@ func TestLoadRedisDB(t *testing.T) {
 }
 
 func TestLoadReadsMerchantServiceURL(t *testing.T) {
+	t.Setenv("PANDA_ENV", "test")
 	t.Setenv("MERCHANT_SERVICE_URL", "http://merchant.test:8080")
 	cfg, err := Load("test")
 	if err != nil {
@@ -51,7 +53,7 @@ func TestLoadReadsMerchantServiceURL(t *testing.T) {
 
 func TestLoadReadsDotEnv(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("DATABASE_URL='postgres://localhost/panda'\nREDIS_DB=3\n# comment\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("PANDA_ENV=test\nDATABASE_URL='postgres://localhost/panda'\nREDIS_DB=3\n# comment\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	oldDir, err := os.Getwd()
@@ -89,6 +91,7 @@ func TestLoadReadsDotEnv(t *testing.T) {
 }
 
 func TestLoadEnvironmentOverridesDotEnv(t *testing.T) {
+	t.Setenv("PANDA_ENV", "test")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("DATABASE_URL=file-value\n"), 0o600); err != nil {
 		t.Fatal(err)
