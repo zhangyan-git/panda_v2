@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"strconv"
 	"sync"
 
+	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -82,6 +84,11 @@ func NewRabbitMQ(cfg RabbitConfig) (Publisher, Consumer, io.Closer, error) {
 		_ = conn.Close()
 		return nil, nil, nil, err
 	}
+	if err := pubCh.Confirm(false); err != nil {
+		_ = pubCh.Close()
+		_ = conn.Close()
+		return nil, nil, nil, fmt.Errorf("messaging: enable publisher confirms: %w", err)
+	}
 	if err := pubCh.ExchangeDeclare(cfg.Exchange, cfg.ExchangeType, true, false, false, false, nil); err != nil {
 		_ = pubCh.Close()
 		_ = conn.Close()
@@ -102,7 +109,9 @@ func NewRabbitMQ(cfg RabbitConfig) (Publisher, Consumer, io.Closer, error) {
 			return nil, nil, nil, err
 		}
 	}
-	client := &rabbitClient{pubCh: pubCh, consumeCh: consumerCh, conn: conn, cfg: cfg}
+	client := &rabbitClient{pubCh: pubCh, consumeCh: consumerCh, conn: conn, cfg: cfg, returns: make(chan amqp.Return, 16), pendingReturns: make(map[string][]chan amqp.Return)}
+	pubCh.NotifyReturn(client.returns)
+	go client.dispatchReturns()
 	return client, client, client, nil
 }
 
@@ -148,6 +157,10 @@ type rabbitClient struct {
 	cfg              RabbitConfig
 	closeOnce        sync.Once
 	closeErr         error
+	returns          chan amqp.Return
+	returnMu         sync.Mutex
+	pendingReturns   map[string][]chan amqp.Return
+	closed           chan struct{}
 }
 
 func (r *rabbitClient) Close() error {
@@ -177,20 +190,41 @@ func (r *rabbitClient) close(closeConn func() error) error {
 }
 
 func (r *rabbitClient) Publish(ctx context.Context, e Envelope) error {
-	return r.pubCh.PublishWithContext(ctx, r.cfg.Exchange, r.cfg.RoutingKey, false, false, amqp.Publishing{
-		ContentType: "application/json", MessageId: e.EventID, Type: e.EventType,
-		Headers: amqp.Table{"event_version": e.EventVersion, "trace_id": e.TraceID}, Body: e.Payload,
-	})
+	if e.EventID == "" {
+		e.EventID = uuid.NewString()
+	}
+	confirmation, err := r.pubCh.PublishWithDeferredConfirm(
+		r.cfg.Exchange, r.cfg.RoutingKey, true, false, amqp.Publishing{
+			ContentType: "application/json", MessageId: e.EventID, Type: e.EventType,
+			Headers: amqp.Table{"event_version": e.EventVersion, "trace_id": e.TraceID}, Body: e.Payload,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if confirmation == nil {
+		return fmt.Errorf("messaging: publisher confirmation unavailable")
+	}
+	acked, err := r.waitConfirmation(ctx, confirmation, e.EventID)
+	if err != nil {
+		return err
+	}
+	if !acked {
+		return fmt.Errorf("messaging: publisher confirmation rejected")
+	}
+	return nil
 }
 
 func (r *rabbitClient) Consume(ctx context.Context, handler Handler) error {
 	if r.cfg.Queue == "" {
 		return fmt.Errorf("messaging: RabbitMQ queue is required for consume")
 	}
-	deliveries, err := r.consumeCh.Consume(r.cfg.Queue, "", false, false, false, false, nil)
+	tag := "panda-consumer-" + uuid.NewString()
+	deliveries, err := r.consumeCh.Consume(r.cfg.Queue, tag, false, false, false, false, nil)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = r.consumeCh.Cancel(tag, false) }()
 	for {
 		select {
 		case <-ctx.Done():
@@ -205,7 +239,7 @@ func (r *rabbitClient) Consume(ctx context.Context, handler Handler) error {
 					return ackErr
 				}
 			} else if retryCount(d.Headers) < r.cfg.RetryLimit {
-				if err := republishRetry(ctx, r.pubCh, r.cfg, d); err != nil {
+				if err := r.republishRetry(ctx, d); err != nil {
 					return err
 				}
 				if err := d.Ack(false); err != nil {
@@ -229,22 +263,96 @@ func envelopeFromDelivery(d amqp.Delivery) Envelope {
 	return e
 }
 
-func republishRetry(ctx context.Context, ch *amqp.Channel, cfg RabbitConfig, d amqp.Delivery) error {
+func (r *rabbitClient) republishRetry(ctx context.Context, d amqp.Delivery) error {
 	headers := amqp.Table{}
-	for key, value := range d.Headers {
-		headers[key] = value
-	}
+	maps.Copy(headers, d.Headers)
 	headers["x-retry-count"] = retryCount(d.Headers) + 1
-	return ch.PublishWithContext(ctx, cfg.Exchange, cfg.RoutingKey, false, false, amqp.Publishing{
-		ContentType: d.ContentType, MessageId: d.MessageId, Type: d.Type, Headers: headers, Body: d.Body,
-	})
+	confirmation, err := r.pubCh.PublishWithDeferredConfirm(
+		r.cfg.Exchange, r.cfg.RoutingKey, true, false, amqp.Publishing{
+			ContentType: d.ContentType, MessageId: d.MessageId, Type: d.Type, Headers: headers, Body: d.Body,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if confirmation == nil {
+		return fmt.Errorf("messaging: retry publisher confirmation unavailable")
+	}
+	acked, err := r.waitConfirmation(ctx, confirmation, d.MessageId)
+	if err != nil {
+		return err
+	}
+	if !acked {
+		return fmt.Errorf("messaging: retry publisher confirmation rejected")
+	}
+	return nil
+}
+
+func (r *rabbitClient) dispatchReturns() {
+	for returned := range r.returns {
+		r.returnMu.Lock()
+		waiters := r.pendingReturns[returned.MessageId]
+		if len(waiters) > 0 {
+			waiter := waiters[0]
+			if len(waiters) == 1 {
+				delete(r.pendingReturns, returned.MessageId)
+			} else {
+				r.pendingReturns[returned.MessageId] = waiters[1:]
+			}
+			r.returnMu.Unlock()
+			waiter <- returned
+			close(waiter)
+			continue
+		}
+		r.returnMu.Unlock()
+	}
+}
+
+func (r *rabbitClient) waitConfirmation(ctx context.Context, confirmation *amqp.DeferredConfirmation, messageID string) (bool, error) {
+	type confirmationResult struct {
+		acked bool
+		err   error
+	}
+	result := make(chan confirmationResult, 1)
+	returnedCh := make(chan amqp.Return, 1)
+	r.returnMu.Lock()
+	r.pendingReturns[messageID] = append(r.pendingReturns[messageID], returnedCh)
+	r.returnMu.Unlock()
+	defer func() {
+		r.returnMu.Lock()
+		waiters := r.pendingReturns[messageID]
+		for i, waiter := range waiters {
+			if waiter == returnedCh {
+				r.pendingReturns[messageID] = append(waiters[:i], waiters[i+1:]...)
+				if len(r.pendingReturns[messageID]) == 0 {
+					delete(r.pendingReturns, messageID)
+				}
+				break
+			}
+		}
+		r.returnMu.Unlock()
+	}()
+	go func() {
+		acked, err := confirmation.WaitContext(ctx)
+		result <- confirmationResult{acked: acked, err: err}
+	}()
+	for {
+		select {
+		case outcome := <-result:
+			return outcome.acked, outcome.err
+		case returned := <-returnedCh:
+			return false, fmt.Errorf("messaging: message returned: %s", returned.ReplyText)
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
 }
 
 func retryCount(headers amqp.Table) int {
 	if value, ok := retryHeaderValue(headers["x-retry-count"]); ok {
 		return value
 	}
-	if deaths, ok := headers["x-death"].([]interface{}); ok {
+	if deaths, ok := headers["x-death"].([]any); ok {
 		count := 0
 		for _, death := range deaths {
 			if table, ok := death.(amqp.Table); ok {
@@ -258,27 +366,52 @@ func retryCount(headers amqp.Table) int {
 	return 0
 }
 
-func retryHeaderValue(value interface{}) (int, bool) {
+func retryHeaderValue(value any) (int, bool) {
+	const maxInt = int(^uint(0) >> 1)
 	switch value := value.(type) {
 	case int:
+		if value < 0 {
+			return 0, false
+		}
 		return value, true
 	case int8:
+		if value < 0 {
+			return 0, false
+		}
 		return int(value), true
 	case int16:
+		if value < 0 {
+			return 0, false
+		}
 		return int(value), true
 	case int32:
+		if value < 0 {
+			return 0, false
+		}
 		return int(value), true
 	case int64:
+		if value < 0 || value > int64(maxInt) {
+			return 0, false
+		}
 		return int(value), true
 	case uint:
+		if value > uint(maxInt) {
+			return 0, false
+		}
 		return int(value), true
 	case uint8:
 		return int(value), true
 	case uint16:
 		return int(value), true
 	case uint32:
+		if uint64(value) > uint64(maxInt) {
+			return 0, false
+		}
 		return int(value), true
 	case uint64:
+		if value > uint64(maxInt) {
+			return 0, false
+		}
 		return int(value), true
 	default:
 		return 0, false

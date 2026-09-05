@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
@@ -19,11 +20,16 @@ import (
 
 // Options contains the infrastructure dependencies owned by a service runtime.
 // Dependencies may be injected for tests or applications with custom adapters.
+type Runner interface {
+	Run(context.Context) error
+}
+
 type Options struct {
 	Database         database.Pool
 	Cache            cache.Client
 	Publisher        messaging.Publisher
 	Consumer         messaging.Consumer
+	Workers          []Runner
 	Messaging        io.Closer
 	MessagingCleanup io.Closer
 	Registry         registry.Registry
@@ -41,12 +47,19 @@ type Options struct {
 }
 
 // Lifecycle coordinates startup and shutdown of platform dependencies.
+type workerState struct {
+	cancel  context.CancelFunc
+	done    chan error
+	started chan struct{}
+}
+
 type Lifecycle struct {
 	database, cache                                                    any
 	db                                                                 database.Pool
 	redis                                                              cache.Client
 	publisher                                                          messaging.Publisher
 	consumer                                                           messaging.Consumer
+	workers                                                            []Runner
 	messaging                                                          io.Closer
 	messagingCleanup                                                   io.Closer
 	registry                                                           registry.Registry
@@ -59,6 +72,7 @@ type Lifecycle struct {
 	consumerCancel                                                     context.CancelFunc
 	consumerDone                                                       chan error
 	consumerRunning                                                    bool
+	workerStates                                                       []workerState
 	started                                                            bool
 	starting                                                           bool
 	startupDone                                                        chan struct{}
@@ -73,7 +87,7 @@ type Lifecycle struct {
 func New(options Options) *Lifecycle {
 	return &Lifecycle{
 		db: options.Database, redis: options.Cache, publisher: options.Publisher,
-		consumer: options.Consumer, messaging: options.Messaging, messagingCleanup: options.MessagingCleanup, registry: options.Registry,
+		consumer: options.Consumer, workers: append([]Runner(nil), options.Workers...), messaging: options.Messaging, messagingCleanup: options.MessagingCleanup, registry: options.Registry,
 		providers: options.Observability, instance: options.Instance, handler: options.ConsumerHandler, httpRoutes: options.HTTPRoutes,
 		startupTimeout: options.StartupTimeout, shutdownTimeout: options.ShutdownTimeout,
 		ownDatabase: options.OwnDatabase, ownCache: options.OwnCache, ownMessaging: options.OwnMessaging,
@@ -82,6 +96,9 @@ func New(options Options) *Lifecycle {
 }
 
 func (l *Lifecycle) startupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if l.startupTimeout <= 0 {
 		return ctx, func() {}
 	}
@@ -91,6 +108,7 @@ func (l *Lifecycle) startupContext(ctx context.Context) (context.Context, contex
 // BeforeStart initializes and verifies infrastructure in dependency order. If a
 // later step fails, resources already started are rolled back immediately.
 func (l *Lifecycle) BeforeStart(ctx context.Context) error {
+	ctx = normalizeContext(ctx)
 	l.mu.Lock()
 	if l.starting {
 		done := l.startupDone
@@ -124,7 +142,16 @@ func (l *Lifecycle) BeforeStart(ctx context.Context) error {
 
 	ctx, cancel := l.startupContext(ctx)
 	defer cancel()
-	started := make([]func(context.Context) error, 0, 4)
+	started := make([]func(context.Context) error, 0, 8)
+	if l.ownMessaging {
+		started = append(started, func(ctx context.Context) error { return closeMessaging(ctx, l.messaging) })
+	}
+	if l.ownObservability {
+		started = append(started, func(ctx context.Context) error { return l.providers.Shutdown(ctx) })
+	}
+	if l.ownRegistry {
+		started = append(started, func(context.Context) error { return l.registry.Close() })
+	}
 	finish := func(err error) error {
 		l.mu.Lock()
 		l.starting = false
@@ -147,6 +174,10 @@ func (l *Lifecycle) BeforeStart(ctx context.Context) error {
 				errs = append(errs, err)
 			}
 		}
+		l.mu.Lock()
+		l.consumerCancel, l.consumerDone = nil, nil
+		l.workerStates = nil
+		l.mu.Unlock()
 		return finish(errors.Join(append([]error{cause}, errs...)...))
 	}
 	if l.db != nil {
@@ -184,6 +215,7 @@ func (l *Lifecycle) BeforeStart(ctx context.Context) error {
 	}
 	if l.consumer != nil && l.handler != nil {
 		consumerCtx, consumerCancel := context.WithCancel(context.Background())
+		consumerStarted := make(chan struct{})
 		l.mu.Lock()
 		l.consumerCancel = consumerCancel
 		l.consumerDone = make(chan error, 1)
@@ -191,16 +223,59 @@ func (l *Lifecycle) BeforeStart(ctx context.Context) error {
 		l.consumerRunning = true
 		l.mu.Unlock()
 		go func() {
-			err := l.consumer.Consume(consumerCtx, l.handler)
+			close(consumerStarted)
+			err := recoverRun(func() error { return l.consumer.Consume(consumerCtx, l.handler) })
 			done <- err
 			l.mu.Lock()
 			l.consumerRunning = false
 			l.mu.Unlock()
 		}()
+		select {
+		case err := <-done:
+			return rollback(fmt.Errorf("consumer startup: %w", err))
+		case <-consumerStarted:
+		}
 		started = append(started, func(c context.Context) error {
 			consumerCancel()
 			select {
 			case err := <-done:
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				return err
+			case <-c.Done():
+				return c.Err()
+			}
+		})
+		select {
+		case err := <-done:
+			return rollback(fmt.Errorf("consumer startup: %w", err))
+		case <-consumerStarted:
+		}
+	}
+	for _, worker := range l.workers {
+		if worker == nil {
+			continue
+		}
+		workerCtx, workerCancel := context.WithCancel(context.Background())
+		workerDone := make(chan error, 1)
+		workerStarted := make(chan struct{})
+		l.mu.Lock()
+		l.workerStates = append(l.workerStates, workerState{cancel: workerCancel, done: workerDone})
+		l.mu.Unlock()
+		go func(worker Runner, ctx context.Context, done chan error, started chan struct{}) {
+			close(started)
+			done <- recoverRun(func() error { return worker.Run(ctx) })
+		}(worker, workerCtx, workerDone, workerStarted)
+		select {
+		case <-workerStarted:
+		case <-workerDone:
+			return rollback(errors.New("worker exited during startup"))
+		}
+		started = append(started, func(c context.Context) error {
+			workerCancel()
+			select {
+			case err := <-workerDone:
 				if errors.Is(err, context.Canceled) {
 					return nil
 				}
@@ -216,6 +291,7 @@ func (l *Lifecycle) BeforeStart(ctx context.Context) error {
 // AfterStop closes resources in reverse dependency order. Shutdown gets its own
 // timeout so a stuck dependency cannot block graceful termination indefinitely.
 func (l *Lifecycle) AfterStop(ctx context.Context) error {
+	ctx = normalizeContext(ctx)
 	for {
 		l.mu.Lock()
 		if l.starting {
@@ -243,7 +319,16 @@ func (l *Lifecycle) AfterStop(ctx context.Context) error {
 		}
 		l.stopDone = make(chan struct{})
 		l.stopped = true
+		started := l.started
+		startupErr := l.startupErr
 		l.mu.Unlock()
+		if !started && startupErr != nil {
+			l.mu.Lock()
+			l.stopErr = nil
+			close(l.stopDone)
+			l.mu.Unlock()
+			return nil
+		}
 		break
 	}
 	if l.shutdownTimeout > 0 {
@@ -255,7 +340,22 @@ func (l *Lifecycle) AfterStop(ctx context.Context) error {
 	l.mu.Lock()
 	consumerCancel, consumerDone := l.consumerCancel, l.consumerDone
 	l.consumerCancel, l.consumerDone = nil, nil
+	workers := append([]workerState(nil), l.workerStates...)
+	l.workerStates = nil
 	l.mu.Unlock()
+	for _, worker := range workers {
+		worker.cancel()
+	}
+	for _, worker := range workers {
+		select {
+		case err := <-worker.done:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				errs = append(errs, err)
+			}
+		case <-ctx.Done():
+			errs = append(errs, ctx.Err())
+		}
+	}
 	if consumerCancel != nil {
 		consumerCancel()
 	}
@@ -336,9 +436,32 @@ func (l *Lifecycle) AfterStop(ctx context.Context) error {
 	return result
 }
 
+func recoverRun(run func() error) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("panic: %v\n%s", recovered, debug.Stack())
+		}
+	}()
+	return run()
+}
+
+func normalizeContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 func closeMessaging(ctx context.Context, closer io.Closer) error {
 	if force, ok := closer.(interface{ CloseContext(context.Context) error }); ok {
 		return force.CloseContext(ctx)
 	}
-	return closer.Close()
+	done := make(chan error, 1)
+	go func() { done <- closer.Close() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
