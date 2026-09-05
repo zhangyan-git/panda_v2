@@ -11,9 +11,9 @@ import (
 	"github.com/panda-dev/panda-v2/backend/platform/database"
 	"github.com/panda-dev/panda-v2/backend/platform/server"
 	runtime "github.com/panda-dev/panda-v2/backend/platform/server/runtime"
-	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/domain"
-	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/handler"
+	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/controller"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/repository"
+	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/service"
 )
 
 func Run(service string) error { return server.Run(service) }
@@ -31,7 +31,7 @@ func RunWithRepository(cfg config.Config, db database.Pool) error {
 	if err != nil {
 		return err
 	}
-	userHandler := handler.New(domain.NewService(repo))
+	userHandler := controller.New(service.NewService(repo))
 	profile := auth.Bearer(authorizer)(http.HandlerFunc(userHandler.Profile))
 	return server.RunWithOptions(cfg, runtime.Options{Database: db, HTTPRoutes: func(s *khttp.Server) {
 		s.HandleFunc("/users", userHandler.Register)

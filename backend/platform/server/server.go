@@ -120,12 +120,12 @@ func RunWithOptions(cfg config.Config, options runtime.Options) error {
 		kratos.Server(httpServer, grpcServer),
 		kratos.BeforeStart(func(ctx context.Context) error {
 			err := lifecycle.BeforeStart(ctx)
-			// Lifecycle has taken responsibility for all startup cleanup after it
-			// has been invoked, including rollback on failure.
-			handedOff = true
 			if err != nil {
 				return err
 			}
+			// Lifecycle has taken responsibility for all startup cleanup after it
+			// has been invoked successfully.
+			handedOff = true
 			h.SetReady(true)
 			return nil
 		}),

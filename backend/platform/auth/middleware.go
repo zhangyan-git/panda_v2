@@ -2,9 +2,10 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/panda-dev/panda-v2/backend/platform/api"
 )
 
 type identityContextKey struct{}
@@ -93,8 +94,6 @@ func hasTokenType(tokenType TokenType, required []TokenType) bool {
 }
 
 func writeUnauthorized(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("WWW-Authenticate", "Bearer")
-	w.WriteHeader(http.StatusUnauthorized)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+	api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, "unauthorized")
 }

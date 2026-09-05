@@ -92,8 +92,10 @@ func TestHTTPHandlerMapsTimeoutAndConnectionErrors(t *testing.T) {
 			if response.Code != tt.want {
 				t.Fatalf("status = %d, want %d", response.Code, tt.want)
 			}
-			var body map[string]string
-			if err := json.NewDecoder(response.Body).Decode(&body); err != nil || body["error"] == "" {
+			var body struct {
+				Message string `json:"message"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&body); err != nil || body.Message == "" {
 				t.Fatalf("body = %q, err = %v", response.Body.String(), err)
 			}
 		})
@@ -171,6 +173,51 @@ func TestHTTPHandlerProxiesAuthenticatedUserProfile(t *testing.T) {
 	response := httptest.NewRecorder()
 	NewHTTPHandler(authorizer, WithUserServiceURL("http://user.test"), WithHTTPClient(client)).ServeHTTP(response, req)
 	if response.Code != http.StatusOK || response.Body.String() != `{"id":1}` {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestHTTPHandlerProxiesAuthenticatedMerchantRoutes(t *testing.T) {
+	authorizer := testAuthorizer(t)
+	token, _ := authorizer.SignAccess("account-1", "merchant-1", "account-1", "tenant-1", nil)
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "http://merchant.test"+req.URL.Path || req.Header.Get("Authorization") != "Bearer "+token {
+			t.Fatalf("request = %s %s authorization=%q", req.Method, req.URL, req.Header.Get("Authorization"))
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewBufferString(`{"ok":true}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+	})}
+	for _, path := range []string{"/v1/merchant/profile", "/v1/admin/merchants", "/v1/admin/stores/1", "/v1/admin/merchant-accounts"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		NewHTTPHandler(authorizer, WithMerchantServiceURL("http://merchant.test"), WithHTTPClient(client)).ServeHTTP(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", path, response.Code)
+		}
+	}
+}
+
+func TestHTTPHandlerProxiesAuthenticatedCoffeeMachineRoutes(t *testing.T) {
+	authorizer := testAuthorizer(t)
+	token, err := authorizer.SignAccess("account-1", "user-1", "account-1", "tenant-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.String() != "http://coffee-machine.test/v1/coffee-machine/devices?tenant=1" {
+			t.Fatalf("request = %s %s", req.Method, req.URL)
+		}
+		if req.Header.Get("Authorization") != "Bearer "+token {
+			t.Fatalf("authorization = %q", req.Header.Get("Authorization"))
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewBufferString(`{"id":"device-1"}`))}, nil
+	})}
+	req := httptest.NewRequest(http.MethodGet, "/v1/coffee-machine/devices?tenant=1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	NewHTTPHandler(authorizer, WithCoffeeMachineServiceURL("http://coffee-machine.test"), WithHTTPClient(client)).ServeHTTP(response, req)
+	if response.Code != http.StatusOK || response.Body.String() != `{"id":"device-1"}` {
 		t.Fatalf("response = %d %q", response.Code, response.Body.String())
 	}
 }

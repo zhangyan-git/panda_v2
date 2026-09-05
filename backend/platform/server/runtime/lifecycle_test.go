@@ -101,6 +101,25 @@ func (f *fakeConsumer) Consume(ctx context.Context, _ messaging.Handler) error {
 	}
 }
 
+type fakeWorker struct {
+	recorder *lifecycleRecorder
+	started  chan struct{}
+	stopped  chan struct{}
+	err      error
+}
+
+func (f *fakeWorker) Run(ctx context.Context) error {
+	f.recorder.add("worker-start")
+	close(f.started)
+	if f.err != nil {
+		return f.err
+	}
+	<-ctx.Done()
+	f.recorder.add("worker-stop")
+	close(f.stopped)
+	return ctx.Err()
+}
+
 var (
 	_ database.Pool        = (*fakeDB)(nil)
 	_ cache.Client         = (*fakeCache)(nil)
@@ -229,13 +248,62 @@ func TestLifecycleConsumerCancelAndTimeout(t *testing.T) {
 	}
 }
 
+func TestLifecycleWorkersStartStopBeforeResourcesClose(t *testing.T) {
+	r := &lifecycleRecorder{}
+	worker := &fakeWorker{recorder: r, started: make(chan struct{}), stopped: make(chan struct{})}
+	l := New(Options{
+		Workers:          []Runner{worker},
+		MessagingCleanup: &fakeCloser{recorder: r, name: "messaging-cleanup"},
+		Messaging:        &fakeCloser{recorder: r, name: "messaging-close"},
+		OwnMessaging:     true,
+	})
+	if err := l.BeforeStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-worker.started
+	if err := l.AfterStop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := <-worker.stopped; ok {
+		t.Fatal("worker stop channel should be closed")
+	}
+	got := r.get()
+	workerStop, cleanup := indexOf(got, "worker-stop"), indexOf(got, "messaging-cleanup")
+	if workerStop < 0 || cleanup < 0 || workerStop > cleanup {
+		t.Fatalf("events = %v, worker must stop before messaging cleanup", got)
+	}
+}
+
+func TestLifecycleWorkerErrorIsAggregatedOnStop(t *testing.T) {
+	r := &lifecycleRecorder{}
+	workerErr := errors.New("worker failed")
+	worker := &fakeWorker{recorder: r, started: make(chan struct{}), stopped: make(chan struct{}), err: workerErr}
+	l := New(Options{Workers: []Runner{worker}})
+	if err := l.BeforeStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-worker.started
+	if err := l.AfterStop(context.Background()); !errors.Is(err, workerErr) {
+		t.Fatalf("error = %v, want %v", err, workerErr)
+	}
+}
+
+func indexOf(events []string, want string) int {
+	for i, event := range events {
+		if event == want {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestLifecycleErrorAggregationAndConcurrentAfterStop(t *testing.T) {
 	r := &lifecycleRecorder{}
 	cacheErr, messagingErr := errors.New("cache close"), errors.New("messaging close")
 	l := New(Options{Cache: &fakeCache{recorder: r, closeErr: cacheErr}, Messaging: &fakeCloser{recorder: r, name: "messaging", err: messagingErr}, OwnCache: true, OwnMessaging: true})
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

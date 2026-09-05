@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	khttp "github.com/go-kratos/kratos/v2/transport/http"
+	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"github.com/panda-dev/panda-v2/backend/platform/auth"
 	"github.com/panda-dev/panda-v2/backend/platform/config"
 	"github.com/panda-dev/panda-v2/backend/platform/server"
@@ -32,13 +32,13 @@ func Run(service string) error {
 		return err
 	}
 	return server.RunWithOptions(cfg, runtime.Options{HTTPRoutes: func(s *khttp.Server) {
-		s.HandlePrefix("/v1/", NewHTTPHandler(authorizer, WithAccountServiceURL(cfg.AccountServiceURL), WithUserServiceURL(cfg.UserServiceURL)))
+		s.HandlePrefix("/v1/", NewHTTPHandler(authorizer, WithAccountServiceURL(cfg.AccountServiceURL), WithUserServiceURL(cfg.UserServiceURL), WithMerchantServiceURL(cfg.MerchantServiceURL), WithCoffeeMachineServiceURL(cfg.CoffeeMachineServiceURL)))
 	}})
 }
 
 type handlerOptions struct {
-	accountServiceURL, userServiceURL string
-	httpClient                        *http.Client
+	accountServiceURL, userServiceURL, merchantServiceURL, coffeeMachineServiceURL string
+	httpClient                                                                     *http.Client
 }
 type HTTPHandlerOption func(*handlerOptions)
 
@@ -47,6 +47,12 @@ func WithAccountServiceURL(value string) HTTPHandlerOption {
 }
 func WithUserServiceURL(value string) HTTPHandlerOption {
 	return func(o *handlerOptions) { o.userServiceURL = strings.TrimRight(value, "/") }
+}
+func WithMerchantServiceURL(value string) HTTPHandlerOption {
+	return func(o *handlerOptions) { o.merchantServiceURL = strings.TrimRight(value, "/") }
+}
+func WithCoffeeMachineServiceURL(value string) HTTPHandlerOption {
+	return func(o *handlerOptions) { o.coffeeMachineServiceURL = strings.TrimRight(value, "/") }
 }
 func WithHTTPClient(client *http.Client) HTTPHandlerOption {
 	return func(o *handlerOptions) { o.httpClient = client }
@@ -68,17 +74,34 @@ func NewHTTPHandler(authorizer *auth.Service, options ...HTTPHandlerOption) http
 		mux.HandleFunc(path, accountAuthForwarder(settings.accountServiceURL, path, settings.httpClient))
 	}
 	mux.Handle("/v1/users/", auth.Bearer(authorizer)(userProxy(settings.userServiceURL, settings.httpClient)))
+	merchantProxy := auth.Bearer(authorizer)(userProxyWithMethods(settings.merchantServiceURL, settings.httpClient, "merchant service", true))
+	mux.Handle("/v1/merchant/", merchantProxy)
+	for _, path := range []string{"/v1/admin/merchants", "/v1/admin/stores", "/v1/admin/merchant-accounts"} {
+		mux.Handle(path, merchantProxy)
+		mux.Handle(path+"/", merchantProxy)
+	}
+	coffeeMachineProxy := auth.Bearer(authorizer)(userProxyWithMethods(settings.coffeeMachineServiceURL, settings.httpClient, "coffee machine service", false))
+	mux.Handle("/v1/coffee-machine", coffeeMachineProxy)
+	mux.Handle("/v1/coffee-machine/", coffeeMachineProxy)
 	return mux
 }
 
 func userProxy(baseURL string, client *http.Client) http.Handler {
+	return userProxyWithMethods(baseURL, client, "user service", false)
+}
+
+func userProxyWithMethods(baseURL string, client *http.Client, serviceName string, allowWriteMethods bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodPatch {
+		allowed := r.Method == http.MethodGet || r.Method == http.MethodPatch
+		if allowWriteMethods {
+			allowed = allowed || r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete
+		}
+		if !allowed {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
 		if baseURL == "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user service unavailable"})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": serviceName + " unavailable"})
 			return
 		}
 		target := baseURL + r.URL.Path
@@ -141,8 +164,8 @@ func accountAuthForwarder(accountServiceURL, endpoint string, client *http.Clien
 		}
 		target := accountServiceURL
 		for _, path := range []string{"/v1/auth/login", "/v1/auth/refresh", "/v1/auth/revoke"} {
-			if strings.HasSuffix(target, path) {
-				target = strings.TrimSuffix(target, path)
+			if trimmed, ok := strings.CutSuffix(target, path); ok {
+				target = trimmed
 				break
 			}
 		}
@@ -183,7 +206,9 @@ func notImplemented(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented", "message": "gateway downstream proxy is not configured"})
 }
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	message := "success"
+	if value, ok := value.(map[string]string); ok {
+		message = value["error"]
+	}
+	api.Error(w, status, api.CodeForStatus(status), message)
 }

@@ -38,6 +38,17 @@ func TestLoadRedisDB(t *testing.T) {
 	}
 }
 
+func TestLoadReadsMerchantServiceURL(t *testing.T) {
+	t.Setenv("MERCHANT_SERVICE_URL", "http://merchant.test:8080")
+	cfg, err := Load("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MerchantServiceURL != "http://merchant.test:8080" {
+		t.Fatalf("MerchantServiceURL = %q", cfg.MerchantServiceURL)
+	}
+}
+
 func TestLoadReadsDotEnv(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("DATABASE_URL='postgres://localhost/panda'\nREDIS_DB=3\n# comment\n"), 0o600); err != nil {

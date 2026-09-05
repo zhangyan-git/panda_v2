@@ -113,11 +113,16 @@ func assertUnauthorized(t *testing.T, response *httptest.ResponseRecorder) {
 	if response.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("content type = %q, want application/json", response.Header().Get("Content-Type"))
 	}
-	var body map[string]string
+	var body struct {
+		Status  string `json:"status"`
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    any    `json:"data"`
+	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("response is not JSON: %v", err)
 	}
-	if body["error"] != "unauthorized" {
-		t.Fatalf("error = %q, want unauthorized", body["error"])
+	if body.Status != "error" || body.Code != 40100 || body.Message != "unauthorized" || body.Data != nil {
+		t.Fatalf("unexpected envelope: %+v", body)
 	}
 }

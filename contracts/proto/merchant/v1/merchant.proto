@@ -2,5 +2,59 @@ syntax = "proto3";
 package panda.merchant.v1;
 option go_package = "github.com/panda-dev/panda-v2/contracts/proto/merchant/v1";
 
-// Contract placeholder; domain methods are added only after business scope approval.
-service MerchantService {}
+message Merchant {
+  string id = 1;
+  string name = 2;
+  string contact_name = 3;
+  string contact_phone = 4;
+  string business_license = 5;
+  string address = 6;
+  string status = 7;
+}
+message Store {
+  string id = 1;
+  string merchant_id = 2;
+  string brand_id = 3;
+  string name = 4;
+  string logo = 5;
+  string phone = 6;
+  string province = 7;
+  string city = 8;
+  string district = 9;
+  string address = 10;
+  string business_hours = 11;
+  double longitude = 12;
+  double latitude = 13;
+  string status = 14;
+  bool visible = 15;
+}
+message MerchantAccount {
+  string account_id = 1;
+  string merchant_id = 2;
+  string username = 3;
+  string status = 4;
+}
+message ListMerchantsRequest {}
+message ListMerchantsResponse { repeated Merchant merchants = 1; }
+message GetMerchantRequest { string id = 1; }
+message GetMerchantResponse { Merchant merchant = 1; }
+message CreateMerchantRequest { Merchant merchant = 1; }
+message CreateMerchantResponse { Merchant merchant = 1; }
+message UpdateMerchantRequest { string id = 1; Merchant merchant = 2; }
+message UpdateMerchantResponse { Merchant merchant = 1; }
+message ListStoresRequest { string merchant_id = 1; }
+message ListStoresResponse { repeated Store stores = 1; }
+message MerchantProfileRequest {}
+message MerchantProfileResponse { Merchant merchant = 1; }
+message MerchantStoresRequest {}
+message MerchantStoresResponse { repeated Store stores = 1; }
+
+service MerchantService {
+  rpc ListMerchants(ListMerchantsRequest) returns (ListMerchantsResponse);
+  rpc GetMerchant(GetMerchantRequest) returns (GetMerchantResponse);
+  rpc CreateMerchant(CreateMerchantRequest) returns (CreateMerchantResponse);
+  rpc UpdateMerchant(UpdateMerchantRequest) returns (UpdateMerchantResponse);
+  rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
+  rpc Profile(MerchantProfileRequest) returns (MerchantProfileResponse);
+  rpc Stores(MerchantStoresRequest) returns (MerchantStoresResponse);
+}

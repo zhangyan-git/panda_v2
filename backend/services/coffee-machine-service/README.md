@@ -1,0 +1,7 @@
+# Coffee machine service
+
+Minimal CRUD and device-drink relation service. Development runs with an in-memory repository; PostgreSQL schema is in `migrations/` and the compile-safe repository adapter can be extended for production persistence.
+
+Manufacturers support POST creation and full CRUD. Devices and drinks are synchronization-managed: their collection POST endpoints return `405 Method Not Allowed`, their DELETE endpoints are not exposed through the management API, and existing records may still be edited with PUT/PATCH. Device-drink relations are also read-only through the management API: only GET is exposed. Device, drink, and relation writes must be handled by a future protected synchronization flow.
+
+The `internal/sync` package now provides the provider-neutral synchronization foundation: snapshot DTOs, normalization, idempotent upserts, error-isolated reports, and a generic periodic `Scheduler`. The scheduler runs registered jobs immediately and at their configured intervals, prevents overlapping runs of the same job, isolates job errors and panics, and waits for in-flight jobs during shutdown. It is not wired to production providers because no concrete manufacturer provider or worker configuration boundary exists yet. The worker entrypoint therefore calls `app.RunWorker`, which fails explicitly with `ErrNoProvider`; it does not start the HTTP API. BTB/LH protocols, credentials, external-ID namespacing, and stale-snapshot (`disabled` versus tombstone) semantics must be defined before those integrations are added.
