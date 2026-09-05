@@ -13,9 +13,11 @@ import (
 	"github.com/panda-dev/panda-v2/backend/platform/database"
 	"github.com/panda-dev/panda-v2/backend/platform/server"
 	runtime "github.com/panda-dev/panda-v2/backend/platform/server/runtime"
-	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/domain"
-	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/handler"
+	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/controller"
+	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/repository"
+	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/routes"
+	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/service"
 )
 
 func Run(service string) error {
@@ -35,7 +37,7 @@ func Run(service string) error {
 	return runWithRepository(cfg, db, repo)
 }
 
-func repositoryFor(cfg config.Config, db database.Pool) (domain.Repository, error) {
+func repositoryFor(cfg config.Config, db database.Pool) (model.Repository, error) {
 	if pg, ok := db.(*database.PGXPool); ok && pg.Pool() != nil {
 		return repository.NewPostgreSQL(pg.Pool()), nil
 	}
@@ -48,11 +50,11 @@ func repositoryFor(cfg config.Config, db database.Pool) (domain.Repository, erro
 	return nil, errors.New("merchant repository could not be configured")
 }
 
-func RunWithRepository(cfg config.Config, repo domain.Repository) error {
+func RunWithRepository(cfg config.Config, repo model.Repository) error {
 	return runWithRepository(cfg, nil, repo)
 }
 
-func runWithRepository(cfg config.Config, db database.Pool, repo domain.Repository) error {
+func runWithRepository(cfg config.Config, db database.Pool, repo model.Repository) error {
 	if repo == nil {
 		return errors.New("merchant repository is required")
 	}
@@ -63,10 +65,10 @@ func runWithRepository(cfg config.Config, db database.Pool, repo domain.Reposito
 	if err != nil {
 		return err
 	}
-	h := handler.New(domain.NewService(repo))
+	h := controller.New(service.NewService(repo))
 	return server.RunWithOptions(cfg, runtime.Options{Database: db, HTTPRoutes: func(s *khttp.Server) {
 		mux := http.NewServeMux()
-		handler.RegisterRoutes(mux, h, authorizer)
+		routes.RegisterRoutes(mux, h, authorizer)
 		s.HandlePrefix("/v1/", mux)
 	}})
 }

@@ -4,14 +4,14 @@ import (
 	"context"
 	"testing"
 
-	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/domain"
+	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/model"
 )
 
 func TestMemoryUpdateStoreRejectsMerchantMigration(t *testing.T) {
 	r := NewMemory()
-	_, _ = r.CreateStore(context.Background(), domain.Store{ID: "store", MerchantID: "original", Name: "store"})
-	if _, err := r.UpdateStore(context.Background(), "store", domain.Store{MerchantID: "other", Name: "updated"}); err != domain.ErrStoreMerchant {
-		t.Fatalf("err=%v, want %v", err, domain.ErrStoreMerchant)
+	_, _ = r.CreateStore(context.Background(), model.Store{ID: "store", MerchantID: "original", Name: "store"})
+	if _, err := r.UpdateStore(context.Background(), "store", model.Store{MerchantID: "other", Name: "updated"}); err != model.ErrStoreMerchant {
+		t.Fatalf("err=%v, want %v", err, model.ErrStoreMerchant)
 	}
 	got, _ := r.GetStore(context.Background(), "store")
 	if got.MerchantID != "original" {
@@ -21,7 +21,7 @@ func TestMemoryUpdateStoreRejectsMerchantMigration(t *testing.T) {
 
 func TestMemoryListStoresByMerchantIncludesHidden(t *testing.T) {
 	r := NewMemory()
-	_, err := r.CreateStore(context.Background(), domain.Store{ID: "hidden", MerchantID: "m", Name: "hidden", Visible: false})
+	_, err := r.CreateStore(context.Background(), model.Store{ID: "hidden", MerchantID: "m", Name: "hidden", Visible: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestMemoryListStoresByMerchantIncludesHidden(t *testing.T) {
 
 func TestMemoryGetAuditByID(t *testing.T) {
 	r := NewMemory()
-	created, err := r.CreateAudit(context.Background(), domain.StoreAuditRecord{ID: "audit", StoreID: "store", NewData: []byte("new")})
+	created, err := r.CreateAudit(context.Background(), model.StoreAuditRecord{ID: "audit", StoreID: "store", NewData: []byte("new")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestMemoryGetAuditNotFound(t *testing.T) {
 func TestMemoryAuditDataIsDeepCopied(t *testing.T) {
 	r := NewMemory()
 	newData, oldData := []byte("new"), []byte("old")
-	created, err := r.CreateAudit(context.Background(), domain.StoreAuditRecord{ID: "audit", StoreID: "store", NewData: newData, OldData: oldData})
+	created, err := r.CreateAudit(context.Background(), model.StoreAuditRecord{ID: "audit", StoreID: "store", NewData: newData, OldData: oldData})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,29 +70,29 @@ func TestMemoryAuditDataIsDeepCopied(t *testing.T) {
 
 func TestMemoryUpdateAuditRequiresPendingAndStore(t *testing.T) {
 	r := NewMemory()
-	_, _ = r.CreateStore(context.Background(), domain.Store{ID: "store"})
-	_, _ = r.CreateAudit(context.Background(), domain.StoreAuditRecord{ID: "audit", StoreID: "store", Status: domain.AuditPending})
-	updated, err := r.UpdateAudit(context.Background(), "audit", domain.StoreAuditRecord{StoreID: "store", Status: domain.AuditApproved, AuditRemark: "ok", NewData: []byte("data")})
-	if err != nil || updated.Status != domain.AuditApproved {
+	_, _ = r.CreateStore(context.Background(), model.Store{ID: "store"})
+	_, _ = r.CreateAudit(context.Background(), model.StoreAuditRecord{ID: "audit", StoreID: "store", Status: model.AuditPending})
+	updated, err := r.UpdateAudit(context.Background(), "audit", model.StoreAuditRecord{StoreID: "store", Status: model.AuditApproved, AuditRemark: "ok", NewData: []byte("data")})
+	if err != nil || updated.Status != model.AuditApproved {
 		t.Fatalf("updated=%+v err=%v", updated, err)
 	}
 	store, _ := r.GetStore(context.Background(), "store")
-	if store.AuditStatus != domain.AuditApproved || store.AuditRemark != "ok" {
+	if store.AuditStatus != model.AuditApproved || store.AuditRemark != "ok" {
 		t.Fatalf("store=%+v", store)
 	}
-	if _, err := r.UpdateAudit(context.Background(), "audit", domain.StoreAuditRecord{StoreID: "store", Status: domain.AuditRejected}); err != domain.ErrInvalidAudit {
+	if _, err := r.UpdateAudit(context.Background(), "audit", model.StoreAuditRecord{StoreID: "store", Status: model.AuditRejected}); err != model.ErrInvalidAudit {
 		t.Fatalf("second update err=%v", err)
 	}
 }
 
 func TestMemoryUpdateAuditMissingStoreIsAtomic(t *testing.T) {
 	r := NewMemory()
-	_, _ = r.CreateAudit(context.Background(), domain.StoreAuditRecord{ID: "audit", StoreID: "missing", Status: domain.AuditPending})
-	if _, err := r.UpdateAudit(context.Background(), "audit", domain.StoreAuditRecord{StoreID: "missing", Status: domain.AuditApproved}); err != ErrNotFound {
+	_, _ = r.CreateAudit(context.Background(), model.StoreAuditRecord{ID: "audit", StoreID: "missing", Status: model.AuditPending})
+	if _, err := r.UpdateAudit(context.Background(), "audit", model.StoreAuditRecord{StoreID: "missing", Status: model.AuditApproved}); err != ErrNotFound {
 		t.Fatalf("err=%v", err)
 	}
 	got, _ := r.GetAudit(context.Background(), "audit")
-	if got.Status != domain.AuditPending {
+	if got.Status != model.AuditPending {
 		t.Fatalf("audit changed: %+v", got)
 	}
 }

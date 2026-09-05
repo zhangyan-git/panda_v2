@@ -6,34 +6,34 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/domain"
+	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/model"
 )
 
 var ErrNotFound = errors.New("merchant resource not found")
 
 type Memory struct {
 	mu        sync.RWMutex
-	merchants map[string]domain.Merchant
-	stores    map[string]domain.Store
-	accounts  map[string]domain.MerchantAccount
-	audits    map[string]domain.StoreAuditRecord
+	merchants map[string]model.Merchant
+	stores    map[string]model.Store
+	accounts  map[string]model.MerchantAccount
+	audits    map[string]model.StoreAuditRecord
 }
 
 func NewMemory() *Memory {
-	return &Memory{merchants: map[string]domain.Merchant{}, stores: map[string]domain.Store{}, accounts: map[string]domain.MerchantAccount{}, audits: map[string]domain.StoreAuditRecord{}}
+	return &Memory{merchants: map[string]model.Merchant{}, stores: map[string]model.Store{}, accounts: map[string]model.MerchantAccount{}, audits: map[string]model.StoreAuditRecord{}}
 }
-func cloneStore(v domain.Store) domain.Store { return v }
-func cloneAccount(v domain.MerchantAccount) domain.MerchantAccount {
+func cloneStore(v model.Store) model.Store { return v }
+func cloneAccount(v model.MerchantAccount) model.MerchantAccount {
 	v.BrandIDs = append([]string(nil), v.BrandIDs...)
 	v.StoreIDs = append([]string(nil), v.StoreIDs...)
 	return v
 }
-func cloneAudit(v domain.StoreAuditRecord) domain.StoreAuditRecord {
+func cloneAudit(v model.StoreAuditRecord) model.StoreAuditRecord {
 	v.NewData = append([]byte(nil), v.NewData...)
 	v.OldData = append([]byte(nil), v.OldData...)
 	return v
 }
-func (r *Memory) CreateMerchant(_ context.Context, m domain.Merchant) (domain.Merchant, error) {
+func (r *Memory) CreateMerchant(_ context.Context, m model.Merchant) (model.Merchant, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if m.ID == "" {
@@ -42,46 +42,46 @@ func (r *Memory) CreateMerchant(_ context.Context, m domain.Merchant) (domain.Me
 	r.merchants[m.ID] = m
 	return m, nil
 }
-func (r *Memory) GetMerchant(_ context.Context, id string) (domain.Merchant, error) {
+func (r *Memory) GetMerchant(_ context.Context, id string) (model.Merchant, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	v, ok := r.merchants[id]
 	if !ok {
-		return domain.Merchant{}, ErrNotFound
+		return model.Merchant{}, ErrNotFound
 	}
 	return v, nil
 }
-func (r *Memory) ListMerchants(_ context.Context) ([]domain.Merchant, error) {
+func (r *Memory) ListMerchants(_ context.Context) ([]model.Merchant, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]domain.Merchant, 0, len(r.merchants))
+	out := make([]model.Merchant, 0, len(r.merchants))
 	for _, v := range r.merchants {
 		out = append(out, v)
 	}
 	return out, nil
 }
-func (r *Memory) UpdateMerchant(_ context.Context, id string, m domain.Merchant) (domain.Merchant, error) {
+func (r *Memory) UpdateMerchant(_ context.Context, id string, m model.Merchant) (model.Merchant, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.merchants[id]; !ok {
-		return domain.Merchant{}, ErrNotFound
+		return model.Merchant{}, ErrNotFound
 	}
 	m.ID = id
 	r.merchants[id] = m
 	return m, nil
 }
-func (r *Memory) SetMerchantStatus(_ context.Context, id string, s domain.Status) (domain.Merchant, error) {
+func (r *Memory) SetMerchantStatus(_ context.Context, id string, s model.Status) (model.Merchant, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	v, ok := r.merchants[id]
 	if !ok {
-		return domain.Merchant{}, ErrNotFound
+		return model.Merchant{}, ErrNotFound
 	}
 	v.Status = s
 	r.merchants[id] = v
 	return v, nil
 }
-func (r *Memory) CreateStore(_ context.Context, v domain.Store) (domain.Store, error) {
+func (r *Memory) CreateStore(_ context.Context, v model.Store) (model.Store, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if v.ID == "" {
@@ -90,19 +90,19 @@ func (r *Memory) CreateStore(_ context.Context, v domain.Store) (domain.Store, e
 	r.stores[v.ID] = v
 	return v, nil
 }
-func (r *Memory) GetStore(_ context.Context, id string) (domain.Store, error) {
+func (r *Memory) GetStore(_ context.Context, id string) (model.Store, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	v, ok := r.stores[id]
 	if !ok {
-		return domain.Store{}, ErrNotFound
+		return model.Store{}, ErrNotFound
 	}
 	return cloneStore(v), nil
 }
-func (r *Memory) ListStoresByMerchant(_ context.Context, id string) ([]domain.Store, error) {
+func (r *Memory) ListStoresByMerchant(_ context.Context, id string) ([]model.Store, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := []domain.Store{}
+	out := []model.Store{}
 	for _, v := range r.stores {
 		if v.MerchantID == id {
 			out = append(out, cloneStore(v))
@@ -110,27 +110,27 @@ func (r *Memory) ListStoresByMerchant(_ context.Context, id string) ([]domain.St
 	}
 	return out, nil
 }
-func (r *Memory) UpdateStore(_ context.Context, id string, v domain.Store) (domain.Store, error) {
+func (r *Memory) UpdateStore(_ context.Context, id string, v model.Store) (model.Store, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	current, ok := r.stores[id]
 	if !ok {
-		return domain.Store{}, ErrNotFound
+		return model.Store{}, ErrNotFound
 	}
 	if v.MerchantID != "" && v.MerchantID != current.MerchantID {
-		return domain.Store{}, domain.ErrStoreMerchant
+		return model.Store{}, model.ErrStoreMerchant
 	}
 	v.ID = id
 	v.MerchantID = current.MerchantID
 	r.stores[id] = v
 	return v, nil
 }
-func (r *Memory) SetStoreStatus(_ context.Context, id string, s domain.Status) (domain.Store, error) {
+func (r *Memory) SetStoreStatus(_ context.Context, id string, s model.Status) (model.Store, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	v, ok := r.stores[id]
 	if !ok {
-		return domain.Store{}, ErrNotFound
+		return model.Store{}, ErrNotFound
 	}
 	v.Status = s
 	r.stores[id] = v
@@ -145,7 +145,7 @@ func (r *Memory) DeleteStore(_ context.Context, id string) error {
 	delete(r.stores, id)
 	return nil
 }
-func (r *Memory) CreateMerchantAccount(_ context.Context, v domain.MerchantAccount) (domain.MerchantAccount, error) {
+func (r *Memory) CreateMerchantAccount(_ context.Context, v model.MerchantAccount) (model.MerchantAccount, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if v.ID == "" {
@@ -154,16 +154,16 @@ func (r *Memory) CreateMerchantAccount(_ context.Context, v domain.MerchantAccou
 	r.accounts[v.AccountID] = v
 	return v, nil
 }
-func (r *Memory) GetMerchantAccountByAccountID(_ context.Context, id string) (domain.MerchantAccount, error) {
+func (r *Memory) GetMerchantAccountByAccountID(_ context.Context, id string) (model.MerchantAccount, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	v, ok := r.accounts[id]
 	if !ok {
-		return domain.MerchantAccount{}, ErrNotFound
+		return model.MerchantAccount{}, ErrNotFound
 	}
 	return cloneAccount(v), nil
 }
-func (r *Memory) UpdateMerchantAccount(_ context.Context, id string, v domain.MerchantAccount) (domain.MerchantAccount, error) {
+func (r *Memory) UpdateMerchantAccount(_ context.Context, id string, v model.MerchantAccount) (model.MerchantAccount, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for key, a := range r.accounts {
@@ -173,9 +173,9 @@ func (r *Memory) UpdateMerchantAccount(_ context.Context, id string, v domain.Me
 			return cloneAccount(v), nil
 		}
 	}
-	return domain.MerchantAccount{}, ErrNotFound
+	return model.MerchantAccount{}, ErrNotFound
 }
-func (r *Memory) CreateAudit(_ context.Context, v domain.StoreAuditRecord) (domain.StoreAuditRecord, error) {
+func (r *Memory) CreateAudit(_ context.Context, v model.StoreAuditRecord) (model.StoreAuditRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if v.ID == "" {
@@ -185,29 +185,29 @@ func (r *Memory) CreateAudit(_ context.Context, v domain.StoreAuditRecord) (doma
 	r.audits[v.ID] = v
 	return cloneAudit(v), nil
 }
-func (r *Memory) GetAudit(_ context.Context, id string) (domain.StoreAuditRecord, error) {
+func (r *Memory) GetAudit(_ context.Context, id string) (model.StoreAuditRecord, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	v, ok := r.audits[id]
 	if !ok {
-		return domain.StoreAuditRecord{}, ErrNotFound
+		return model.StoreAuditRecord{}, ErrNotFound
 	}
 	return cloneAudit(v), nil
 }
 
-func (r *Memory) UpdateAudit(_ context.Context, id string, v domain.StoreAuditRecord) (domain.StoreAuditRecord, error) {
+func (r *Memory) UpdateAudit(_ context.Context, id string, v model.StoreAuditRecord) (model.StoreAuditRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	current, ok := r.audits[id]
 	if !ok {
-		return domain.StoreAuditRecord{}, ErrNotFound
+		return model.StoreAuditRecord{}, ErrNotFound
 	}
-	if current.Status != domain.AuditPending || (v.Status != domain.AuditApproved && v.Status != domain.AuditRejected) {
-		return domain.StoreAuditRecord{}, domain.ErrInvalidAudit
+	if current.Status != model.AuditPending || (v.Status != model.AuditApproved && v.Status != model.AuditRejected) {
+		return model.StoreAuditRecord{}, model.ErrInvalidAudit
 	}
 	st, ok := r.stores[current.StoreID]
 	if !ok || (v.StoreID != "" && v.StoreID != current.StoreID) {
-		return domain.StoreAuditRecord{}, ErrNotFound
+		return model.StoreAuditRecord{}, ErrNotFound
 	}
 	v.ID = id
 	v.StoreID = current.StoreID
@@ -218,10 +218,10 @@ func (r *Memory) UpdateAudit(_ context.Context, id string, v domain.StoreAuditRe
 	r.stores[v.StoreID] = st
 	return cloneAudit(v), nil
 }
-func (r *Memory) ListAuditsByStore(_ context.Context, id string) ([]domain.StoreAuditRecord, error) {
+func (r *Memory) ListAuditsByStore(_ context.Context, id string) ([]model.StoreAuditRecord, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := []domain.StoreAuditRecord{}
+	out := []model.StoreAuditRecord{}
 	for _, v := range r.audits {
 		if id == "" || v.StoreID == id {
 			out = append(out, cloneAudit(v))
@@ -230,4 +230,4 @@ func (r *Memory) ListAuditsByStore(_ context.Context, id string) ([]domain.Store
 	return out, nil
 }
 
-var _ domain.Repository = (*Memory)(nil)
+var _ model.Repository = (*Memory)(nil)

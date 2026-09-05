@@ -1,0 +1,32 @@
+syntax = "proto3";
+package coffee_machine.v1;
+option go_package = "github.com/panda-dev/panda-v2/backend/contracts/gen/coffee_machine/v1";
+message Manufacturer { string id = 1; string name = 2; string contact_name = 3; string contact_phone = 4; }
+message Device { string id = 1; string manufacturer_id = 2; string name = 3; string serial_number = 4; string location = 5; string status = 6; }
+message Drink { string id = 1; string name = 2; string description = 3; int64 price = 4; string status = 5; }
+message DeviceDrink { string device_id = 1; string drink_id = 2; bool enabled = 3; }
+
+message ManufacturerID { string id = 1; }
+message DeviceID { string id = 1; }
+message DrinkID { string id = 1; }
+message ListManufacturersRequest {}
+message ListManufacturersResponse { repeated Manufacturer manufacturers = 1; }
+message ListDevicesRequest { string manufacturer_id = 1; string status = 2; }
+message ListDevicesResponse { repeated Device devices = 1; }
+message ListDrinksRequest { string status = 1; }
+message ListDrinksResponse { repeated Drink drinks = 1; }
+message UpsertDeviceDrinkRequest { DeviceDrink relation = 1; }
+message ListDeviceDrinksRequest { string device_id = 1; }
+message ListDeviceDrinksResponse { repeated DeviceDrink relations = 1; }
+message DeleteResponse { bool deleted = 1; }
+
+service CoffeeMachineService {
+  rpc ListManufacturers(ListManufacturersRequest) returns (ListManufacturersResponse);
+  rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
+  rpc ListDrinks(ListDrinksRequest) returns (ListDrinksResponse);
+  rpc UpsertDeviceDrink(UpsertDeviceDrinkRequest) returns (DeviceDrink);
+  rpc ListDeviceDrinks(ListDeviceDrinksRequest) returns (ListDeviceDrinksResponse);
+  rpc DeleteManufacturer(ManufacturerID) returns (DeleteResponse);
+  rpc DeleteDevice(DeviceID) returns (DeleteResponse);
+  rpc DeleteDrink(DrinkID) returns (DeleteResponse);
+}

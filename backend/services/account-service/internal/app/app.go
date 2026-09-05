@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	khttp "github.com/go-kratos/kratos/v2/transport/http"
@@ -11,9 +12,12 @@ import (
 	"github.com/panda-dev/panda-v2/backend/platform/database"
 	"github.com/panda-dev/panda-v2/backend/platform/server"
 	runtime "github.com/panda-dev/panda-v2/backend/platform/server/runtime"
-	"github.com/panda-dev/panda-v2/backend/services/account-service/internal/domain"
-	"github.com/panda-dev/panda-v2/backend/services/account-service/internal/handler"
+	"github.com/panda-dev/panda-v2/backend/services/account-service/internal/controller"
+	"github.com/panda-dev/panda-v2/backend/services/account-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/account-service/internal/repository"
+	"github.com/panda-dev/panda-v2/backend/services/account-service/internal/routes"
+	accountservice "github.com/panda-dev/panda-v2/backend/services/account-service/internal/service"
+	"github.com/panda-dev/panda-v2/backend/services/account-service/internal/token"
 )
 
 func Run(service string) error {
@@ -27,8 +31,12 @@ func Run(service string) error {
 	}
 	defer db.Close()
 
-	var repo domain.Repository = repository.NewMemory()
-	var tokenStore handler.Store = handler.NewMemoryStore()
+	if _, ok := db.(database.Noop); ok && !isLocalEnvironment(cfg.Environment) {
+		return errors.New("DATABASE_URL is required outside dev and test environments")
+	}
+
+	var repo model.Repository = repository.NewMemory()
+	var tokenStore token.Store = token.NewMemoryStore()
 	if pg, ok := db.(*database.PGXPool); ok && pg.Pool() != nil {
 		repo = repository.NewPostgreSQL(pg.Pool())
 		tokenStore = repository.NewPostgreSQLRefreshTokenStore(pg.Pool())
@@ -36,11 +44,11 @@ func Run(service string) error {
 	return runWithRepository(cfg, db, repo, tokenStore)
 }
 
-func RunWithRepository(cfg config.Config, repo domain.Repository) error {
-	return runWithRepository(cfg, nil, repo, handler.NewMemoryStore())
+func RunWithRepository(cfg config.Config, repo model.Repository) error {
+	return runWithRepository(cfg, nil, repo, token.NewMemoryStore())
 }
 
-func runWithRepository(cfg config.Config, db database.Pool, repo domain.Repository, tokenStore handler.Store) error {
+func runWithRepository(cfg config.Config, db database.Pool, repo model.Repository, tokenStore token.Store) error {
 	if repo == nil {
 		return errors.New("account repository is required")
 	}
@@ -54,19 +62,26 @@ func runWithRepository(cfg config.Config, db database.Pool, repo domain.Reposito
 	if err != nil {
 		return err
 	}
-	h := handler.New(domain.NewService(repo), authorizer, tokenStore)
+	h := controller.New(accountservice.NewService(repo), authorizer, tokenStore)
 	return server.RunWithOptions(cfg, runtime.Options{Database: db, HTTPRoutes: func(s *khttp.Server) {
-		s.HandleFunc("/v1/auth/login", h.Login)
-		s.HandleFunc("/v1/auth/refresh", h.Refresh)
-		s.HandleFunc("/v1/auth/revoke", h.Revoke)
+		routes.Register(s, h)
 	}})
 }
 
-func accountWriter(repo domain.Repository) domain.AccountWriter {
-	writer, _ := repo.(domain.AccountWriter)
+func isLocalEnvironment(environment string) bool {
+	switch strings.ToLower(strings.TrimSpace(environment)) {
+	case "dev", "test":
+		return true
+	default:
+		return false
+	}
+}
+
+func accountWriter(repo model.Repository) model.AccountWriter {
+	writer, _ := repo.(model.AccountWriter)
 	return writer
 }
 
-func NewMemoryRepository(accounts ...domain.Account) *repository.Memory {
+func NewMemoryRepository(accounts ...model.Account) *repository.Memory {
 	return repository.NewMemory(accounts...)
 }
