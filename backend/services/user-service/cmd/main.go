@@ -14,7 +14,6 @@ import (
 	runtime "github.com/panda-dev/panda-v2/backend/platform/server/runtime"
 	casbinpkg "github.com/panda-dev/panda-v2/backend/services/user-service/internal/casbin"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/handler"
-	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/operationlog"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/repository"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/service"
 )
@@ -75,7 +74,6 @@ func main() {
 	merchantSvc := service.NewAdminMerchantService(merchantsRepo, merchantRepo, brandsRepo, storesRepo)
 	brandSvc := service.NewAdminBrandService(brandsRepo, merchantsRepo, brandAuditRepo, merchantRepo)
 	storeSvc := service.NewAdminStoreService(storesRepo, brandsRepo, merchantsRepo, storeAuditRepo, merchantRepo)
-	operationLogSvc := operationlog.NewService(operationlog.NewPostgreSQL(pgxPool))
 
 	adminAuthH := handler.NewAdminAuthHandler(adminAuthSvc)
 	merchantAuthH := handler.NewMerchantAuthHandler(merchantAuthSvc)
@@ -87,7 +85,6 @@ func main() {
 	merchantH := handler.NewAdminMerchantHandler(merchantSvc)
 	brandH := handler.NewAdminBrandHandler(brandSvc)
 	storeH := handler.NewAdminStoreHandler(storeSvc)
-	operationLogH := handler.NewOperationLogHandler(operationLogSvc)
 
 	authMW := auth.Middleware(jwtSvc)
 	// permMW 组合 JWT 认证 + Casbin 鉴权，参数为权限码
@@ -351,7 +348,6 @@ func main() {
 			s.HandleFunc("/v1/admin/stores/{id}/audit",
 				withMiddleware(authMW, withMiddleware(permMW("admin:stores:write"),
 					methodOnly(http.MethodPatch, storeH.Audit))))
-			s.HandleFunc("/v1/admin/operation-logs", withMiddleware(authMW, withMiddleware(permMW("admin:merchants:read"), methodOnly(http.MethodGet, operationLogH.List))))
 		},
 	}); err != nil {
 		log.Fatalf("user-service: %v", err)
