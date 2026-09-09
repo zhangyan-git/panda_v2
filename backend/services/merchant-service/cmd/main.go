@@ -27,16 +27,33 @@ func main() {
 	defer db.Close()
 
 	var repo repository.Repository
+	var legacy *handler.LegacyHandler
+	var adminMerchant *handler.AdminMerchantHandler
+	var adminBrand *handler.AdminBrandHandler
+	var adminStore *handler.AdminStoreHandler
 	if pgx, ok := db.(*database.PGXPool); ok {
-		repo = repository.NewLegacyPostgres(pgx.Pool())
+		pool := pgx.Pool()
+		repo = repository.NewLegacyPostgres(pool)
+		merchantRepo := repository.NewMerchantRepository(pool)
+		brandRepo := repository.NewBrandRepository(pool)
+		storeRepo := repository.NewStoreRepository(pool)
+		legacy = handler.NewLegacy(service.New(repo))
+		adminMerchant = handler.NewAdminMerchantHandler(service.NewAdminMerchantService(merchantRepo, merchantRepo))
+		adminBrand = handler.NewAdminBrandHandler(service.NewAdminBrandService(brandRepo, merchantRepo, repository.NewBrandAuditRepository(pool), repository.NewUnavailableScope()))
+		adminStore = handler.NewAdminStoreHandler(service.NewAdminStoreService(storeRepo, brandRepo, merchantRepo, repository.NewStoreAuditRepository(pool), repository.NewUnavailableScope()))
 	} else {
 		repo = repository.NewUnavailable()
+		legacy = handler.NewLegacy(service.New(repo))
 	}
-	h := handler.New(service.New(repo))
+	if adminMerchant == nil {
+		log.Fatal("merchant-service: database does not support admin API")
+	}
 	if err := server.RunWithOptions(cfg, runtime.Options{
 		Database:    db,
 		OwnDatabase: false,
-		HTTPRoutes:  func(s *khttp.Server) { h.Register(s) },
+		HTTPRoutes: func(s *khttp.Server) {
+			handler.Register(s, adminMerchant, adminBrand, adminStore, legacy)
+		},
 	}); err != nil {
 		log.Fatalf("merchant-service: %v", err)
 	}

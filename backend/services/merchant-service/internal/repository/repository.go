@@ -16,6 +16,8 @@ type MerchantUserRepository interface {
 
 type unavailableScope struct{}
 
+func NewUnavailableScope() MerchantUserRepository { return unavailableScope{} }
+
 func (unavailableScope) ResetScopeByTarget(context.Context, string, string) error { return nil }
 
 type Repository interface {
