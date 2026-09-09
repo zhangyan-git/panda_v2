@@ -209,7 +209,7 @@ func (r *pgMerchantUserRepo) ResetScopeByTarget(ctx context.Context, scopeID str
 	const q = `
 		UPDATE merchant_users
 		SET scope_type = 'merchant', scope_id = NULL, updated_at = NOW()
-		WHERE scope_id = $1`
+		WHERE scope_id = $1 AND scope_type IN ('brand', 'store')`
 	_, err := r.pool.Exec(ctx, q, scopeID)
 	return err
 }

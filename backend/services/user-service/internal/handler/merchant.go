@@ -12,11 +12,12 @@ import (
 
 // AdminMerchantHandler 平台侧商户管理接口：商户 CRUD + 状态流转 + 商户账号维护
 type AdminMerchantHandler struct {
-	svc *service.AdminMerchantService
+	svc        *service.AdminMerchantService
+	accountSvc *service.MerchantAccountService
 }
 
-func NewAdminMerchantHandler(svc *service.AdminMerchantService) *AdminMerchantHandler {
-	return &AdminMerchantHandler{svc: svc}
+func NewAdminMerchantHandler(svc *service.AdminMerchantService, accountSvc *service.MerchantAccountService) *AdminMerchantHandler {
+	return &AdminMerchantHandler{svc: svc, accountSvc: accountSvc}
 }
 
 type merchantResponse struct {
@@ -251,7 +252,7 @@ func (h *AdminMerchantHandler) Delete(w http.ResponseWriter, r *http.Request) {
 //	@Router      /v1/admin/merchants/{id}/users [get]
 func (h *AdminMerchantHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	id := pathVar(r, "id")
-	users, err := h.svc.ListUsers(r.Context(), id)
+	users, err := h.accountSvc.ListUsers(r.Context(), id)
 	if err != nil {
 		writeMerchantError(w, err, "服务内部错误")
 		return
@@ -300,7 +301,7 @@ func (h *AdminMerchantHandler) CreateUser(w http.ResponseWriter, r *http.Request
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "用户名和密码不能为空")
 		return
 	}
-	u, err := h.svc.CreateUser(r.Context(), id, req.Username, req.Password, req.Name, req.Email, req.Phone, req.IsAdmin, req.ScopeType, req.ScopeID)
+	u, err := h.accountSvc.CreateUser(r.Context(), id, req.Username, req.Password, req.Name, req.Email, req.Phone, req.IsAdmin, req.ScopeType, req.ScopeID)
 	if err != nil {
 		writeMerchantError(w, err, "创建失败")
 		return
@@ -335,7 +336,7 @@ func (h *AdminMerchantHandler) UpdateUserScope(w http.ResponseWriter, r *http.Re
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "请求格式错误")
 		return
 	}
-	if err := h.svc.UpdateUserScope(r.Context(), id, req.ScopeType, req.ScopeID, req.IsAdmin); err != nil {
+	if err := h.accountSvc.UpdateUserScope(r.Context(), id, req.ScopeType, req.ScopeID, req.IsAdmin); err != nil {
 		writeMerchantError(w, err, "操作失败")
 		return
 	}
@@ -370,7 +371,7 @@ func (h *AdminMerchantHandler) UpdateUserStatus(w http.ResponseWriter, r *http.R
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "status 只能为 active 或 disabled")
 		return
 	}
-	if err := h.svc.UpdateUserStatus(r.Context(), id, req.Status); err != nil {
+	if err := h.accountSvc.UpdateUserStatus(r.Context(), id, req.Status); err != nil {
 		writeMerchantError(w, err, "操作失败")
 		return
 	}
@@ -389,7 +390,7 @@ func (h *AdminMerchantHandler) UpdateUserStatus(w http.ResponseWriter, r *http.R
 //	@Router      /v1/admin/merchant-users/{id} [delete]
 func (h *AdminMerchantHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	id := pathVar(r, "id")
-	if err := h.svc.DeleteUser(r.Context(), id); err != nil {
+	if err := h.accountSvc.DeleteUser(r.Context(), id); err != nil {
 		writeMerchantError(w, err, "删除失败")
 		return
 	}

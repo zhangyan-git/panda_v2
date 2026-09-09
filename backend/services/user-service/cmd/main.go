@@ -72,7 +72,8 @@ func main() {
 	permSvc := service.NewAdminPermissionService(permRepo)
 	bindingSvc := service.NewAdminBindingService(bindingRepo, enforcer)
 	menuSvc := service.NewAdminMenuService(menuRepo, roleRepo, bindingRepo)
-	merchantSvc := service.NewAdminMerchantService(merchantsRepo, merchantRepo, brandsRepo, storesRepo)
+	merchantSvc := service.NewAdminMerchantService(merchantsRepo, merchantsRepo)
+	merchantAccountSvc := service.NewMerchantAccountService(merchantAccess, merchantRepo, brandsRepo, storesRepo)
 	brandSvc := service.NewAdminBrandService(brandsRepo, merchantsRepo, brandAuditRepo, merchantRepo)
 	storeSvc := service.NewAdminStoreService(storesRepo, brandsRepo, merchantsRepo, storeAuditRepo, merchantRepo)
 
@@ -83,7 +84,7 @@ func main() {
 	permH := handler.NewAdminPermissionHandler(permSvc)
 	bindingH := handler.NewAdminBindingHandler(bindingSvc)
 	menuH := handler.NewAdminMenuHandler(menuSvc)
-	merchantH := handler.NewAdminMerchantHandler(merchantSvc)
+	merchantH := handler.NewAdminMerchantHandler(merchantSvc, merchantAccountSvc)
 	brandH := handler.NewAdminBrandHandler(brandSvc)
 	storeH := handler.NewAdminStoreHandler(storeSvc)
 

@@ -115,7 +115,7 @@ func TestValidMerchantTransition(t *testing.T) {
 
 func TestMerchantUpdateStatus(t *testing.T) {
 	repo := newFakeMerchantRepo()
-	svc := NewAdminMerchantService(repo, newFakeMerchantUserRepo(), nil, nil)
+	svc := NewAdminMerchantService(repo, repo)
 	ctx := context.Background()
 
 	seedMerchant(repo, "m1", "pending")
@@ -141,7 +141,7 @@ func TestMerchantUpdateStatus(t *testing.T) {
 
 func TestMerchantCreateForcesPending(t *testing.T) {
 	repo := newFakeMerchantRepo()
-	svc := NewAdminMerchantService(repo, newFakeMerchantUserRepo(), nil, nil)
+	svc := NewAdminMerchantService(repo, repo)
 
 	m, err := svc.Create(context.Background(), "测试商户", "", "", "")
 	if err != nil {
@@ -157,7 +157,7 @@ func TestMerchantCreateForcesPending(t *testing.T) {
 
 func TestMerchantDeleteBlockedByUsers(t *testing.T) {
 	repo := newFakeMerchantRepo()
-	svc := NewAdminMerchantService(repo, newFakeMerchantUserRepo(), nil, nil)
+	svc := NewAdminMerchantService(repo, repo)
 	ctx := context.Background()
 
 	seedMerchant(repo, "m1", "active")
@@ -178,7 +178,7 @@ func TestMerchantDeleteBlockedByUsers(t *testing.T) {
 func TestMerchantCreateUserDuplicateUsername(t *testing.T) {
 	merchants := newFakeMerchantRepo()
 	users := newFakeMerchantUserRepo()
-	svc := NewAdminMerchantService(merchants, users, nil, nil)
+	svc := NewMerchantAccountService(NewRepositoryMerchantAccess(merchants), users, nil, nil)
 	ctx := context.Background()
 
 	seedMerchant(merchants, "m1", "active")

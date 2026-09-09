@@ -282,7 +282,7 @@ func TestScopeValidation(t *testing.T) {
 	users := newFakeMerchantUserRepo()
 	brands := newFakeBrandRepo()
 	stores := newFakeStoreRepo()
-	svc := NewAdminMerchantService(merchants, users, brands, stores)
+	svc := NewMerchantAccountService(NewRepositoryMerchantAccess(merchants), users, brands, stores)
 	ctx := context.Background()
 
 	seedMerchant(merchants, "m1", "active")
