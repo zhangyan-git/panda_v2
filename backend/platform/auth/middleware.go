@@ -56,14 +56,68 @@ func Middleware(service *Service, tokenTypes ...TokenType) func(http.Handler) ht
 			}
 
 			identity := Identity{
-				Subject: claims.Subject,
-				UserID:  claims.UserID,
-				Tenant:  claims.Tenant,
-				Roles:   append([]string(nil), claims.Roles...),
+				Subject:     claims.Subject,
+				UserID:      claims.UserID,
+				Tenant:      claims.Tenant,
+				Roles:       append([]string(nil), claims.Roles...),
+				Permissions: append([]string(nil), claims.Permissions...),
+				IsSuper:     claims.IsSuper,
+			}
+			if claims.Scope != nil {
+				identity.Scope = claims.Scope.clone()
 			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), identity)))
 		})
 	}
+}
+
+// RequireRoles allows only authenticated identities carrying one of the roles.
+func RequireRoles(roles ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			identity, ok := IdentityFromRequest(r)
+			if !ok || !hasRole(identity.Roles, roles) {
+				api.Error(w, http.StatusForbidden, api.CodeForbidden, "forbidden")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RequirePermission rejects requests whose identity holds none of the given
+// permission codes. A super administrator bypasses the check entirely.
+func RequirePermission(codes ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			identity, ok := IdentityFromRequest(r)
+			if !ok || !hasPermission(identity, codes) {
+				api.Error(w, http.StatusForbidden, api.CodeForbidden, "没有权限执行此操作")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func hasPermission(identity Identity, required []string) bool {
+	for _, code := range required {
+		if identity.HasPermission(code) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRole(current, required []string) bool {
+	for _, role := range current {
+		for _, wanted := range required {
+			if role == wanted {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Bearer is an alias for Middleware for callers that prefer the auth scheme name.
@@ -96,4 +150,5 @@ func hasTokenType(tokenType TokenType, required []TokenType) bool {
 func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
 	api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, "unauthorized")
+
 }

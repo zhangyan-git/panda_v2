@@ -7,29 +7,47 @@ import (
 	"testing"
 )
 
-func TestEnvelopeSuccessAndError(t *testing.T) {
+func TestResponseSuccessAndError(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		write   func(http.ResponseWriter)
-		status  string
-		code    int
-		dataNil bool
+		name        string
+		write       func(http.ResponseWriter)
+		httpStatus  int
+		wantSuccess bool
+		wantCode    string
+		dataPresent bool
 	}{
-		{"success", func(w http.ResponseWriter) { Success(w, http.StatusOK, map[string]bool{"ok": true}) }, "success", CodeOK, false},
-		{"error", func(w http.ResponseWriter) { Error(w, http.StatusBadRequest, CodeInvalidRequest, "bad") }, "error", CodeInvalidRequest, true},
+		{
+			"success",
+			func(w http.ResponseWriter) { Success(w, map[string]bool{"ok": true}) },
+			http.StatusOK, true, "", true,
+		},
+		{
+			"error",
+			func(w http.ResponseWriter) { Error(w, http.StatusBadRequest, CodeInvalidRequest, "bad") },
+			http.StatusBadRequest, false, CodeInvalidRequest, false,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			test.write(w)
-			if w.Code != map[bool]int{true: http.StatusBadRequest, false: http.StatusOK}[test.dataNil] {
-				t.Fatalf("status=%d", w.Code)
+			if w.Code != test.httpStatus {
+				t.Fatalf("http status: got %d, want %d", w.Code, test.httpStatus)
 			}
-			var got Envelope
+			var got Response
 			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 				t.Fatal(err)
 			}
-			if got.Status != test.status || got.Code != test.code || (got.Data == nil) != test.dataNil {
-				t.Fatalf("envelope=%+v", got)
+			if got.Success != test.wantSuccess {
+				t.Errorf("success: got %v, want %v", got.Success, test.wantSuccess)
+			}
+			if test.wantCode != "" && got.ErrorCode != test.wantCode {
+				t.Errorf("errorCode: got %q, want %q", got.ErrorCode, test.wantCode)
+			}
+			if test.dataPresent && got.Data == nil {
+				t.Error("expected data to be present")
+			}
+			if !test.dataPresent && got.Data != nil {
+				t.Errorf("expected no data, got %v", got.Data)
 			}
 		})
 	}
@@ -40,5 +58,23 @@ func TestWriteNoContentHasEmptyBody(t *testing.T) {
 	WriteNoContent(w)
 	if w.Code != http.StatusNoContent || w.Body.Len() != 0 {
 		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestSuccessPage(t *testing.T) {
+	w := httptest.NewRecorder()
+	SuccessPage(w, []string{"a", "b"}, 2)
+	if w.Code != http.StatusOK {
+		t.Fatalf("http status: got %d", w.Code)
+	}
+	var got Response
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Success {
+		t.Error("expected success=true")
+	}
+	if got.Data == nil {
+		t.Error("expected data to contain page payload")
 	}
 }

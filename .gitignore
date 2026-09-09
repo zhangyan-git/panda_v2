@@ -9,3 +9,10 @@ coverage/
 *.tsbuildinfo
 .omc/
 .DS_Store
+
+# generated frontend artifacts
+.umi/
+.umi-production/
+**/.umi/
+**/.umi-production/
+.claude/worktrees/

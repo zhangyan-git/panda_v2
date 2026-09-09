@@ -30,15 +30,53 @@ type Claims struct {
 	Tenant    string    `json:"tenant"`
 	Roles     []string  `json:"roles,omitempty"`
 	TokenType TokenType `json:"token_type"`
+	// Permissions carries the RBAC permission codes resolved at sign time, so a
+	// service can authorize a request without calling back to account-service.
+	// They therefore go stale until the token is refreshed.
+	Permissions []string `json:"permissions,omitempty"`
+	// IsSuper marks a super administrator, who passes every permission check.
+	IsSuper bool `json:"is_super,omitempty"`
+	// Scope is the data boundary resolved at sign time. Absent on tokens for
+	// identities that carry no scope, which grants no data rather than all.
+	Scope *Scope `json:"scope,omitempty"`
 	jwt.RegisteredClaims
 }
 
 // Identity is the authenticated identity used by authorization checks.
 type Identity struct {
-	Subject string
-	UserID  string
-	Tenant  string
-	Roles   []string
+	Subject     string
+	UserID      string
+	Tenant      string
+	Roles       []string
+	Permissions []string
+	IsSuper     bool
+	Scope       Scope
+}
+
+// HasPermission reports whether the identity may perform code. A super
+// administrator is allowed everything.
+func (i Identity) HasPermission(code string) bool {
+	if i.IsSuper {
+		return true
+	}
+	for _, granted := range i.Permissions {
+		if granted == code {
+			return true
+		}
+	}
+	return false
+}
+
+// Grant is the authorization payload embedded in a signed token.
+type Grant struct {
+	Subject     string
+	UserID      string
+	AccountID   string
+	Tenant      string
+	Roles       []string
+	Permissions []string
+	IsSuper     bool
+	Scope       Scope
 }
 
 type Authorizer interface {
@@ -74,27 +112,53 @@ func (s *Service) SignRefresh(subject, userID, accountID, tenant string, roles [
 	return s.Sign(subject, userID, accountID, tenant, roles, RefreshTokenType)
 }
 
+// SignAccessGrant signs an access token carrying permissions and the super flag.
+func (s *Service) SignAccessGrant(grant Grant) (string, error) {
+	return s.SignGrant(grant, AccessTokenType)
+}
+
+// SignRefreshGrant signs a refresh token carrying permissions and the super flag.
+func (s *Service) SignRefreshGrant(grant Grant) (string, error) {
+	return s.SignGrant(grant, RefreshTokenType)
+}
+
 func (s *Service) AccessTokenTTL() time.Duration {
 	return s.accessTokenTTL
 }
 
 func (s *Service) Sign(subject, userID, accountID, tenant string, roles []string, tokenType TokenType) (string, error) {
-	if subject == "" {
+	return s.SignGrant(Grant{
+		Subject: subject, UserID: userID, AccountID: accountID, Tenant: tenant, Roles: roles,
+	}, tokenType)
+}
+
+func (s *Service) SignGrant(grant Grant, tokenType TokenType) (string, error) {
+	if grant.Subject == "" {
 		return "", ErrMissingSubject
 	}
 	if tokenType != AccessTokenType && tokenType != RefreshTokenType {
 		return "", ErrInvalidTokenType
+	}
+	if grant.Scope.size() > MaxScopeIDs {
+		return "", ErrScopeTooLarge
 	}
 	now := time.Now()
 	ttl := s.accessTokenTTL
 	if tokenType == RefreshTokenType {
 		ttl = s.refreshTokenTTL
 	}
+	var scope *Scope
+	if grant.Scope.Type != "" {
+		signed := grant.Scope.clone()
+		scope = &signed
+	}
 	claims := Claims{
-		UserID: userID, AccountID: accountID, Tenant: tenant,
-		Roles: append([]string(nil), roles...), TokenType: tokenType,
+		UserID: grant.UserID, AccountID: grant.AccountID, Tenant: grant.Tenant,
+		Roles: append([]string(nil), grant.Roles...), TokenType: tokenType,
+		Permissions: append([]string(nil), grant.Permissions...), IsSuper: grant.IsSuper,
+		Scope: scope,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: s.issuer, Subject: subject, ID: uuid.NewString(),
+			Issuer: s.issuer, Subject: grant.Subject, ID: uuid.NewString(),
 			IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},

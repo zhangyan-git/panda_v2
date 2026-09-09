@@ -2,21 +2,23 @@ package api
 
 import "net/http"
 
+// 错误码使用字符串常量，便于前端直接 switch 处理。
 const (
-	CodeOK               = 0
-	CodeInvalidRequest   = 40000
-	CodeUnauthorized     = 40100
-	CodeForbidden        = 40300
-	CodeNotFound         = 40400
-	CodeConflict         = 40900
-	CodeMethodNotAllowed = 40500
-	CodeInternal         = 50000
-	CodeUnavailable      = 50300
-	CodeTimeout          = 50400
-	CodeNotImplemented   = 50100
+	CodeOK               = "OK"
+	CodeInvalidRequest   = "INVALID_REQUEST"
+	CodeUnauthorized     = "UNAUTHORIZED"
+	CodeForbidden        = "FORBIDDEN"
+	CodeNotFound         = "NOT_FOUND"
+	CodeConflict         = "CONFLICT"
+	CodeMethodNotAllowed = "METHOD_NOT_ALLOWED"
+	CodeInternal         = "INTERNAL_ERROR"
+	CodeUnavailable      = "SERVICE_UNAVAILABLE"
+	CodeTimeout          = "TIMEOUT"
+	CodeNotImplemented   = "NOT_IMPLEMENTED"
 )
 
-func CodeForStatus(status int) int {
+// CodeForStatus 根据 HTTP 状态码返回对应的业务错误码字符串。
+func CodeForStatus(status int) string {
 	switch status {
 	case http.StatusBadRequest:
 		return CodeInvalidRequest

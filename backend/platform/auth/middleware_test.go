@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -96,6 +97,45 @@ func TestMiddlewareCanRequireSpecificTokenType(t *testing.T) {
 	}
 }
 
+func TestRequireRolesRejectsMissingAndMismatchedRoles(t *testing.T) {
+	nextCalled := false
+	handler := RequireRoles("admin")(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalled = true
+	}))
+	for name, identity := range map[string]Identity{
+		"missing identity": {},
+		"wrong role":       {Subject: "subject-1", Roles: []string{"merchant"}},
+		"empty roles":      {Subject: "subject-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			if identity.Subject != "" {
+				ctx = WithIdentity(ctx, identity)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+			}
+		})
+	}
+	if nextCalled {
+		t.Fatal("next handler should not be called")
+	}
+}
+
+func TestRequireRolesAllowsAnyMatchingRole(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(WithIdentity(context.Background(), Identity{Roles: []string{"merchant", "admin"}}))
+	response := httptest.NewRecorder()
+	RequireRoles("admin")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(response, req)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}
+
 func TestIdentityFromContextWithoutIdentity(t *testing.T) {
 	if _, ok := IdentityFromContext(nil); ok {
 		t.Fatal("nil context should not contain identity")
@@ -114,15 +154,15 @@ func assertUnauthorized(t *testing.T, response *httptest.ResponseRecorder) {
 		t.Fatalf("content type = %q, want application/json", response.Header().Get("Content-Type"))
 	}
 	var body struct {
-		Status  string `json:"status"`
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Data    any    `json:"data"`
+		Success      bool   `json:"success"`
+		ErrorCode    string `json:"errorCode"`
+		ErrorMessage string `json:"errorMessage"`
+		Data         any    `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("response is not JSON: %v", err)
 	}
-	if body.Status != "error" || body.Code != 40100 || body.Message != "unauthorized" || body.Data != nil {
-		t.Fatalf("unexpected envelope: %+v", body)
+	if body.Success || body.ErrorCode != "UNAUTHORIZED" || body.ErrorMessage != "unauthorized" || body.Data != nil {
+		t.Fatalf("unexpected response: %+v", body)
 	}
 }
