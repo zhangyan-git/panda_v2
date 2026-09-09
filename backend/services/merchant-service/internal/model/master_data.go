@@ -3,32 +3,12 @@ package model
 import "time"
 
 type Merchant struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Status       string    `json:"status"`
-	ContactName  string    `json:"contact_name"`
-	ContactPhone string    `json:"contact_phone"`
-	ContactEmail string    `json:"contact_email"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-}
-
-type Brand struct {
-	ID         string    `json:"id"`
-	MerchantID string    `json:"merchant_id"`
-	Name       string    `json:"name"`
-	Status     string    `json:"status"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-}
-
-type Store struct {
-	ID         string    `json:"id"`
-	MerchantID string    `json:"merchant_id"`
-	BrandID    string    `json:"brand_id,omitempty"`
-	Name       string    `json:"name"`
-	Status     string    `json:"status"`
-	Address    string    `json:"address"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID           string    `db:"id" json:"id"`
+	Name         string    `db:"name" json:"name"`
+	Status       string    `db:"status" json:"status"`
+	ContactName  string    `db:"contact_name" json:"contactName"`
+	ContactPhone string    `db:"contact_phone" json:"contactPhone"`
+	ContactEmail string    `db:"contact_email" json:"contactEmail"`
+	CreatedAt    time.Time `db:"created_at" json:"createdAt"`
+	UpdatedAt    time.Time `db:"updated_at" json:"updatedAt"`
 }

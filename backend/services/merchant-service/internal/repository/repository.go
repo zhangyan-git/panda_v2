@@ -10,6 +10,14 @@ import (
 
 var ErrUnavailable = errors.New("merchant repository is unavailable")
 
+type MerchantUserRepository interface {
+	ResetScopeByTarget(context.Context, string, string) error
+}
+
+type unavailableScope struct{}
+
+func (unavailableScope) ResetScopeByTarget(context.Context, string, string) error { return nil }
+
 type Repository interface {
 	Ping(context.Context) error
 	ListMerchants(context.Context) ([]model.Merchant, error)
@@ -23,11 +31,13 @@ func (unavailable) ListMerchants(context.Context) ([]model.Merchant, error) {
 	return nil, ErrUnavailable
 }
 
-type Postgres struct{ pool *pgxpool.Pool }
+type LegacyPostgres struct{ *pgMerchantRepo }
 
-func NewPostgres(pool *pgxpool.Pool) Repository    { return &Postgres{pool: pool} }
-func (r *Postgres) Ping(ctx context.Context) error { return r.pool.Ping(ctx) }
-func (r *Postgres) ListMerchants(ctx context.Context) ([]model.Merchant, error) {
+func NewLegacyPostgres(pool *pgxpool.Pool) Repository {
+	return &LegacyPostgres{pgMerchantRepo: &pgMerchantRepo{pool: pool}}
+}
+func (r *LegacyPostgres) Ping(ctx context.Context) error { return r.pool.Ping(ctx) }
+func (r *LegacyPostgres) ListMerchants(ctx context.Context) ([]model.Merchant, error) {
 	rows, err := r.pool.Query(ctx, `SELECT id, name, status, COALESCE(contact_name, ''), COALESCE(contact_phone, ''), COALESCE(contact_email, ''), created_at, updated_at FROM merchants ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err

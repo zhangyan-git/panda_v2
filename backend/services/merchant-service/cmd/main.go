@@ -28,7 +28,7 @@ func main() {
 
 	var repo repository.Repository
 	if pgx, ok := db.(*database.PGXPool); ok {
-		repo = repository.NewPostgres(pgx.Pool())
+		repo = repository.NewLegacyPostgres(pgx.Pool())
 	} else {
 		repo = repository.NewUnavailable()
 	}
