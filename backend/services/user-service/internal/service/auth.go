@@ -205,13 +205,13 @@ func (s *AdminUserService) UpdateStatus(ctx context.Context, id, status string) 
 // MerchantAuthService 商户账号登录/token 签发。
 // 账号由平台在「商户管理」中创建，username 全局唯一，登录只需 username+password。
 type MerchantAuthService struct {
-	users     repository.MerchantUserRepository
-	merchants repository.MerchantRepository
-	jwtSvc    *auth.Service
+	users  repository.MerchantUserRepository
+	access MerchantAccessPort
+	jwtSvc *auth.Service
 }
 
-func NewMerchantAuthService(users repository.MerchantUserRepository, merchants repository.MerchantRepository, jwtSvc *auth.Service) *MerchantAuthService {
-	return &MerchantAuthService{users: users, merchants: merchants, jwtSvc: jwtSvc}
+func NewMerchantAuthService(users repository.MerchantUserRepository, access MerchantAccessPort, jwtSvc *auth.Service) *MerchantAuthService {
+	return &MerchantAuthService{users: users, access: access, jwtSvc: jwtSvc}
 }
 
 // Login 校验链：账号存在 → 密码正确 → 账号 active → 商户 active；
@@ -227,12 +227,12 @@ func (s *MerchantAuthService) Login(ctx context.Context, username, password, ip 
 	if user.Status != "active" {
 		return nil, ErrMerchantUserDisabled
 	}
-	merchant, err := s.merchants.FindByID(ctx, user.MerchantID)
+	merchantStatus, err := s.access.FindStatus(ctx, user.MerchantID)
 	if err != nil {
 		return nil, err
 	}
-	if merchant.Status != "active" {
-		if merchant.Status == "pending" {
+	if merchantStatus != "active" {
+		if merchantStatus == "pending" {
 			return nil, ErrMerchantPending
 		}
 		return nil, ErrMerchantSuspended
@@ -263,9 +263,9 @@ func (s *MerchantAuthService) Profile(ctx context.Context, userID string) (*mode
 
 // MerchantName 返回账号所属商户的名称，供 /users/me 回显
 func (s *MerchantAuthService) MerchantName(ctx context.Context, merchantID string) (string, error) {
-	merchant, err := s.merchants.FindByID(ctx, merchantID)
+	merchantName, err := s.access.FindName(ctx, merchantID)
 	if err != nil {
 		return "", err
 	}
-	return merchant.Name, nil
+	return merchantName, nil
 }

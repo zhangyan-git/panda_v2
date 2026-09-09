@@ -64,8 +64,9 @@ func main() {
 		log.Fatalf("user-service: init casbin: %v", err)
 	}
 
+	merchantAccess := service.NewRepositoryMerchantAccess(merchantsRepo)
 	adminAuthSvc := service.NewAdminAuthService(adminRepo, bindingRepo, jwtSvc)
-	merchantAuthSvc := service.NewMerchantAuthService(merchantRepo, merchantsRepo, jwtSvc)
+	merchantAuthSvc := service.NewMerchantAuthService(merchantRepo, merchantAccess, jwtSvc)
 	adminUserSvc := service.NewAdminUserService(adminRepo)
 	roleSvc := service.NewAdminRoleService(roleRepo)
 	permSvc := service.NewAdminPermissionService(permRepo)
