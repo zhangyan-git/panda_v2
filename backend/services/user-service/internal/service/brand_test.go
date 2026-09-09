@@ -136,9 +136,9 @@ func (f *fakeMerchantUserRepo) UpdateScope(_ context.Context, id, scopeType, sco
 	return nil
 }
 
-func (f *fakeMerchantUserRepo) ResetScopeByTarget(_ context.Context, scopeID string) error {
+func (f *fakeMerchantUserRepo) ResetScopeByTarget(_ context.Context, scopeType, scopeID string) error {
 	for _, u := range f.users {
-		if u.ScopeID == scopeID {
+		if u.ScopeID == scopeID && u.ScopeType == scopeType {
 			u.ScopeType = "merchant"
 			u.ScopeID = ""
 		}
@@ -202,6 +202,22 @@ func TestBrandCreateAndAuditFlow(t *testing.T) {
 	}
 	if _, err := svc.Create(ctx, BrandInput{MerchantID: "missing", Name: "X"}, "admin-1"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("商户不存在应返回 pgx.ErrNoRows, got %v", err)
+	}
+}
+
+func TestResetScopeByTargetMatchesType(t *testing.T) {
+	users := newFakeMerchantUserRepo()
+	users.users["brand-user"] = &model.MerchantUser{ID: "brand-user", ScopeType: "brand", ScopeID: "same-id"}
+	users.users["store-user"] = &model.MerchantUser{ID: "store-user", ScopeType: "store", ScopeID: "same-id"}
+
+	if err := users.ResetScopeByTarget(context.Background(), "brand", "same-id"); err != nil {
+		t.Fatalf("品牌范围回收失败: %v", err)
+	}
+	if users.users["brand-user"].ScopeType != "merchant" || users.users["brand-user"].ScopeID != "" {
+		t.Fatalf("品牌范围未回收: %+v", users.users["brand-user"])
+	}
+	if users.users["store-user"].ScopeType != "store" || users.users["store-user"].ScopeID != "same-id" {
+		t.Fatalf("跨类型门店范围被错误回收: %+v", users.users["store-user"])
 	}
 }
 
@@ -282,7 +298,7 @@ func TestScopeValidation(t *testing.T) {
 	users := newFakeMerchantUserRepo()
 	brands := newFakeBrandRepo()
 	stores := newFakeStoreRepo()
-	svc := NewMerchantAccountService(NewRepositoryMerchantAccess(merchants), users, brands, stores)
+	svc := NewMerchantAccountService(NewRepositoryMerchantAccess(merchants), users, NewRepositoryMerchantResourceAccess(brands, stores))
 	ctx := context.Background()
 
 	seedMerchant(merchants, "m1", "active")

@@ -16,12 +16,11 @@ import (
 type MerchantAccountService struct {
 	merchants MerchantAccessPort
 	users     repository.MerchantUserRepository
-	brands    repository.BrandRepository
-	stores    repository.StoreRepository
+	resources MerchantResourceAccess
 }
 
-func NewMerchantAccountService(merchants MerchantAccessPort, users repository.MerchantUserRepository, brands repository.BrandRepository, stores repository.StoreRepository) *MerchantAccountService {
-	return &MerchantAccountService{merchants: merchants, users: users, brands: brands, stores: stores}
+func NewMerchantAccountService(merchants MerchantAccessPort, users repository.MerchantUserRepository, resources MerchantResourceAccess) *MerchantAccountService {
+	return &MerchantAccountService{merchants: merchants, users: users, resources: resources}
 }
 
 func (s *MerchantAccountService) ListUsers(ctx context.Context, merchantID string) ([]*model.MerchantUser, error) {
@@ -39,14 +38,14 @@ func (s *MerchantAccountService) validateScope(ctx context.Context, merchantID, 
 		if scopeID == "" {
 			return ErrScopeIDRequired
 		}
-		brand, err := s.brands.FindByID(ctx, scopeID)
+		merchantResourceID, err := s.resources.FindBrandMerchantID(ctx, scopeID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrScopeOutOfMerchant
 			}
 			return err
 		}
-		if brand.MerchantID != merchantID {
+		if merchantResourceID != merchantID {
 			return ErrScopeOutOfMerchant
 		}
 		return nil
@@ -54,14 +53,14 @@ func (s *MerchantAccountService) validateScope(ctx context.Context, merchantID, 
 		if scopeID == "" {
 			return ErrScopeIDRequired
 		}
-		store, err := s.stores.FindByID(ctx, scopeID)
+		merchantResourceID, err := s.resources.FindStoreMerchantID(ctx, scopeID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrScopeOutOfMerchant
 			}
 			return err
 		}
-		if store.MerchantID != merchantID {
+		if merchantResourceID != merchantID {
 			return ErrScopeOutOfMerchant
 		}
 		return nil

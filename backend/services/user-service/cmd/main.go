@@ -73,7 +73,7 @@ func main() {
 	bindingSvc := service.NewAdminBindingService(bindingRepo, enforcer)
 	menuSvc := service.NewAdminMenuService(menuRepo, roleRepo, bindingRepo)
 	merchantSvc := service.NewAdminMerchantService(merchantsRepo, merchantsRepo)
-	merchantAccountSvc := service.NewMerchantAccountService(merchantAccess, merchantRepo, brandsRepo, storesRepo)
+	merchantAccountSvc := service.NewMerchantAccountService(merchantAccess, merchantRepo, service.NewRepositoryMerchantResourceAccess(brandsRepo, storesRepo))
 	brandSvc := service.NewAdminBrandService(brandsRepo, merchantsRepo, brandAuditRepo, merchantRepo)
 	storeSvc := service.NewAdminStoreService(storesRepo, brandsRepo, merchantsRepo, storeAuditRepo, merchantRepo)
 

@@ -103,7 +103,7 @@ type MerchantUserRepository interface {
 	Create(ctx context.Context, u *model.MerchantUser) error
 	UpdateStatus(ctx context.Context, id, status string) error
 	UpdateScope(ctx context.Context, id, scopeType, scopeID string, isAdmin bool) error
-	ResetScopeByTarget(ctx context.Context, scopeID string) error
+	ResetScopeByTarget(ctx context.Context, scopeType, scopeID string) error
 	TouchLogin(ctx context.Context, id, ip string) error
 	Delete(ctx context.Context, id string) error
 }
@@ -205,12 +205,12 @@ func (r *pgMerchantUserRepo) UpdateScope(ctx context.Context, id, scopeType, sco
 }
 
 // ResetScopeByTarget 品牌/门店删除时，把指向它的账号回收为商户级范围
-func (r *pgMerchantUserRepo) ResetScopeByTarget(ctx context.Context, scopeID string) error {
+func (r *pgMerchantUserRepo) ResetScopeByTarget(ctx context.Context, scopeType, scopeID string) error {
 	const q = `
 		UPDATE merchant_users
 		SET scope_type = 'merchant', scope_id = NULL, updated_at = NOW()
-		WHERE scope_id = $1 AND scope_type IN ('brand', 'store')`
-	_, err := r.pool.Exec(ctx, q, scopeID)
+		WHERE scope_id = $2 AND scope_type = $1`
+	_, err := r.pool.Exec(ctx, q, scopeType, scopeID)
 	return err
 }
 

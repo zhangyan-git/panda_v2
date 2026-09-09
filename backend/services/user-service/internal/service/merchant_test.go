@@ -178,7 +178,7 @@ func TestMerchantDeleteBlockedByUsers(t *testing.T) {
 func TestMerchantCreateUserDuplicateUsername(t *testing.T) {
 	merchants := newFakeMerchantRepo()
 	users := newFakeMerchantUserRepo()
-	svc := NewMerchantAccountService(NewRepositoryMerchantAccess(merchants), users, nil, nil)
+	svc := NewMerchantAccountService(NewRepositoryMerchantAccess(merchants), users, nil)
 	ctx := context.Background()
 
 	seedMerchant(merchants, "m1", "active")

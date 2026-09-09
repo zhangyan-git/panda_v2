@@ -186,7 +186,7 @@ func (s *AdminBrandService) Delete(ctx context.Context, id string) error {
 	if hasStores {
 		return ErrBrandHasStores
 	}
-	if err := s.users.ResetScopeByTarget(ctx, id); err != nil {
+	if err := s.users.ResetScopeByTarget(ctx, "brand", id); err != nil {
 		return err
 	}
 	return s.brands.Delete(ctx, id)
@@ -402,7 +402,7 @@ func (s *AdminStoreService) Delete(ctx context.Context, id string) error {
 	if _, err := s.stores.FindByID(ctx, id); err != nil {
 		return err
 	}
-	if err := s.users.ResetScopeByTarget(ctx, id); err != nil {
+	if err := s.users.ResetScopeByTarget(ctx, "store", id); err != nil {
 		return err
 	}
 	return s.stores.Delete(ctx, id)
