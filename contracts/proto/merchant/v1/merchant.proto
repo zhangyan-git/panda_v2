@@ -1,6 +1,33 @@
 syntax = "proto3";
+
 package panda.merchant.v1;
+
 option go_package = "github.com/panda-dev/panda-v2/contracts/proto/merchant/v1";
+
+// MerchantStatus is the lifecycle state of a merchant tenant.
+// The existing Merchant.status string remains the wire-compatible representation.
+enum MerchantStatus {
+  MERCHANT_STATUS_UNSPECIFIED = 0;
+  MERCHANT_STATUS_PENDING = 1;
+  MERCHANT_STATUS_ACTIVE = 2;
+  MERCHANT_STATUS_SUSPENDED = 3;
+}
+
+// ResourceStatus is the operational state of a brand or store.
+// Audit state is intentionally separate from operational availability.
+enum ResourceStatus {
+  RESOURCE_STATUS_UNSPECIFIED = 0;
+  RESOURCE_STATUS_ACTIVE = 1;
+  RESOURCE_STATUS_DISABLED = 2;
+}
+
+// AuditStatus describes whether a brand or store change has passed review.
+enum AuditStatus {
+  AUDIT_STATUS_UNSPECIFIED = 0;
+  AUDIT_STATUS_PENDING = 1;
+  AUDIT_STATUS_APPROVED = 2;
+  AUDIT_STATUS_REJECTED = 3;
+}
 
 message Merchant {
   string id = 1;
@@ -9,8 +36,27 @@ message Merchant {
   string contact_phone = 4;
   string business_license = 5;
   string address = 6;
+  // Deprecated in favor of status_code for new clients. Values are pending, active, or suspended.
   string status = 7;
+  // Additive enum form of status; readers must continue accepting status.
+  MerchantStatus status_code = 8;
 }
+
+message Brand {
+  string id = 1;
+  string merchant_id = 2;
+  string name = 3;
+  string logo = 4;
+  string banner = 5;
+  string description = 6;
+  string status = 7;
+  string audit_status = 8;
+  bool visible = 9;
+  // Additive enum forms; status and audit_status remain available for older readers.
+  ResourceStatus status_code = 10;
+  AuditStatus audit_status_code = 11;
+}
+
 message Store {
   string id = 1;
   string merchant_id = 2;
@@ -25,15 +71,21 @@ message Store {
   string business_hours = 11;
   double longitude = 12;
   double latitude = 13;
+  // Deprecated in favor of status_code for new clients. Values are active or disabled.
   string status = 14;
   bool visible = 15;
+  string audit_status = 16;
+  ResourceStatus status_code = 17;
+  AuditStatus audit_status_code = 18;
 }
+
 message MerchantAccount {
   string account_id = 1;
   string merchant_id = 2;
   string username = 3;
   string status = 4;
 }
+
 message ListMerchantsRequest {}
 message ListMerchantsResponse { repeated Merchant merchants = 1; }
 message GetMerchantRequest { string id = 1; }
@@ -49,6 +101,14 @@ message MerchantProfileResponse { Merchant merchant = 1; }
 message MerchantStoresRequest {}
 message MerchantStoresResponse { repeated Store stores = 1; }
 
+// GetBrandMerchantRequest resolves a brand to its owning merchant without exposing brand data.
+message GetBrandMerchantRequest { string brand_id = 1; }
+message GetBrandMerchantResponse { string merchant_id = 1; }
+
+// GetStoreMerchantRequest resolves a store to its owning merchant without exposing store data.
+message GetStoreMerchantRequest { string store_id = 1; }
+message GetStoreMerchantResponse { string merchant_id = 1; }
+
 service MerchantService {
   rpc ListMerchants(ListMerchantsRequest) returns (ListMerchantsResponse);
   rpc GetMerchant(GetMerchantRequest) returns (GetMerchantResponse);
@@ -57,4 +117,6 @@ service MerchantService {
   rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
   rpc Profile(MerchantProfileRequest) returns (MerchantProfileResponse);
   rpc Stores(MerchantStoresRequest) returns (MerchantStoresResponse);
+  rpc GetBrandMerchant(GetBrandMerchantRequest) returns (GetBrandMerchantResponse);
+  rpc GetStoreMerchant(GetStoreMerchantRequest) returns (GetStoreMerchantResponse);
 }
