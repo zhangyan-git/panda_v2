@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -218,24 +219,14 @@ func NewMerchantAuthService(users repository.MerchantUserRepository, access Merc
 // 成功后尽力而为地记录最后登录时间/IP/次数，失败不影响登录
 func (s *MerchantAuthService) Login(ctx context.Context, username, password, ip string) (*LoginResult, error) {
 	user, err := s.users.FindByUsername(ctx, username)
-	if err != nil {
+	if err != nil || user == nil {
 		return nil, ErrInvalidCredentials
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 		return nil, ErrInvalidCredentials
 	}
-	if user.Status != "active" {
-		return nil, ErrMerchantUserDisabled
-	}
-	merchantStatus, err := s.access.FindStatus(ctx, user.MerchantID)
-	if err != nil {
+	if err := s.CheckAccess(ctx, user); err != nil {
 		return nil, err
-	}
-	if merchantStatus != "active" {
-		if merchantStatus == "pending" {
-			return nil, ErrMerchantPending
-		}
-		return nil, ErrMerchantSuspended
 	}
 
 	grant := auth.Grant{
@@ -254,6 +245,31 @@ func (s *MerchantAuthService) Login(ctx context.Context, username, password, ip 
 	}
 	_ = s.users.TouchLogin(ctx, user.ID, ip)
 	return &LoginResult{AccessToken: accessToken, RefreshToken: refreshToken}, nil
+}
+
+// CheckAccess 校验账号及所属商户的当前状态，供登录和 /users/me 复用。
+// 商户查询错误原样返回，由调用方区分商户缺失与依赖不可用。
+func (s *MerchantAuthService) CheckAccess(ctx context.Context, user *model.MerchantUser) error {
+	if user == nil || strings.TrimSpace(user.ID) == "" || strings.TrimSpace(user.MerchantID) == "" {
+		return errors.New("invalid merchant user profile")
+	}
+	if user.Status != "active" {
+		return ErrMerchantUserDisabled
+	}
+	merchantStatus, err := s.access.FindStatus(ctx, user.MerchantID)
+	if err != nil {
+		return err
+	}
+	switch merchantStatus {
+	case "active":
+		return nil
+	case "pending":
+		return ErrMerchantPending
+	case "suspended":
+		return ErrMerchantSuspended
+	default:
+		return errors.New("invalid merchant status")
+	}
 }
 
 // Profile 返回当前登录商户账号的信息

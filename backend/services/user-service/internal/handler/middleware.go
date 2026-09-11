@@ -9,7 +9,7 @@ import (
 )
 
 // RequirePermission returns a middleware that enforces Casbin policy.
-// code is the permission code stored in admin_permissions (e.g. "admin:roles:read").
+// code is the permission code stored in admin_permissions (e.g. "admin:roles:view").
 // The policy row in casbin_rule has act="*", so we pass "*" as the act here.
 func RequirePermission(enforcer *casbinpkg.Enforcer, code string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

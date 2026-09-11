@@ -12,6 +12,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+var (
+	ErrMerchantUsernameTaken = errors.New("用户名已存在")
+	ErrScopeTypeInvalid      = errors.New("无效的数据范围类型")
+	ErrScopeIDRequired       = errors.New("数据范围目标不能为空")
+	ErrScopeOutOfMerchant    = errors.New("数据范围目标不属于该商户")
+)
+
 // MerchantAccountService manages merchant login accounts and their data scopes.
 type MerchantAccountService struct {
 	merchants MerchantAccessPort
@@ -27,7 +34,51 @@ func (s *MerchantAccountService) ListUsers(ctx context.Context, merchantID strin
 	if _, err := s.merchants.FindStatus(ctx, merchantID); err != nil {
 		return nil, err
 	}
-	return s.users.FindByMerchant(ctx, merchantID)
+	users, err := s.users.FindByMerchant(ctx, merchantID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.decorateScopeNames(ctx, users...); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// decorateScopeNames fills in each account's scope display name. The names come
+// from the merchant database, so one RPC answers the whole batch instead of a
+// join the identity database can no longer make. A scope that no longer exists
+// is absent from the answer and simply leaves that account's name empty:
+// display data must not turn a listing into an error.
+func (s *MerchantAccountService) decorateScopeNames(ctx context.Context, users ...*model.MerchantUser) error {
+	var brandIDs, storeIDs []string
+	for _, u := range users {
+		switch {
+		case u == nil || u.ScopeID == "":
+		case u.ScopeType == "brand":
+			brandIDs = append(brandIDs, u.ScopeID)
+		case u.ScopeType == "store":
+			storeIDs = append(storeIDs, u.ScopeID)
+		}
+	}
+	if len(brandIDs) == 0 && len(storeIDs) == 0 {
+		return nil
+	}
+	brandNames, storeNames, err := s.resources.ScopeNames(ctx, brandIDs, storeIDs)
+	if err != nil {
+		return err
+	}
+	for _, u := range users {
+		if u == nil {
+			continue
+		}
+		switch u.ScopeType {
+		case "brand":
+			u.ScopeName = brandNames[u.ScopeID]
+		case "store":
+			u.ScopeName = storeNames[u.ScopeID]
+		}
+	}
+	return nil
 }
 
 func (s *MerchantAccountService) validateScope(ctx context.Context, merchantID, scopeType, scopeID string) error {
@@ -98,6 +149,9 @@ func (s *MerchantAccountService) CreateUser(ctx context.Context, merchantID, use
 	if err := s.users.Create(ctx, u); err != nil {
 		return nil, err
 	}
+	// 账号已经落库，这里只是把范围名称补进响应；解析失败就留空，
+	// 不能让一次「已成功」的创建看起来像失败。列表接口会再查一次。
+	_ = s.decorateScopeNames(ctx, u)
 	return u, nil
 }
 

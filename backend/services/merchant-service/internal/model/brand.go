@@ -28,15 +28,20 @@ type Brand struct {
 
 // Store 对应 stores 表，隶属商户与品牌的门店
 type Store struct {
-	ID            string     `db:"id"`
-	MerchantID    string     `db:"merchant_id"`
-	BrandID       string     `db:"brand_id"`
-	Name          string     `db:"name"`
-	Logo          string     `db:"logo"`
-	Photos        []string   `db:"photos"`
-	Province      string     `db:"province"`
-	City          string     `db:"city"`
-	District      string     `db:"district"`
+	ID         string   `db:"id"`
+	MerchantID string   `db:"merchant_id"`
+	BrandID    string   `db:"brand_id"`
+	Name       string   `db:"name"`
+	Logo       string   `db:"logo"`
+	Photos     []string `db:"photos"`
+	Province   string   `db:"province"`
+	City       string   `db:"city"`
+	District   string   `db:"district"`
+	// 区划编码与名称并存：名称给人看，编码用来回填、校验与迁移（见 003 迁移的注释）。
+	// 历史行为空，回填不上的也为空。
+	ProvinceCode  string     `db:"province_code"`
+	CityCode      string     `db:"city_code"`
+	DistrictCode  string     `db:"district_code"`
 	Address       string     `db:"address"`
 	Longitude     *float64   `db:"longitude"`
 	Latitude      *float64   `db:"latitude"`

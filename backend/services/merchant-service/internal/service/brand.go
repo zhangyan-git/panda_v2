@@ -202,6 +202,9 @@ type StoreInput struct {
 	Province      string
 	City          string
 	District      string
+	ProvinceCode  string
+	CityCode      string
+	DistrictCode  string
 	Address       string
 	Longitude     *float64
 	Latitude      *float64
@@ -274,6 +277,9 @@ func (s *AdminStoreService) Create(ctx context.Context, in StoreInput, operator 
 		Province:      in.Province,
 		City:          in.City,
 		District:      in.District,
+		ProvinceCode:  in.ProvinceCode,
+		CityCode:      in.CityCode,
+		DistrictCode:  in.DistrictCode,
 		Address:       in.Address,
 		Longitude:     in.Longitude,
 		Latitude:      in.Latitude,
@@ -322,6 +328,7 @@ func (s *AdminStoreService) Update(ctx context.Context, id string, in StoreInput
 	oldSnapshot := StoreInput{
 		MerchantID: old.MerchantID, BrandID: old.BrandID, Name: old.Name, Logo: old.Logo,
 		Photos: old.Photos, Province: old.Province, City: old.City, District: old.District,
+		ProvinceCode: old.ProvinceCode, CityCode: old.CityCode, DistrictCode: old.DistrictCode,
 		Address: old.Address, Longitude: old.Longitude, Latitude: old.Latitude,
 		Phone: old.Phone, ContactName: old.ContactName, ContactPhone: old.ContactPhone,
 		Detail: old.Detail, BusinessHours: old.BusinessHours, Remark: old.Remark, Visible: old.Visible,
@@ -333,6 +340,9 @@ func (s *AdminStoreService) Update(ctx context.Context, id string, in StoreInput
 	old.Province = in.Province
 	old.City = in.City
 	old.District = in.District
+	old.ProvinceCode = in.ProvinceCode
+	old.CityCode = in.CityCode
+	old.DistrictCode = in.DistrictCode
 	old.Address = in.Address
 	old.Longitude = in.Longitude
 	old.Latitude = in.Latitude

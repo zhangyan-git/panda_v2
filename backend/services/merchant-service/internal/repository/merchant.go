@@ -2,11 +2,13 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/panda-dev/panda-v2/backend/platform/audit"
 	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/model"
 )
 
@@ -18,15 +20,39 @@ type MerchantRepository interface {
 	Update(ctx context.Context, m *model.Merchant) error
 	UpdateStatus(ctx context.Context, id, status string) error
 	Delete(ctx context.Context, id string) error
-	HasUsers(ctx context.Context, id string) (bool, error)
+}
+
+// merchantSnapshot 是写入审计 before_data / after_data 的形状。
+// 商户名称与状态可用性都属于经营主体的关键属性，联系人一并留痕。
+type merchantSnapshot struct {
+	Name         string `json:"name"`
+	Status       string `json:"status"`
+	ContactName  string `json:"contact_name,omitempty"`
+	ContactPhone string `json:"contact_phone,omitempty"`
+	ContactEmail string `json:"contact_email,omitempty"`
+}
+
+// selectMerchantSnapshot 读锁定行并组装快照。前后快照都走它：变更后在同一事务里
+// 重读，记下的就是库里真实的最终值，而不是「按入参推断应该写成什么」。
+func selectMerchantSnapshot(ctx context.Context, tx pgx.Tx, id string) (merchantSnapshot, error) {
+	const q = `
+		SELECT name, status, COALESCE(contact_name, ''), COALESCE(contact_phone, ''), COALESCE(contact_email, '')
+		FROM merchants WHERE id = $1 FOR UPDATE`
+	var s merchantSnapshot
+	err := tx.QueryRow(ctx, q, id).Scan(&s.Name, &s.Status, &s.ContactName, &s.ContactPhone, &s.ContactEmail)
+	return s, err
 }
 
 type pgMerchantRepo struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	audit audit.Recorder
 }
 
-func NewMerchantRepository(pool *pgxpool.Pool) MerchantRepository {
-	return &pgMerchantRepo{pool: pool}
+func NewMerchantRepository(pool *pgxpool.Pool, recorder audit.Recorder) MerchantRepository {
+	if recorder == nil {
+		recorder = audit.Noop{}
+	}
+	return &pgMerchantRepo{pool: pool, audit: recorder}
 }
 
 // merchantColumns 统一 SELECT 列表，可空联系人列归一化为空字符串方便扫描
@@ -71,48 +97,131 @@ func (r *pgMerchantRepo) FindByID(ctx context.Context, id string) (*model.Mercha
 }
 
 func (r *pgMerchantRepo) Create(ctx context.Context, m *model.Merchant) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
 	const q = `
 		INSERT INTO merchants (id, name, status, contact_name, contact_phone, contact_email, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
-	_, err := r.pool.Exec(ctx, q,
+	if _, err := tx.Exec(ctx, q,
 		m.ID, m.Name, m.Status,
 		nullEmpty(m.ContactName), nullEmpty(m.ContactPhone), nullEmpty(m.ContactEmail),
 		m.CreatedAt, m.UpdatedAt,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	after, err := selectMerchantSnapshot(ctx, tx, m.ID)
+	if err != nil {
+		return err
+	}
+	if err := r.audit.Record(ctx, tx, audit.Entry{
+		Module: "merchants", Action: "create", Operation: "新增商户",
+		TargetType: "merchant", TargetID: m.ID, TargetName: m.Name,
+		MerchantID: m.ID,
+		After:      audit.Snapshot(after),
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // Update 只更新名称与联系人信息，状态流转走 UpdateStatus
 func (r *pgMerchantRepo) Update(ctx context.Context, m *model.Merchant) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	before, err := selectMerchantSnapshot(ctx, tx, m.ID)
+	if err != nil {
+		return err
+	}
 	const q = `
 		UPDATE merchants
 		SET name = $2, contact_name = $3, contact_phone = $4, contact_email = $5, updated_at = $6
 		WHERE id = $1`
-	_, err := r.pool.Exec(ctx, q,
+	if _, err := tx.Exec(ctx, q,
 		m.ID, m.Name,
 		nullEmpty(m.ContactName), nullEmpty(m.ContactPhone), nullEmpty(m.ContactEmail),
 		m.UpdatedAt,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	after, err := selectMerchantSnapshot(ctx, tx, m.ID)
+	if err != nil {
+		return err
+	}
+	if err := r.audit.Record(ctx, tx, audit.Entry{
+		Module: "merchants", Action: "update", Operation: "修改商户",
+		TargetType: "merchant", TargetID: m.ID, TargetName: after.Name,
+		MerchantID: m.ID,
+		Before:     audit.Snapshot(before), After: audit.Snapshot(after),
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *pgMerchantRepo) UpdateStatus(ctx context.Context, id, status string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	before, err := selectMerchantSnapshot(ctx, tx, id)
+	if err != nil {
+		return err
+	}
 	const q = `UPDATE merchants SET status = $1 WHERE id = $2`
-	_, err := r.pool.Exec(ctx, q, status, id)
-	return err
+	if _, err := tx.Exec(ctx, q, status, id); err != nil {
+		return err
+	}
+	after, err := selectMerchantSnapshot(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if err := r.audit.Record(ctx, tx, audit.Entry{
+		Module: "merchants", Action: "update_status", Operation: "修改商户状态",
+		TargetType: "merchant", TargetID: id, TargetName: after.Name,
+		MerchantID: id,
+		Before:     audit.Snapshot(before), After: audit.Snapshot(after),
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *pgMerchantRepo) Delete(ctx context.Context, id string) error {
-	const q = `DELETE FROM merchants WHERE id = $1`
-	_, err := r.pool.Exec(ctx, q, id)
-	return err
-}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
 
-func (r *pgMerchantRepo) HasUsers(ctx context.Context, id string) (bool, error) {
-	const q = `SELECT EXISTS(SELECT 1 FROM merchant_users WHERE merchant_id = $1)`
-	var exists bool
-	err := r.pool.QueryRow(ctx, q, id).Scan(&exists)
-	return exists, err
+	before, err := selectMerchantSnapshot(ctx, tx, id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	const q = `DELETE FROM merchants WHERE id = $1`
+	if _, err := tx.Exec(ctx, q, id); err != nil {
+		return err
+	}
+	if err := r.audit.Record(ctx, tx, audit.Entry{
+		Module: "merchants", Action: "delete", Operation: "删除商户",
+		TargetType: "merchant", TargetID: id, TargetName: before.Name,
+		MerchantID: id,
+		Before:     audit.Snapshot(before),
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func scanMerchant(row pgx.Row) (*model.Merchant, error) {

@@ -34,6 +34,7 @@ type MerchantUser struct {
 	CreatedAt    time.Time  `db:"created_at"`
 	UpdatedAt    time.Time  `db:"updated_at"`
 
-	// ScopeName 联表计算列（范围品牌/门店名称），仅展示用，不入库
+	// ScopeName 范围品牌/门店名称，仅展示用，不入库；brands/stores 在商户库，
+	// 由 service 层经 gRPC 批量解析后填入
 	ScopeName string `db:"scope_name"`
 }

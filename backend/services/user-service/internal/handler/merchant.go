@@ -10,36 +10,13 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/service"
 )
 
-// AdminMerchantHandler 平台侧商户管理接口：商户 CRUD + 状态流转 + 商户账号维护
+// AdminMerchantHandler 平台侧商户账号管理接口：商户登录账号维护，商户主体本身由 merchant-service 负责
 type AdminMerchantHandler struct {
-	svc        *service.AdminMerchantService
 	accountSvc *service.MerchantAccountService
 }
 
-func NewAdminMerchantHandler(svc *service.AdminMerchantService, accountSvc *service.MerchantAccountService) *AdminMerchantHandler {
-	return &AdminMerchantHandler{svc: svc, accountSvc: accountSvc}
-}
-
-type merchantResponse struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Status       string `json:"status"`
-	ContactName  string `json:"contactName"`
-	ContactPhone string `json:"contactPhone"`
-	ContactEmail string `json:"contactEmail"`
-	CreatedAt    string `json:"createdAt"`
-}
-
-func toMerchantResponse(m *model.Merchant) merchantResponse {
-	return merchantResponse{
-		ID:           m.ID,
-		Name:         m.Name,
-		Status:       m.Status,
-		ContactName:  m.ContactName,
-		ContactPhone: m.ContactPhone,
-		ContactEmail: m.ContactEmail,
-		CreatedAt:    m.CreatedAt.Format("2006-01-02T15:04:05Z"),
-	}
+func NewAdminMerchantHandler(accountSvc *service.MerchantAccountService) *AdminMerchantHandler {
+	return &AdminMerchantHandler{accountSvc: accountSvc}
 }
 
 type merchantUserResponse struct {
@@ -52,7 +29,7 @@ type merchantUserResponse struct {
 	IsAdmin     bool   `json:"isAdmin"`
 	ScopeType   string `json:"scopeType"`
 	ScopeID     string `json:"scopeId"`
-	ScopeName   string `json:"scopeName"` // 联表计算列：范围品牌/门店名称
+	ScopeName   string `json:"scopeName"` // 范围品牌/门店名称，经 merchant-service 解析
 	LastLoginAt string `json:"lastLoginAt"`
 	CreatedAt   string `json:"createdAt"`
 }
@@ -76,168 +53,6 @@ func toMerchantUserResponse(u *model.MerchantUser) merchantUserResponse {
 		LastLoginAt: lastLogin,
 		CreatedAt:   u.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	}
-}
-
-// List godoc
-//
-//	@Summary     获取商户列表（name 模糊、status 等值过滤，均可选）
-//	@Tags        admin-merchants
-//	@Produce     json
-//	@Security    BearerAuth
-//	@Param       name   query string false "商户名称模糊过滤"
-//	@Param       status query string false "状态过滤 pending/active/suspended"
-//	@Success     200 {object} api.Response{data=[]merchantResponse}
-//	@Router      /v1/admin/merchants [get]
-func (h *AdminMerchantHandler) List(w http.ResponseWriter, r *http.Request) {
-	name := r.URL.Query().Get("name")
-	status := r.URL.Query().Get("status")
-	merchants, err := h.svc.List(r.Context(), name, status)
-	if err != nil {
-		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "服务内部错误")
-		return
-	}
-	resp := make([]merchantResponse, len(merchants))
-	for i, m := range merchants {
-		resp[i] = toMerchantResponse(m)
-	}
-	api.Success(w, resp)
-}
-
-// Get godoc
-//
-//	@Summary     获取单个商户
-//	@Tags        admin-merchants
-//	@Produce     json
-//	@Security    BearerAuth
-//	@Param       id path string true "商户ID"
-//	@Success     200 {object} api.Response{data=merchantResponse}
-//	@Failure     404 {object} api.Response
-//	@Router      /v1/admin/merchants/{id} [get]
-func (h *AdminMerchantHandler) Get(w http.ResponseWriter, r *http.Request) {
-	id := pathVar(r, "id")
-	m, err := h.svc.GetByID(r.Context(), id)
-	if err != nil {
-		writeMerchantError(w, err, "服务内部错误")
-		return
-	}
-	api.Success(w, toMerchantResponse(m))
-}
-
-// merchantRequest 创建/更新商户；status 不在 body 中，只走 PATCH 状态接口
-type merchantRequest struct {
-	Name         string `json:"name"`
-	ContactName  string `json:"contactName"`
-	ContactPhone string `json:"contactPhone"`
-	ContactEmail string `json:"contactEmail"`
-}
-
-// Create godoc
-//
-//	@Summary     创建商户（初始状态 pending 待审核）
-//	@Tags        admin-merchants
-//	@Accept      json
-//	@Produce     json
-//	@Security    BearerAuth
-//	@Param       body body merchantRequest true "商户信息"
-//	@Success     200 {object} api.Response{data=merchantResponse}
-//	@Failure     400 {object} api.Response
-//	@Router      /v1/admin/merchants [post]
-func (h *AdminMerchantHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var req merchantRequest
-	if err := decodeJSON(r, &req); err != nil {
-		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "请求格式错误")
-		return
-	}
-	m, err := h.svc.Create(r.Context(), req.Name, req.ContactName, req.ContactPhone, req.ContactEmail)
-	if err != nil {
-		writeMerchantError(w, err, "创建失败")
-		return
-	}
-	api.Success(w, toMerchantResponse(m))
-}
-
-// Update godoc
-//
-//	@Summary     更新商户（名称与联系人，不含状态）
-//	@Tags        admin-merchants
-//	@Accept      json
-//	@Produce     json
-//	@Security    BearerAuth
-//	@Param       id   path string         true "商户ID"
-//	@Param       body body merchantRequest true "商户信息"
-//	@Success     200 {object} api.Response{data=merchantResponse}
-//	@Failure     400 {object} api.Response
-//	@Failure     404 {object} api.Response
-//	@Router      /v1/admin/merchants/{id} [put]
-func (h *AdminMerchantHandler) Update(w http.ResponseWriter, r *http.Request) {
-	id := pathVar(r, "id")
-	var req merchantRequest
-	if err := decodeJSON(r, &req); err != nil {
-		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "请求格式错误")
-		return
-	}
-	m, err := h.svc.Update(r.Context(), id, req.Name, req.ContactName, req.ContactPhone, req.ContactEmail)
-	if err != nil {
-		writeMerchantError(w, err, "更新失败")
-		return
-	}
-	api.Success(w, toMerchantResponse(m))
-}
-
-// updateMerchantStatusRequest 状态流转（updateStatusRequest 已被 handler/user.go 占用）
-type updateMerchantStatusRequest struct {
-	Status string `json:"status"` // active | suspended
-}
-
-// UpdateStatus godoc
-//
-//	@Summary     商户状态流转（pending→active 审核通过 / active→suspended 暂停 / suspended→active 恢复）
-//	@Tags        admin-merchants
-//	@Accept      json
-//	@Produce     json
-//	@Security    BearerAuth
-//	@Param       id   path string                       true "商户ID"
-//	@Param       body body updateMerchantStatusRequest true "目标状态"
-//	@Success     200 {object} api.Response
-//	@Failure     400 {object} api.Response
-//	@Failure     404 {object} api.Response
-//	@Router      /v1/admin/merchants/{id}/status [patch]
-func (h *AdminMerchantHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
-	id := pathVar(r, "id")
-	var req updateMerchantStatusRequest
-	if err := decodeJSON(r, &req); err != nil {
-		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "请求格式错误")
-		return
-	}
-	if req.Status != "active" && req.Status != "suspended" {
-		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "status 只能为 active 或 suspended")
-		return
-	}
-	if err := h.svc.UpdateStatus(r.Context(), id, req.Status); err != nil {
-		writeMerchantError(w, err, "操作失败")
-		return
-	}
-	api.Success(w, nil)
-}
-
-// Delete godoc
-//
-//	@Summary     删除商户（名下存在账号时拒绝）
-//	@Tags        admin-merchants
-//	@Produce     json
-//	@Security    BearerAuth
-//	@Param       id path string true "商户ID"
-//	@Success     200 {object} api.Response
-//	@Failure     400 {object} api.Response
-//	@Failure     404 {object} api.Response
-//	@Router      /v1/admin/merchants/{id} [delete]
-func (h *AdminMerchantHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	id := pathVar(r, "id")
-	if err := h.svc.Delete(r.Context(), id); err != nil {
-		writeMerchantError(w, err, "删除失败")
-		return
-	}
-	api.Success(w, nil)
 }
 
 // ListUsers godoc
@@ -397,13 +212,10 @@ func (h *AdminMerchantHandler) DeleteUser(w http.ResponseWriter, r *http.Request
 	api.Success(w, nil)
 }
 
-// writeMerchantError 将商户业务错误映射到 HTTP 状态码
+// writeMerchantError 将商户账号业务错误映射到 HTTP 状态码
 func writeMerchantError(w http.ResponseWriter, err error, internalMsg string) {
 	switch {
-	case errors.Is(err, service.ErrMerchantNameRequired),
-		errors.Is(err, service.ErrMerchantStatusTransition),
-		errors.Is(err, service.ErrMerchantHasUsers),
-		errors.Is(err, service.ErrMerchantUsernameTaken),
+	case errors.Is(err, service.ErrMerchantUsernameTaken),
 		errors.Is(err, service.ErrScopeTypeInvalid),
 		errors.Is(err, service.ErrScopeIDRequired),
 		errors.Is(err, service.ErrScopeOutOfMerchant):

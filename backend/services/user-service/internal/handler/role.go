@@ -3,7 +3,10 @@ package handler
 import (
 	"net/http"
 
+	"errors"
+	"github.com/jackc/pgx/v5"
 	"github.com/panda-dev/panda-v2/backend/platform/api"
+	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/service"
 )
 
@@ -72,7 +75,9 @@ type createRoleRequest struct {
 //	@Security    BearerAuth
 //	@Param       body body createRoleRequest true "角色信息"
 //	@Success     200 {object} api.Response{data=roleResponse}
-//	@Failure     400 {object} api.Response
+//	@Failure     400 {object} api.Response "角色代码为空、含 CSV 特殊字符或为保留代码"
+//	@Failure     409 {object} api.Response "角色代码已存在或存在同名平台授权规则"
+//	@Failure     500 {object} api.Response
 //	@Router      /v1/admin/roles [post]
 func (h *AdminRoleHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req createRoleRequest
@@ -86,7 +91,8 @@ func (h *AdminRoleHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	role, err := h.svc.Create(r.Context(), req.Code, req.Name, req.Description)
 	if err != nil {
-		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "创建失败")
+		status, code, message := roleHTTPError(err, "创建失败")
+		api.Error(w, status, code, message)
 		return
 	}
 	api.Success(w, toRoleResponse(role))
@@ -108,8 +114,10 @@ type updateRoleRequest struct {
 //	@Param       id   path string           true "角色ID"
 //	@Param       body body updateRoleRequest true "角色信息"
 //	@Success     200 {object} api.Response{data=roleResponse}
-//	@Failure     400 {object} api.Response
-//	@Failure     404 {object} api.Response
+//	@Failure     400 {object} api.Response "角色代码为空、含 CSV 特殊字符或为保留代码"
+//	@Failure     404 {object} api.Response "角色不存在"
+//	@Failure     409 {object} api.Response "角色代码已存在或存在同名平台授权规则"
+//	@Failure     500 {object} api.Response "数据库失败或提交后权限刷新失败"
 //	@Router      /v1/admin/roles/{id} [put]
 func (h *AdminRoleHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := pathVar(r, "id")
@@ -124,7 +132,8 @@ func (h *AdminRoleHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	role, err := h.svc.Update(r.Context(), id, req.Code, req.Name, req.Description)
 	if err != nil {
-		api.Error(w, http.StatusNotFound, api.CodeNotFound, "角色不存在")
+		status, code, message := roleHTTPError(err, "更新失败")
+		api.Error(w, status, code, message)
 		return
 	}
 	api.Success(w, toRoleResponse(role))
@@ -149,7 +158,23 @@ func (h *AdminRoleHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	api.Success(w, nil)
 }
 
-// AdminPermissionHandler 平台权限管理接口
+func roleHTTPError(err error, fallback string) (int, string, string) {
+	if errors.Is(err, model.ErrInvalidRoleCode) || errors.Is(err, model.ErrReservedRoleCode) {
+		return http.StatusBadRequest, api.CodeInvalidRequest, err.Error()
+	}
+	if errors.Is(err, model.ErrRoleCodeConflict) {
+		// 冲突原因可能包装了底层驱动的原始错误，只返回稳定文案，避免泄漏 SQL 细节。
+		return http.StatusConflict, api.CodeConflict, model.ErrRoleCodeConflict.Error()
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return http.StatusNotFound, api.CodeNotFound, "角色不存在"
+	}
+	if errors.Is(err, service.ErrRolePolicyReload) {
+		return http.StatusInternalServerError, api.CodeInternal, err.Error()
+	}
+	return http.StatusInternalServerError, api.CodeInternal, fallback
+}
+
 type AdminPermissionHandler struct {
 	svc *service.AdminPermissionService
 }
@@ -328,7 +353,7 @@ type assignPermsRequest struct {
 
 // AssignPermissions godoc
 //
-//	@Summary     给角色分配权限
+//	@Summary     整体替换角色权限（空列表清空）
 //	@Tags        admin-bindings
 //	@Accept      json
 //	@Produce     json
@@ -377,7 +402,7 @@ type assignRolesRequest struct {
 
 // AssignRoles godoc
 //
-//	@Summary     给用户分配角色
+//	@Summary     整体替换用户角色（空列表清空）
 //	@Tags        admin-bindings
 //	@Accept      json
 //	@Produce     json

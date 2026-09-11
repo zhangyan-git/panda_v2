@@ -3,6 +3,9 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"github.com/panda-dev/panda-v2/backend/platform/auth"
@@ -74,16 +77,30 @@ func (h *AdminAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 //	@Security    BearerAuth
 //	@Success     200 {object} api.Response{data=meResponse}
 //	@Failure     401 {object} api.Response
+//	@Failure     403 {object} api.Response "非平台身份或账号已禁用"
+//	@Failure     503 {object} api.Response "账号状态查询不可用"
 //	@Router      /v1/admin/users/me [get]
 func (h *AdminAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	identity, ok := auth.IdentityFromRequest(r)
-	if !ok {
+	if !ok || identity.UserID == "" || identity.Subject != identity.UserID {
 		api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, "未登录")
 		return
 	}
+	if identity.Tenant != "" {
+		api.Error(w, http.StatusForbidden, api.CodeForbidden, "非平台管理员")
+		return
+	}
 	user, err := h.authSvc.Profile(r.Context(), identity.UserID)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, "账号不存在")
+		return
+	}
+	if err != nil || user == nil || user.ID != identity.UserID {
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "账号服务暂不可用")
+		return
+	}
+	if user.Status != "active" {
+		api.Error(w, http.StatusForbidden, api.CodeForbidden, "账号已禁用")
 		return
 	}
 	// 角色/权限取库中实时绑定，不用 token claims（登录时签发，会过期失真）
@@ -229,22 +246,53 @@ type merchantMeResponse struct {
 //	@Produce     json
 //	@Security    BearerAuth
 //	@Success     200 {object} api.Response{data=merchantMeResponse}
-//	@Failure     401 {object} api.Response
+//	@Failure     401 {object} api.Response "身份无效或账号不存在"
+//	@Failure     403 {object} api.Response "租户不符、账号禁用或商户不存在/待审核/已暂停"
+//	@Failure     503 {object} api.Response "账号或商户查询不可用"
 //	@Router      /v1/merchant/users/me [get]
 func (h *MerchantAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	identity, ok := auth.IdentityFromRequest(r)
-	if !ok {
+	if !ok || strings.TrimSpace(identity.UserID) == "" || identity.Subject != identity.UserID {
 		api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, "未登录")
 		return
 	}
+	if strings.TrimSpace(identity.Tenant) == "" {
+		api.Error(w, http.StatusForbidden, api.CodeForbidden, "非商户身份")
+		return
+	}
 	user, err := h.authSvc.Profile(r.Context(), identity.UserID)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, "账号不存在")
 		return
 	}
+	if err != nil || user == nil || user.ID != identity.UserID || strings.TrimSpace(user.MerchantID) == "" {
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "账号服务暂不可用")
+		return
+	}
+	if user.MerchantID != identity.Tenant {
+		api.Error(w, http.StatusForbidden, api.CodeForbidden, "账号不属于当前商户")
+		return
+	}
+	if err := h.authSvc.CheckAccess(r.Context(), user); err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			api.Error(w, http.StatusForbidden, api.CodeForbidden, "商户不存在")
+		case errors.Is(err, service.ErrMerchantUserDisabled),
+			errors.Is(err, service.ErrMerchantPending),
+			errors.Is(err, service.ErrMerchantSuspended):
+			api.Error(w, http.StatusForbidden, api.CodeForbidden, err.Error())
+		default:
+			api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "商户服务暂不可用")
+		}
+		return
+	}
 	merchantName, err := h.authSvc.MerchantName(r.Context(), user.MerchantID)
-	if err != nil {
-		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "服务内部错误")
+	if errors.Is(err, pgx.ErrNoRows) {
+		api.Error(w, http.StatusForbidden, api.CodeForbidden, "商户不存在")
+		return
+	}
+	if err != nil || strings.TrimSpace(merchantName) == "" {
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "商户服务暂不可用")
 		return
 	}
 	api.Success(w, merchantMeResponse{

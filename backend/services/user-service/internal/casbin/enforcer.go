@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/casbin/casbin/v2"
 	"github.com/casbin/casbin/v2/model"
@@ -85,7 +86,8 @@ func (a *pgAdapter) RemoveFilteredPolicy(string, string, int, ...string) error {
 
 // Enforcer wraps casbin.Enforcer and adds a Reload method for after policy changes.
 type Enforcer struct {
-	e *casbin.Enforcer
+	e  *casbin.Enforcer
+	mu sync.RWMutex
 }
 
 // New creates an Enforcer backed by the given pgx pool.
@@ -104,11 +106,15 @@ func New(pool *pgxpool.Pool) (*Enforcer, error) {
 
 // Enforce returns true if subject sub in domain dom may perform act on obj.
 func (e *Enforcer) Enforce(sub, dom, obj, act string) (bool, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return e.e.Enforce(sub, dom, obj, act)
 }
 
 // Reload re-reads all policies from the database. Call this after policy changes.
 func (e *Enforcer) Reload() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	return e.e.LoadPolicy()
 }
 

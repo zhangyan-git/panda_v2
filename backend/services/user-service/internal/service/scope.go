@@ -1,40 +1,15 @@
 package service
 
-import (
-	"context"
+import "context"
 
-	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/repository"
-)
-
-// MerchantResourceAccess exposes only ownership checks needed by merchant accounts.
+// MerchantResourceAccess exposes only the brand/store facts merchant accounts
+// need: which merchant owns one, and what a batch of them is called. It is
+// implemented by the remote merchant-service client.
 type MerchantResourceAccess interface {
 	FindBrandMerchantID(ctx context.Context, brandID string) (string, error)
 	FindStoreMerchantID(ctx context.Context, storeID string) (string, error)
-}
-
-// RepositoryMerchantResourceAccess adapts the current repositories while resource
-// ownership remains in this service boundary.
-type RepositoryMerchantResourceAccess struct {
-	brands repository.BrandRepository
-	stores repository.StoreRepository
-}
-
-func NewRepositoryMerchantResourceAccess(brands repository.BrandRepository, stores repository.StoreRepository) *RepositoryMerchantResourceAccess {
-	return &RepositoryMerchantResourceAccess{brands: brands, stores: stores}
-}
-
-func (a *RepositoryMerchantResourceAccess) FindBrandMerchantID(ctx context.Context, brandID string) (string, error) {
-	brand, err := a.brands.FindByID(ctx, brandID)
-	if err != nil {
-		return "", err
-	}
-	return brand.MerchantID, nil
-}
-
-func (a *RepositoryMerchantResourceAccess) FindStoreMerchantID(ctx context.Context, storeID string) (string, error) {
-	store, err := a.stores.FindByID(ctx, storeID)
-	if err != nil {
-		return "", err
-	}
-	return store.MerchantID, nil
+	// ScopeNames resolves scope display names in one round trip. It replaces the
+	// brand/store join this service used to run, which the split made impossible:
+	// those tables belong to the merchant database.
+	ScopeNames(ctx context.Context, brandIDs, storeIDs []string) (map[string]string, map[string]string, error)
 }

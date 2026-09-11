@@ -10,6 +10,10 @@ import (
 
 // AuditRecordRepository 审核记录数据访问接口。
 // 品牌/门店两张审核表结构相同，仅表名与目标列名不同，用同一实现参数化。
+//
+// 本文件的写入刻意不产生后台审计事件：SetAudited 总是紧跟在同一次审核的
+// brands.SetAudit / stores.SetAudit 之后（见 service/brand.go），那一步已经记了
+// 一条含前后快照的审核审计。在这里再记一次，同一次点击会变成两条记录。
 type AuditRecordRepository interface {
 	Create(ctx context.Context, r *model.AuditRecord) error
 	FindLatestPending(ctx context.Context, targetID string) (*model.AuditRecord, error)

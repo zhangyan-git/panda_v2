@@ -106,6 +106,12 @@ func (h *AdminUserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "用户名和密码不能为空")
 		return
 	}
+	// name / email 在库里都是 NOT NULL，漏了校验就会变成一次 500「创建失败」，
+	// 把「少填了一个字段」伪装成服务端故障。这里挡在写库之前。
+	if req.Name == "" || req.Email == "" {
+		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "姓名和邮箱不能为空")
+		return
+	}
 	u, err := h.svc.CreateUser(r.Context(), req.Username, req.Password, req.Name, req.Email)
 	if err != nil {
 		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "创建失败")

@@ -13,9 +13,14 @@ import (
 )
 
 func main() {
-	dbURL := os.Getenv("DATABASE_URL")
+	// 种子数据全部属于身份域，拆库后落在身份库上。USER_DATABASE_URL 是那个库，
+	// 未配置时回落 DATABASE_URL（单库栈）。
+	dbURL := os.Getenv("USER_DATABASE_URL")
 	if dbURL == "" {
-		log.Fatal("DATABASE_URL not set")
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		log.Fatal("USER_DATABASE_URL (or DATABASE_URL) not set")
 	}
 
 	username := os.Getenv("DEV_ADMIN_USERNAME")
@@ -74,17 +79,17 @@ func main() {
 	fmt.Printf("✓ role 'super_admin' id=%s\n", roleID)
 
 	// 3. upsert permissions
-	permissions := []struct{ code, resource, action, group, name string }{
-		{"admin:users:read", "admin_users", "read", "admin-users", "查看管理员"},
-		{"admin:users:write", "admin_users", "write", "admin-users", "管理管理员"},
-		{"admin:roles:read", "admin_roles", "read", "roles", "查看角色"},
-		{"admin:roles:write", "admin_roles", "write", "roles", "管理角色"},
-		{"admin:roles:delete", "admin_roles", "delete", "roles", "删除角色"},
-		{"admin:permissions:read", "admin_permissions", "read", "permissions", "查看权限"},
-		{"admin:permissions:write", "admin_permissions", "write", "permissions", "管理权限"},
-		{"admin:permissions:delete", "admin_permissions", "delete", "permissions", "删除权限"},
-		{"admin:bindings:read", "admin_bindings", "read", "bindings", "查看绑定"},
-		{"admin:bindings:write", "admin_bindings", "write", "bindings", "管理绑定"},
+	permissions := []struct{ code, group, name string }{
+		{"admin:users:view", "用户管理", "查看管理员"},
+		{"admin:users:manage", "用户管理", "管理管理员"},
+		{"admin:roles:view", "角色管理", "查看角色"},
+		{"admin:roles:manage", "角色管理", "管理角色"},
+		{"admin:roles:delete", "角色管理", "删除角色"},
+		{"admin:permissions:view", "权限管理", "查看权限"},
+		{"admin:permissions:manage", "权限管理", "管理权限"},
+		{"admin:permissions:delete", "权限管理", "删除权限"},
+		{"admin:bindings:view", "绑定管理", "查看绑定"},
+		{"admin:bindings:manage", "绑定管理", "管理绑定"},
 	}
 	var permIDs []string
 	for _, p := range permissions {
@@ -93,9 +98,9 @@ func main() {
 		if err != nil {
 			permID = uuid.NewString()
 			_, err = pool.Exec(ctx, `
-				INSERT INTO admin_permissions (id, code, resource, action, perm_group, name, description, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-				permID, p.code, p.resource, p.action, p.group, p.name, "", now,
+				INSERT INTO admin_permissions (id, code, perm_group, name, description, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6)`,
+				permID, p.code, p.group, p.name, "", now,
 			)
 			if err != nil {
 				log.Fatalf("insert permission %s: %v", p.code, err)

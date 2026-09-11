@@ -24,6 +24,8 @@ func operatorOf(r *http.Request) string {
 // writeBrandError 品牌/门店业务错误 → HTTP 状态码
 func writeBrandError(w http.ResponseWriter, err error, internalMsg string) {
 	switch {
+	case errors.Is(err, repository.ErrUnavailable):
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "服务暂不可用")
 	case errors.Is(err, service.ErrBrandNameRequired),
 		errors.Is(err, service.ErrStoreNameRequired),
 		errors.Is(err, service.ErrBrandHasStores),
@@ -302,6 +304,7 @@ func (h *AdminBrandHandler) Audit(w http.ResponseWriter, r *http.Request) {
 //	@Success     200 {object} api.Response
 //	@Failure     400 {object} api.Response
 //	@Failure     404 {object} api.Response
+//	@Failure     503 {object} api.Response "账号范围回收或实时授权服务不可用，删除被阻止"
 //	@Router      /v1/admin/brands/{id} [delete]
 func (h *AdminBrandHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Delete(r.Context(), pathVar(r, "id")); err != nil {
@@ -336,6 +339,9 @@ type storeResponse struct {
 	Province      string   `json:"province"`
 	City          string   `json:"city"`
 	District      string   `json:"district"`
+	ProvinceCode  string   `json:"provinceCode"`
+	CityCode      string   `json:"cityCode"`
+	DistrictCode  string   `json:"districtCode"`
 	Address       string   `json:"address"`
 	Longitude     *float64 `json:"longitude"`
 	Latitude      *float64 `json:"latitude"`
@@ -375,6 +381,9 @@ func toStoreResponse(s *model.Store) storeResponse {
 		Province:      s.Province,
 		City:          s.City,
 		District:      s.District,
+		ProvinceCode:  s.ProvinceCode,
+		CityCode:      s.CityCode,
+		DistrictCode:  s.DistrictCode,
 		Address:       s.Address,
 		Longitude:     s.Longitude,
 		Latitude:      s.Latitude,
@@ -448,14 +457,19 @@ func (h *AdminStoreHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 // storeRequest 创建/编辑门店；status 与审核字段不在 body 中，分别走 PATCH 接口
 type storeRequest struct {
-	MerchantID    string   `json:"merchantId"`
-	BrandID       string   `json:"brandId"`
-	Name          string   `json:"name"`
-	Logo          string   `json:"logo"`
-	Photos        []string `json:"photos"`
-	Province      string   `json:"province"`
-	City          string   `json:"city"`
-	District      string   `json:"district"`
+	MerchantID string   `json:"merchantId"`
+	BrandID    string   `json:"brandId"`
+	Name       string   `json:"name"`
+	Logo       string   `json:"logo"`
+	Photos     []string `json:"photos"`
+	Province   string   `json:"province"`
+	City       string   `json:"city"`
+	District   string   `json:"district"`
+	// 三个编码与三个名称一起提交：级联选择器同时给出，服务端不做名字到编码的推算
+	// （那需要一份区划主数据，本轮刻意不建）。历史自由文本回填不上时留空。
+	ProvinceCode  string   `json:"provinceCode"`
+	CityCode      string   `json:"cityCode"`
+	DistrictCode  string   `json:"districtCode"`
 	Address       string   `json:"address"`
 	Longitude     *float64 `json:"longitude"`
 	Latitude      *float64 `json:"latitude"`
@@ -478,6 +492,9 @@ func (q storeRequest) toInput() service.StoreInput {
 		Province:      q.Province,
 		City:          q.City,
 		District:      q.District,
+		ProvinceCode:  q.ProvinceCode,
+		CityCode:      q.CityCode,
+		DistrictCode:  q.DistrictCode,
 		Address:       q.Address,
 		Longitude:     q.Longitude,
 		Latitude:      q.Latitude,
@@ -621,6 +638,7 @@ func (h *AdminStoreHandler) Audit(w http.ResponseWriter, r *http.Request) {
 //	@Param       id path string true "门店ID"
 //	@Success     200 {object} api.Response
 //	@Failure     404 {object} api.Response
+//	@Failure     503 {object} api.Response "账号范围回收或实时授权服务不可用，删除被阻止"
 //	@Router      /v1/admin/stores/{id} [delete]
 func (h *AdminStoreHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Delete(r.Context(), pathVar(r, "id")); err != nil {
