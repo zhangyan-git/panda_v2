@@ -41,6 +41,7 @@ func TestLoadRedisDB(t *testing.T) {
 
 func TestLoadReadsMerchantServiceURL(t *testing.T) {
 	t.Setenv("PANDA_ENV", "test")
+	t.Setenv("MERCHANT_INTERNAL_TOKEN", "test-token-which-is-at-least-32-bytes-long")
 	t.Setenv("MERCHANT_SERVICE_URL", "http://merchant.test:8080")
 	cfg, err := Load("test")
 	if err != nil {
@@ -51,7 +52,45 @@ func TestLoadReadsMerchantServiceURL(t *testing.T) {
 	}
 }
 
+// REGISTRY_ENDPOINT and the deprecated ETCD_ENDPOINTS both name the etcd cluster.
+// The two disagreeing was a real defect, not a cosmetic one: the deploy template
+// shipped the old name while the code read only the new one, so a stack that
+// configured etcd correctly still ran on the no-op registry — services never
+// registered and discovery never resolved, with nothing to indicate why.
+// Whichever name carries the value, the service has to see it.
+func TestLoadResolvesRegistryEndpoint(t *testing.T) {
+	t.Setenv("PANDA_ENV", "test")
+	t.Setenv("MERCHANT_INTERNAL_TOKEN", "test-token-which-is-at-least-32-bytes-long")
+	tests := []struct {
+		name       string
+		registry   string
+		legacyEtcd string
+		want       string
+	}{
+		{name: "neither set stays empty", registry: "", legacyEtcd: "", want: ""},
+		{name: "registry endpoint", registry: "http://etcd:2379", legacyEtcd: "", want: "http://etcd:2379"},
+		{name: "registry endpoint is trimmed", registry: "  http://etcd:2379  ", legacyEtcd: "", want: "http://etcd:2379"},
+		{name: "legacy etcd endpoints", registry: "", legacyEtcd: "http://legacy:2379", want: "http://legacy:2379"},
+		{name: "registry endpoint wins when both are set", registry: "http://etcd:2379", legacyEtcd: "http://legacy:2379", want: "http://etcd:2379"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("REGISTRY_ENDPOINT", tt.registry)
+			t.Setenv("ETCD_ENDPOINTS", tt.legacyEtcd)
+			cfg, err := Load("test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.RegistryEndpoint != tt.want {
+				t.Fatalf("RegistryEndpoint = %q, want %q", cfg.RegistryEndpoint, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadReadsDotEnv(t *testing.T) {
+	t.Setenv("PANDA_ENV", "test")
+	t.Setenv("MERCHANT_INTERNAL_TOKEN", "test-token-which-is-at-least-32-bytes-long")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("PANDA_ENV=test\nDATABASE_URL='postgres://localhost/panda'\nREDIS_DB=3\n# comment\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -90,8 +129,32 @@ func TestLoadReadsDotEnv(t *testing.T) {
 	}
 }
 
+func TestResolveDatabasePrefersTheServiceOwnedURL(t *testing.T) {
+	for _, tc := range []struct {
+		name                            string
+		service, shared, user, merchant string
+		want                            string
+	}{
+		{"user service reads its own database", "user-service", "shared", "identity", "merchant", "identity"},
+		{"merchant service reads its own database", "merchant-service", "shared", "identity", "merchant", "merchant"},
+		{"user service falls back when unset", "user-service", "shared", "", "merchant", "shared"},
+		{"merchant service falls back when unset", "merchant-service", "shared", "identity", "", "shared"},
+		{"blank override is not an override", "user-service", "shared", "  ", "", "shared"},
+		{"a service without an owned database stays shared", "gateway-service", "shared", "identity", "merchant", "shared"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveDatabase(tc.service, tc.shared, tc.user, tc.merchant); got != tc.want {
+				t.Fatalf("resolveDatabase(%q, %q, %q, %q) = %q, want %q",
+					tc.service, tc.shared, tc.user, tc.merchant, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadEnvironmentOverridesDotEnv(t *testing.T) {
 	t.Setenv("PANDA_ENV", "test")
+	t.Setenv("MERCHANT_INTERNAL_TOKEN", "test-token-which-is-at-least-32-bytes-long")
+	t.Setenv("MERCHANT_SERVICE_URL", "http://merchant.test:8080")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("DATABASE_URL=file-value\n"), 0o600); err != nil {
 		t.Fatal(err)

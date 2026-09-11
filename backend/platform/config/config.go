@@ -3,11 +3,16 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+// defaultUploadMaxFileSize 是 UPLOAD_MAX_FILE_SIZE 的缺省值（10MB）。
+// 上限不在这里：那是上传子系统自己的规则，归 platform/upload 管。
+const defaultUploadMaxFileSize = 10 << 20
 
 type Config struct {
 	ServiceName, Version, Environment                                              string
@@ -18,9 +23,38 @@ type Config struct {
 	RedisDB                                                                        int
 	JWTSecret, JWTIssuer                                                           string
 	AccountServiceURL, UserServiceURL, MerchantServiceURL, CoffeeMachineServiceURL string
-	DevAccountInitEnabled                                                          bool
-	DevAdminUsername, DevAdminPassword                                             string
-	DevMerchantUsername, DevMerchantPassword                                       string
+	// UserDatabaseURL and MerchantDatabaseURL are the per-service databases
+	// introduced by the split. Each falls back to DatabaseURL, so a stack that
+	// still runs on one database starts unchanged.
+	UserDatabaseURL, MerchantDatabaseURL string
+	// ServiceDatabaseURL is the database this service owns: user-service reads
+	// UserDatabaseURL, merchant-service reads MerchantDatabaseURL, and every
+	// other service (including the gateway, which owns none) reads DatabaseURL.
+	ServiceDatabaseURL string
+	// MigrateOnStart applies this service's migration set during startup. It is
+	// off by default and stays off in production, where the release process
+	// migrates out of band; it exists for local stacks and new environments.
+	MigrateOnStart bool
+	// UserGRPCAddress and MerchantGRPCAddress are the static internal gRPC
+	// endpoints. They are used until service discovery is enabled, and remain the
+	// fallback afterwards.
+	UserGRPCAddress, MerchantGRPCAddress     string
+	MerchantInternalToken                    string
+	MerchantOwnershipTimeoutMS               int
+	DevAccountInitEnabled                    bool
+	DevAdminUsername, DevAdminPassword       string
+	DevMerchantUsername, DevMerchantPassword string
+	// HTTPTimeoutMS 是 kratos HTTP server 的整请求超时。kratos 在 mux filter 里
+	// 装的是一个包住整个请求（含读 body）的 context deadline，所以它同时是
+	// 一次上传的总预算，而不是某个处理步骤的预算。
+	HTTPTimeoutMS int
+	// 以下五项是图片上传到 OSS 的配置。键名沿用旧后端 panda_serve，
+	// 「把旧配置搬过来」因此就是原样抄四行。只有 merchant-service 用得上，
+	// 其余服务读到空值也无所谓：Load 不会因为它们缺席而失败。
+	OSSAccessKey, OSSSecretKey, OSSEndpoint, OSSBucket, OSSCNAME string
+	UploadPath                                                   string
+	UploadMaxFileSize                                            int64
+	UploadUseMD5                                                 bool
 }
 
 func Load(service string) (Config, error) {
@@ -43,12 +77,137 @@ func Load(service string) (Config, error) {
 	if grpcAddr == "" {
 		grpcAddr = ":9090"
 	}
-	registryEndpoint := os.Getenv("REGISTRY_ENDPOINT")
+	registryEndpoint, err := registryEndpointFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	redisDB, err := parseRedisDB(os.Getenv("REDIS_DB"))
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{ServiceName: service, Version: version, Environment: env, HTTPAddress: addr, GRPCAddress: grpcAddr, RegistryEndpoint: registryEndpoint, DatabaseURL: os.Getenv("DATABASE_URL"), RedisAddress: os.Getenv("REDIS_ADDR"), RedisPassword: os.Getenv("REDIS_PASSWORD"), RedisDB: redisDB, JWTSecret: os.Getenv("JWT_SECRET"), JWTIssuer: os.Getenv("JWT_ISSUER"), AccountServiceURL: os.Getenv("ACCOUNT_SERVICE_URL"), UserServiceURL: os.Getenv("USER_SERVICE_URL"), MerchantServiceURL: os.Getenv("MERCHANT_SERVICE_URL"), CoffeeMachineServiceURL: os.Getenv("COFFEE_MACHINE_SERVICE_URL"), DevAccountInitEnabled: parseBoolEnv("DEV_ACCOUNT_INIT_ENABLED"), DevAdminUsername: os.Getenv("DEV_ADMIN_USERNAME"), DevAdminPassword: os.Getenv("DEV_ADMIN_PASSWORD"), DevMerchantUsername: os.Getenv("DEV_MERCHANT_USERNAME"), DevMerchantPassword: os.Getenv("DEV_MERCHANT_PASSWORD")}, nil
+	ownershipTimeout := 5000
+	if service == "user-service" {
+		ownershipTimeout, err = parseIntEnv("MERCHANT_OWNERSHIP_TIMEOUT_MS", 5000)
+		if err != nil {
+			return Config{}, err
+		}
+		if ownershipTimeout < 1000 || ownershipTimeout > 30000 {
+			return Config{}, fmt.Errorf("MERCHANT_OWNERSHIP_TIMEOUT_MS must be between 1000 and 30000")
+		}
+	}
+	// 整请求超时按服务名给代码默认值：5 秒够普通 JSON 接口，装不下一次 10MB 的
+	// 图片上传。默认值必须写在代码里而不是 .env —— loadDotEnv 从 CWD 向上只找
+	// 一个 .env，一个变量表达不了「merchant 90 秒、其余 5 秒」；本机 .env 里没这个
+	// 键时，开发者会拿到 5 秒，然后报「上传坏了」。
+	//
+	// 放宽 merchant-service 会连着放宽它所有路由，包括实时鉴权那次 RPC——kratos
+	// 没有按路由设 deadline 的办法。90 秒是三层预算的中间层：
+	// 网关 120s > 服务端 90s > OSS 单次读写 60s。
+	httpTimeoutMS := 5000
+	if service == "merchant-service" {
+		httpTimeoutMS = 90000
+	}
+	httpTimeoutMS, err = parseIntEnv("HTTP_TIMEOUT_MS", httpTimeoutMS)
+	if err != nil {
+		return Config{}, err
+	}
+	if httpTimeoutMS < 1000 || httpTimeoutMS > 300000 {
+		return Config{}, fmt.Errorf("HTTP_TIMEOUT_MS must be between 1000 and 300000")
+	}
+	uploadMaxFileSize, err := parseIntEnv("UPLOAD_MAX_FILE_SIZE", defaultUploadMaxFileSize)
+	if err != nil {
+		return Config{}, err
+	}
+	// UPLOAD_USE_MD5 留着只为兼容旧配置：上传代码始终用内容寻址的 md5 键，
+	// 设成 false 不会有任何效果，只会在启动时换来一条警告（见 platform/upload）。
+	uploadUseMD5, err := parseBoolEnvWithDefault("UPLOAD_USE_MD5", true)
+	if err != nil {
+		return Config{}, err
+	}
+	merchantToken := os.Getenv("MERCHANT_INTERNAL_TOKEN")
+	if service == "merchant-service" && len([]byte(merchantToken)) < 32 {
+		return Config{}, fmt.Errorf("MERCHANT_INTERNAL_TOKEN must be at least 32 bytes")
+	}
+	userGRPCAddr := strings.TrimSpace(os.Getenv("USER_GRPC_ADDR"))
+	merchantGRPCAddr := strings.TrimSpace(os.Getenv("MERCHANT_GRPC_ADDR"))
+	// Each service now reaches its peer over gRPC, so it needs that peer's
+	// address rather than its own. MERCHANT_SERVICE_URL is deliberately no longer
+	// required here: user-service stopped calling merchant-service over HTTP, and
+	// the variable now belongs to the gateway alone.
+	if service == "user-service" {
+		if merchantGRPCAddr == "" {
+			return Config{}, fmt.Errorf("MERCHANT_GRPC_ADDR is required for user-service")
+		}
+		if len([]byte(merchantToken)) < 32 {
+			return Config{}, fmt.Errorf("MERCHANT_INTERNAL_TOKEN must be at least 32 bytes for user-service")
+		}
+	}
+	if service == "merchant-service" && userGRPCAddr == "" {
+		return Config{}, fmt.Errorf("USER_GRPC_ADDR is required for merchant-service")
+	}
+	databaseURL := os.Getenv("DATABASE_URL")
+	userDatabaseURL := os.Getenv("USER_DATABASE_URL")
+	merchantDatabaseURL := os.Getenv("MERCHANT_DATABASE_URL")
+	return Config{
+		ServiceName:                service,
+		Version:                    version,
+		Environment:                env,
+		HTTPAddress:                addr,
+		GRPCAddress:                grpcAddr,
+		RegistryEndpoint:           registryEndpoint,
+		DatabaseURL:                databaseURL,
+		UserDatabaseURL:            userDatabaseURL,
+		MerchantDatabaseURL:        merchantDatabaseURL,
+		ServiceDatabaseURL:         resolveDatabase(service, databaseURL, userDatabaseURL, merchantDatabaseURL),
+		MigrateOnStart:             parseBoolEnv("DB_MIGRATE_ON_START"),
+		RedisAddress:               os.Getenv("REDIS_ADDR"),
+		RedisPassword:              os.Getenv("REDIS_PASSWORD"),
+		RedisDB:                    redisDB,
+		JWTSecret:                  os.Getenv("JWT_SECRET"),
+		JWTIssuer:                  os.Getenv("JWT_ISSUER"),
+		AccountServiceURL:          os.Getenv("ACCOUNT_SERVICE_URL"),
+		UserServiceURL:             os.Getenv("USER_SERVICE_URL"),
+		MerchantServiceURL:         os.Getenv("MERCHANT_SERVICE_URL"),
+		UserGRPCAddress:            userGRPCAddr,
+		MerchantGRPCAddress:        merchantGRPCAddr,
+		MerchantInternalToken:      merchantToken,
+		MerchantOwnershipTimeoutMS: ownershipTimeout,
+		HTTPTimeoutMS:              httpTimeoutMS,
+		// 裸值透传：UPLOAD_PATH 为空时由 platform/upload 用它的 DefaultPrefix
+		// 兜底，默认值只有一处定义。OSSCNAME 留空则从 OSS_ENDPOINT 推公开基址。
+		OSSAccessKey:            os.Getenv("OSS_ACCESS_KEY"),
+		OSSSecretKey:            os.Getenv("OSS_SECRET_KEY"),
+		OSSEndpoint:             os.Getenv("OSS_ENDPOINT"),
+		OSSBucket:               os.Getenv("OSS_BUCKET"),
+		OSSCNAME:                os.Getenv("OSS_CNAME"),
+		UploadPath:              strings.TrimSpace(os.Getenv("UPLOAD_PATH")),
+		UploadMaxFileSize:       int64(uploadMaxFileSize),
+		UploadUseMD5:            uploadUseMD5,
+		CoffeeMachineServiceURL: os.Getenv("COFFEE_MACHINE_SERVICE_URL"),
+		DevAccountInitEnabled:   parseBoolEnv("DEV_ACCOUNT_INIT_ENABLED"),
+		DevAdminUsername:        os.Getenv("DEV_ADMIN_USERNAME"),
+		DevAdminPassword:        os.Getenv("DEV_ADMIN_PASSWORD"),
+		DevMerchantUsername:     os.Getenv("DEV_MERCHANT_USERNAME"),
+		DevMerchantPassword:     os.Getenv("DEV_MERCHANT_PASSWORD"),
+	}, nil
+}
+
+// resolveDatabase picks the database a service owns after the split. Each
+// per-service variable falls back to the shared DATABASE_URL, so a stack that
+// still runs on one database keeps working; only user-service and
+// merchant-service have an owned database today.
+func resolveDatabase(service, shared, user, merchant string) string {
+	var owned string
+	switch service {
+	case "user-service":
+		owned = user
+	case "merchant-service":
+		owned = merchant
+	}
+	if strings.TrimSpace(owned) == "" {
+		return shared
+	}
+	return owned
 }
 
 // loadDotEnv loads the first .env found from the current directory upward.
@@ -119,6 +278,29 @@ func parseDotEnv(path string) error {
 	return nil
 }
 
+// registryEndpointFromEnv reads the etcd endpoints from REGISTRY_ENDPOINT,
+// falling back to the older ETCD_ENDPOINTS name.
+//
+// The two names disagreeing was a real defect, not a cosmetic one: the deploy
+// template shipped ETCD_ENDPOINTS while the code only ever read
+// REGISTRY_ENDPOINT, so a stack that configured etcd correctly still ran with
+// the no-op registry — services never registered and discovery never resolved.
+// Both names are honoured now, and the legacy one is still accepted so existing
+// deployments do not break, but it warns: a silently ignored setting is exactly
+// the failure this function exists to end.
+func registryEndpointFromEnv() (string, error) {
+	if endpoint := strings.TrimSpace(os.Getenv("REGISTRY_ENDPOINT")); endpoint != "" {
+		return endpoint, nil
+	}
+	legacy := strings.TrimSpace(os.Getenv("ETCD_ENDPOINTS"))
+	if legacy == "" {
+		return "", nil
+	}
+	slog.Warn("ETCD_ENDPOINTS is deprecated and was moved to REGISTRY_ENDPOINT; rename the setting to silence this warning",
+		"deprecated", "ETCD_ENDPOINTS", "replacement", "REGISTRY_ENDPOINT")
+	return legacy, nil
+}
+
 func parseBoolEnv(key string) bool {
 	value, ok := os.LookupEnv(key)
 	if !ok {
@@ -126,6 +308,33 @@ func parseBoolEnv(key string) bool {
 	}
 	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
 	return err == nil && parsed
+}
+
+// parseBoolEnvWithDefault 与 parseBoolEnv 相同，区别是缺省值可指定，
+// 并且把写错的值当成错误而不是静默当成 false —— 一个拼错的开关被当成
+// 「关」是最难查的一类问题。
+func parseBoolEnvWithDefault(key string, defaultValue bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
+	return parsed, nil
+}
+
+func parseIntEnv(key string, defaultValue int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return parsed, nil
 }
 
 func parseRedisDB(value string) (int, error) {

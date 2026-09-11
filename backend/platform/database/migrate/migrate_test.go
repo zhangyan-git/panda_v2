@@ -120,3 +120,92 @@ func TestApplyRequiresPool(t *testing.T) {
 		t.Fatal("apply must reject a nil pool")
 	}
 }
+
+// A goose-style Down section would be executed by Apply, which hands the whole
+// file to one Exec and understands no directives: the table would be created and
+// dropped again in the same transaction, with nothing to show it happened.
+func TestApplyRejectsGooseDownSection(t *testing.T) {
+	pool, ctx := testPool(t)
+
+	table := "migrate_goose_test"
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.WithoutCancel(ctx), `DROP TABLE IF EXISTS `+table)
+		_, _ = pool.Exec(context.WithoutCancel(ctx),
+			`DELETE FROM schema_migrations WHERE version = '904_migrate_goose.sql'`)
+	})
+
+	fsys := fstest.MapFS{
+		"904_migrate_goose.sql": {Data: []byte(
+			"-- +goose Up\nCREATE TABLE " + table + " (id INT);\n\n-- +goose Down\nDROP TABLE IF EXISTS " + table + ";\n")},
+	}
+	if err := Apply(ctx, pool, fsys); err == nil {
+		t.Fatal("apply must refuse a migration carrying a goose Down section")
+	}
+
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)`, table).Scan(&exists); err != nil {
+		t.Fatalf("check table: %v", err)
+	}
+	if exists {
+		t.Fatal("the refused migration was executed anyway")
+	}
+	var recorded bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '904_migrate_goose.sql')`).Scan(&recorded); err != nil {
+		t.Fatalf("check version row: %v", err)
+	}
+	if recorded {
+		t.Fatal("a refused migration must not be recorded as applied")
+	}
+}
+
+func TestBaselineSkipsAlreadyAppliedMigrations(t *testing.T) {
+	pool, ctx := testPool(t)
+
+	table := "migrate_baseline_test"
+	version := "905_migrate_baseline.sql"
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.WithoutCancel(ctx), `DROP TABLE IF EXISTS `+table)
+		_, _ = pool.Exec(context.WithoutCancel(ctx), `DELETE FROM schema_migrations WHERE version = $1`, version)
+	})
+
+	// The file is deliberately not idempotent, like 001_init.sql: it can only run
+	// once. If Baseline is honoured, Apply never reads it.
+	fsys := fstest.MapFS{
+		version: {Data: []byte(`CREATE TABLE ` + table + ` (id INT PRIMARY KEY)`)},
+	}
+
+	if err := Baseline(ctx, pool, version); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	// Recording the same version twice must stay a no-op.
+	if err := Baseline(ctx, pool, version); err != nil {
+		t.Fatalf("second baseline: %v", err)
+	}
+	if err := Apply(ctx, pool, fsys); err != nil {
+		t.Fatalf("apply after baseline: %v", err)
+	}
+
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)`, table).Scan(&exists); err != nil {
+		t.Fatalf("check table: %v", err)
+	}
+	if exists {
+		t.Fatal("a baselined migration was executed by apply")
+	}
+}
+
+func TestBaselineRejectsEmptyVersion(t *testing.T) {
+	if err := Baseline(context.Background(), nil, "001.sql"); err == nil {
+		t.Fatal("baseline must reject a nil pool")
+	}
+}
+
+func TestBaselineRequiresNonEmptyVersion(t *testing.T) {
+	pool, ctx := testPool(t)
+	if err := Baseline(ctx, pool, "  "); err == nil {
+		t.Fatal("baseline must reject a blank version")
+	}
+}

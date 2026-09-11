@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	khttp "github.com/go-kratos/kratos/v2/transport/http"
+	kgrpc "github.com/go-kratos/kratos/v2/transport/grpc"
 	"github.com/panda-dev/panda-v2/backend/platform/cache"
 	"github.com/panda-dev/panda-v2/backend/platform/database"
 	"github.com/panda-dev/panda-v2/backend/platform/messaging"
@@ -25,10 +25,18 @@ type Runner interface {
 }
 
 type Options struct {
-	Database         database.Pool
-	Cache            cache.Client
-	Publisher        messaging.Publisher
-	Consumer         messaging.Consumer
+	Database  database.Pool
+	Cache     cache.Client
+	Publisher messaging.Publisher
+	Consumer  messaging.Consumer
+	// Outbox is where a service appends events inside its business
+	// transactions. Supplying one is what makes the runtime start the relay
+	// that publishes it; without it, events would accumulate unpublished.
+	Outbox messaging.DurableOutbox
+	// ConsumerInbox makes the consumer idempotent. Redelivery is normal — a
+	// broker reconnect or a crash between handling and ack both produce it — so
+	// a consumer that writes state needs this to avoid applying it twice.
+	ConsumerInbox    messaging.Inbox
 	Workers          []Runner
 	Messaging        io.Closer
 	MessagingCleanup io.Closer
@@ -36,14 +44,26 @@ type Options struct {
 	Observability    observability.Providers
 	Instance         registry.Instance
 	ConsumerHandler  messaging.Handler
-	HTTPRoutes       func(*khttp.Server)
-	StartupTimeout   time.Duration
-	ShutdownTimeout  time.Duration
-	OwnDatabase      bool
-	OwnCache         bool
-	OwnMessaging     bool
-	OwnRegistry      bool
-	OwnObservability bool
+	// HTTPRoutes registers a service's HTTP routes. It receives an HTTPRouter
+	// rather than the raw kratos server so every route ends up with the runtime
+	// instrumentation; see HTTPRouter for why that cannot be done with
+	// khttp.Middleware.
+	HTTPRoutes func(*HTTPRouter)
+	// GRPCRoutes registers a service's generated gRPC server implementations. It
+	// is the gRPC counterpart of HTTPRoutes and exists so internal RPCs do not
+	// require threading the server through main.
+	GRPCRoutes func(*kgrpc.Server)
+	// GRPCServerOptions configures the gRPC server itself, such as installing an
+	// authentication interceptor. Service registration goes through GRPCRoutes;
+	// these must be supplied at construction time and cannot be added later.
+	GRPCServerOptions []kgrpc.ServerOption
+	StartupTimeout    time.Duration
+	ShutdownTimeout   time.Duration
+	OwnDatabase       bool
+	OwnCache          bool
+	OwnMessaging      bool
+	OwnRegistry       bool
+	OwnObservability  bool
 }
 
 // Lifecycle coordinates startup and shutdown of platform dependencies.
@@ -66,7 +86,8 @@ type Lifecycle struct {
 	providers                                                          observability.Providers
 	instance                                                           registry.Instance
 	handler                                                            messaging.Handler
-	httpRoutes                                                         func(*khttp.Server)
+	httpRoutes                                                         func(*HTTPRouter)
+	grpcRoutes                                                         func(*kgrpc.Server)
 	startupTimeout, shutdownTimeout                                    time.Duration
 	ownDatabase, ownCache, ownMessaging, ownRegistry, ownObservability bool
 	consumerCancel                                                     context.CancelFunc
@@ -88,7 +109,8 @@ func New(options Options) *Lifecycle {
 	return &Lifecycle{
 		db: options.Database, redis: options.Cache, publisher: options.Publisher,
 		consumer: options.Consumer, workers: append([]Runner(nil), options.Workers...), messaging: options.Messaging, messagingCleanup: options.MessagingCleanup, registry: options.Registry,
-		providers: options.Observability, instance: options.Instance, handler: options.ConsumerHandler, httpRoutes: options.HTTPRoutes,
+		providers: options.Observability, instance: options.Instance, handler: options.ConsumerHandler,
+		httpRoutes: options.HTTPRoutes, grpcRoutes: options.GRPCRoutes,
 		startupTimeout: options.StartupTimeout, shutdownTimeout: options.ShutdownTimeout,
 		ownDatabase: options.OwnDatabase, ownCache: options.OwnCache, ownMessaging: options.OwnMessaging,
 		ownRegistry: options.OwnRegistry, ownObservability: options.OwnObservability,

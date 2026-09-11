@@ -1,10 +1,14 @@
 // Package migrate applies ordered SQL migration files to PostgreSQL.
 //
-// Migrations are embedded into the service binary, so a deployed image carries
-// its own schema and never depends on the source tree being present.
+// The caller supplies the files as an fs.FS rather than the package embedding
+// them itself: the same runner is meant to serve the legacy single-database set
+// and, once the database is split, one set per service. Wiring an embedded FS
+// and the DB_MIGRATE_ON_START switch belongs with that split, so nothing in the
+// tree calls Apply yet.
 package migrate
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -40,6 +44,94 @@ func Apply(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
 		return nil
 	}
 
+	return withMigrationLock(ctx, pool, func(ctx context.Context, conn *pgxpool.Conn) error {
+		applied, err := appliedVersions(ctx, conn)
+		if err != nil {
+			return err
+		}
+		for _, name := range files {
+			if _, done := applied[name]; done {
+				continue
+			}
+			statements, err := fs.ReadFile(fsys, name)
+			if err != nil {
+				return fmt.Errorf("migrate: read %s: %w", name, err)
+			}
+			// Apply hands the whole file to a single Exec and knows nothing about
+			// goose directives, so a file carrying a Down section would run it too
+			// — creating a table and then dropping it in the same transaction,
+			// with no error to show for it. Fail loudly instead.
+			if bytes.Contains(statements, []byte("-- +goose Down")) {
+				return fmt.Errorf("migrate: apply %s: file contains a %q section and would execute it; remove the section or run it with goose",
+					name, "-- +goose Down")
+			}
+			// Each migration is one transaction: a failure half-way leaves no
+			// partial schema and no version row claiming it succeeded.
+			tx, err := conn.Begin(ctx)
+			if err != nil {
+				return fmt.Errorf("migrate: begin %s: %w", name, err)
+			}
+			if _, err := tx.Exec(ctx, string(statements)); err != nil {
+				_ = tx.Rollback(ctx)
+				return fmt.Errorf("migrate: apply %s: %w", name, err)
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, name); err != nil {
+				_ = tx.Rollback(ctx)
+				return fmt.Errorf("migrate: record %s: %w", name, err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return fmt.Errorf("migrate: commit %s: %w", name, err)
+			}
+			slog.Info("applied migration", "version", name)
+		}
+		return nil
+	})
+}
+
+// Baseline records versions as already applied, without running any DDL.
+//
+// It exists because this repository's early migrations ran outside any runner:
+// schema_migrations stays empty while the schema is fully present, and those
+// migrations use bare CREATE TABLE without IF NOT EXISTS. A first Apply would
+// therefore replay them and fail on the first statement. Recording what is
+// already on the database first turns that first Apply into a no-op for the
+// past and a normal incremental run for everything after it.
+//
+// It performs no verification of its own: only name versions you have confirmed
+// are really applied. Re-recording an existing version is a no-op, so calling
+// it on every start is harmless.
+func Baseline(ctx context.Context, pool *pgxpool.Pool, versions ...string) error {
+	if pool == nil {
+		return errors.New("migrate: pool is required")
+	}
+	cleaned := make([]string, 0, len(versions))
+	for _, version := range versions {
+		version = strings.TrimSpace(version)
+		if version == "" {
+			return errors.New("migrate: baseline version must not be empty")
+		}
+		cleaned = append(cleaned, version)
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return withMigrationLock(ctx, pool, func(ctx context.Context, conn *pgxpool.Conn) error {
+		// ON CONFLICT keeps a migration that really did run through Apply from
+		// being re-dated by a baseline call.
+		if _, err := conn.Exec(ctx,
+			`INSERT INTO schema_migrations (version) SELECT unnest($1::text[]) ON CONFLICT (version) DO NOTHING`,
+			cleaned); err != nil {
+			return fmt.Errorf("migrate: baseline versions: %w", err)
+		}
+		slog.Info("baselined migrations", "count", len(cleaned))
+		return nil
+	})
+}
+
+// withMigrationLock runs fn while holding the advisory lock and after ensuring
+// the version table exists. Every writer of schema_migrations goes through it so
+// two replicas starting together cannot interleave.
+func withMigrationLock(ctx context.Context, pool *pgxpool.Pool, fn func(context.Context, *pgxpool.Conn) error) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("migrate: acquire connection: %w", err)
@@ -58,39 +150,7 @@ func Apply(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
 	if _, err := conn.Exec(ctx, createVersionTable); err != nil {
 		return fmt.Errorf("migrate: create version table: %w", err)
 	}
-	applied, err := appliedVersions(ctx, conn)
-	if err != nil {
-		return err
-	}
-
-	for _, name := range files {
-		if _, done := applied[name]; done {
-			continue
-		}
-		statements, err := fs.ReadFile(fsys, name)
-		if err != nil {
-			return fmt.Errorf("migrate: read %s: %w", name, err)
-		}
-		// Each migration is one transaction: a failure half-way leaves no
-		// partial schema and no version row claiming it succeeded.
-		tx, err := conn.Begin(ctx)
-		if err != nil {
-			return fmt.Errorf("migrate: begin %s: %w", name, err)
-		}
-		if _, err := tx.Exec(ctx, string(statements)); err != nil {
-			_ = tx.Rollback(ctx)
-			return fmt.Errorf("migrate: apply %s: %w", name, err)
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, name); err != nil {
-			_ = tx.Rollback(ctx)
-			return fmt.Errorf("migrate: record %s: %w", name, err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("migrate: commit %s: %w", name, err)
-		}
-		slog.Info("applied migration", "version", name)
-	}
-	return nil
+	return fn(ctx, conn)
 }
 
 func migrationFiles(fsys fs.FS) ([]string, error) {

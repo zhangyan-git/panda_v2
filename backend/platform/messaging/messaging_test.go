@@ -3,7 +3,6 @@ package messaging
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -125,19 +124,6 @@ func TestWithInboxUsesDistinctOwners(t *testing.T) {
 	}
 }
 
-func TestMessagingMigrationAddsLeaseColumnsBeforeIndexes(t *testing.T) {
-	data, err := os.ReadFile("001_create_message_tables.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	migration := string(data)
-	alter := strings.Index(migration, "ALTER TABLE message_outbox ADD COLUMN IF NOT EXISTS lease_until")
-	index := strings.Index(migration, "CREATE INDEX IF NOT EXISTS message_outbox_lease_idx")
-	if alter < 0 || index < 0 || alter > index {
-		t.Fatal("lease column migration must precede lease index creation")
-	}
-}
-
 func TestMemoryDurableInboxReleaseAllowsRetry(t *testing.T) {
 	store := NewMemoryOutboxInbox()
 	ctx := context.Background()
@@ -228,20 +214,95 @@ func TestRabbitConfigFromEnvReadsSettings(t *testing.T) {
 	}
 }
 
+// 两个方向都要守住：显式配 0 是「别重试」，不能被默认值盖掉；配坏了才是
+// 「没配」。反过来（配坏了退 0）会让失败消息静默消失，正是要避免的那个结果。
 func TestRabbitConfigFromEnvNormalizesRetryLimit(t *testing.T) {
 	t.Setenv("RABBITMQ_RETRY_LIMIT", "-2")
 	if got := RabbitConfigFromEnv().RetryLimit; got != 0 {
 		t.Fatalf("negative retry limit = %d, want 0", got)
 	}
-	t.Setenv("RABBITMQ_RETRY_LIMIT", "not-a-number")
+	t.Setenv("RABBITMQ_RETRY_LIMIT", "0")
 	if got := RabbitConfigFromEnv().RetryLimit; got != 0 {
-		t.Fatalf("invalid retry limit = %d, want 0", got)
+		t.Fatalf("explicit zero retry limit = %d, want 0", got)
+	}
+	t.Setenv("RABBITMQ_RETRY_LIMIT", "not-a-number")
+	if got := RabbitConfigFromEnv().RetryLimit; got != defaultRetryLimit {
+		t.Fatalf("invalid retry limit = %d, want the non-zero default %d", got, defaultRetryLimit)
+	}
+	t.Setenv("RABBITMQ_RETRY_LIMIT", "")
+	if got := RabbitConfigFromEnv().RetryLimit; got != defaultRetryLimit {
+		t.Fatalf("unset retry limit = %d, want the non-zero default %d", got, defaultRetryLimit)
+	}
+}
+
+// 没配死信拓扑时默认值必须自己自洽——否则 NewRabbitMQ 会在 validate 上直接
+// 拒绝启动，把一个「更好的默认」变成一次起不来。
+func TestRabbitConfigDefaultsCarryDeadLetterTopology(t *testing.T) {
+	t.Setenv("RABBITMQ_URL", "amqp://example")
+	t.Setenv("RABBITMQ_DLX", "")
+	t.Setenv("RABBITMQ_DLQ", "")
+	cfg := RabbitConfigFromEnv()
+	if cfg.DLX == "" || cfg.DLQ == "" {
+		t.Fatalf("dead letter defaults = %q/%q, want both set", cfg.DLX, cfg.DLQ)
+	}
+	if cfg.RetryLimit <= 0 {
+		t.Fatalf("retry limit = %d, want a non-zero default", cfg.RetryLimit)
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("default config must validate: %v", err)
 	}
 }
 
 func TestRabbitConfigValidateNoopWithoutURL(t *testing.T) {
 	if err := (RabbitConfig{Exchange: "", RetryLimit: -1}).validate(); err != nil {
 		t.Fatalf("no-op config validation error = %v", err)
+	}
+}
+
+// outbox 的 relay 只能挂在真的会投递的发布器上：Noop 对每次投递都回成功，
+// 挂在它上面的 relay 会把事件标成已投递然后丢掉，outbox 反而被清空。
+func TestDeliversRejectsNoopPublisher(t *testing.T) {
+	if Delivers(Noop{}) {
+		t.Error("Delivers(Noop{}) = true, want false")
+	}
+	if Delivers(nil) {
+		t.Error("Delivers(nil) = true, want false")
+	}
+	if !Delivers(&recordingPublisher{}) {
+		t.Error("Delivers(custom publisher) = false, want true")
+	}
+}
+
+type recordingPublisher struct{ published []Envelope }
+
+func (p *recordingPublisher) Publish(_ context.Context, event Envelope) error {
+	p.published = append(p.published, event)
+	return nil
+}
+
+// 发布键与订阅键是一对，必须一起断言：只改一半，消息要么发不出去，要么发出去
+// 没人订阅（后者不回退，因为发布是 mandatory + confirm 的，会以退回消息的形式失败）。
+func TestRabbitRoutingKeyFollowsEventType(t *testing.T) {
+	cfg := RabbitConfig{RoutingKey: "configured"}
+	if got := cfg.routeKey("admin.operation.logged"); got != "admin.operation.logged" {
+		t.Fatalf("routeKey = %q, want the event type", got)
+	}
+	if got := cfg.routeKey(""); got != "configured" {
+		t.Fatalf("routeKey fallback = %q, want the configured key", got)
+	}
+	if got := (RabbitConfig{}).routeKey(""); got != "" {
+		t.Fatalf("routeKey with nothing configured = %q, want empty", got)
+	}
+}
+
+// 未配置订阅键时队列订阅全部：topic 交换机只投递有绑定匹配的消息，空绑定会把
+// 每一条事件都变成退回消息。
+func TestRabbitBindKeyDefaultsToEverything(t *testing.T) {
+	if got := (RabbitConfig{}).bindKey(); got != "#" {
+		t.Fatalf("bindKey without config = %q, want %q", got, "#")
+	}
+	if got := (RabbitConfig{RoutingKey: "configured"}).bindKey(); got != "configured" {
+		t.Fatalf("bindKey = %q, want the configured key", got)
 	}
 }
 
