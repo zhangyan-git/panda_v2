@@ -47,7 +47,54 @@ message UpdateProfileResponse {
   UserProfile profile = 1;
 }
 
+// HasUsersRequest asks the identity service whether a merchant still owns any
+// account. Merchant-service needs the answer before it may delete a merchant,
+// and merchant_users lives in the identity database.
+message HasUsersRequest {
+  string merchant_id = 1;
+}
+
+message HasUsersResponse {
+  bool has_users = 1;
+}
+
+// ResetAccountScopeRequest reclaims accounts pointing at a brand or store that
+// is being deleted, moving them back to merchant-level scope. It replaces the
+// HTTP ownership transport whose scope reset failed closed and made brand and
+// store deletion impossible.
+message ResetAccountScopeRequest {
+  // scope_type is "brand" or "store".
+  string scope_type = 1;
+  string scope_id = 2;
+}
+
+message ResetAccountScopeResponse {}
+
+// GetAdminAccessRequest carries no fields: the caller's access token travels in
+// gRPC metadata and is the only source of identity.
+message GetAdminAccessRequest {}
+
+// GetAdminAccessResponse is the live authorization snapshot of the caller.
+// Consumers must not cache it; it exists so an admin token can be re-checked
+// against current grants instead of the snapshot embedded in the token.
+message GetAdminAccessResponse {
+  string user_id = 1;
+  repeated string roles = 2;
+  repeated string permissions = 3;
+}
+
 service UserService {
   rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
   rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
+
+  // Internal RPCs. Callers authenticate with the shared service token rather
+  // than an end-user access token.
+  rpc HasUsers(HasUsersRequest) returns (HasUsersResponse);
+  rpc ResetAccountScope(ResetAccountScopeRequest) returns (ResetAccountScopeResponse);
+}
+
+// AdminAccessService answers only for the identity presented in metadata, so it
+// is authenticated by an end-user access token instead of the service token.
+service AdminAccessService {
+  rpc GetAdminAccess(GetAdminAccessRequest) returns (GetAdminAccessResponse);
 }

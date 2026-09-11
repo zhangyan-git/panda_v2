@@ -1,6 +1,6 @@
 syntax = "proto3";
 package coffee_machine.v1;
-option go_package = "github.com/panda-dev/panda-v2/backend/contracts/gen/coffee_machine/v1";
+option go_package = "github.com/panda-dev/panda-v2/contracts/proto/coffee_machine/v1";
 message Manufacturer { string id = 1; string name = 2; string contact_name = 3; string contact_phone = 4; }
 message Device { string id = 1; string manufacturer_id = 2; string name = 3; string serial_number = 4; string location = 5; string status = 6; }
 message Drink { string id = 1; string name = 2; string description = 3; int64 price = 4; string status = 5; }

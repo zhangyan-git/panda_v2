@@ -109,6 +109,23 @@ message GetBrandMerchantResponse { string merchant_id = 1; }
 message GetStoreMerchantRequest { string store_id = 1; }
 message GetStoreMerchantResponse { string merchant_id = 1; }
 
+// ResolveScopeNamesRequest asks for the display names of the brand and store
+// scopes a set of merchant accounts points at. The two kinds travel as separate
+// lists because they live in separate tables, and one call answers a whole page
+// of accounts rather than one call per account.
+message ResolveScopeNamesRequest {
+  repeated string brand_ids = 1;
+  repeated string store_ids = 2;
+}
+
+// ResolveScopeNamesResponse maps an id to its name. An id that no longer exists
+// is simply absent: a deleted scope must not fail an account listing, and the
+// caller renders the account without a scope name.
+message ResolveScopeNamesResponse {
+  map<string, string> brand_names = 1;
+  map<string, string> store_names = 2;
+}
+
 service MerchantService {
   rpc ListMerchants(ListMerchantsRequest) returns (ListMerchantsResponse);
   rpc GetMerchant(GetMerchantRequest) returns (GetMerchantResponse);
@@ -119,4 +136,7 @@ service MerchantService {
   rpc Stores(MerchantStoresRequest) returns (MerchantStoresResponse);
   rpc GetBrandMerchant(GetBrandMerchantRequest) returns (GetBrandMerchantResponse);
   rpc GetStoreMerchant(GetStoreMerchantRequest) returns (GetStoreMerchantResponse);
+  // ResolveScopeNames replaces the brand/store join user-service used to run
+  // against merchant tables that no longer live in its database.
+  rpc ResolveScopeNames(ResolveScopeNamesRequest) returns (ResolveScopeNamesResponse);
 }
