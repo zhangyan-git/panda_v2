@@ -389,8 +389,8 @@ const MerchantsPage: React.FC = () => {
           label="数据范围"
           initialValue="merchant"
           fieldProps={{
-            onChange: (value) => {
-              if (value === 'merchant') accountCreateFormRef.current?.setFieldsValue({ scopeId: undefined });
+            onChange: () => {
+              accountCreateFormRef.current?.setFieldsValue({ scopeId: undefined });
             },
           }}
           options={[
@@ -406,13 +406,15 @@ const MerchantsPage: React.FC = () => {
                 name="scopeId"
                 label={scopeType === 'brand' ? '品牌' : '门店'}
                 rules={[{ required: true, message: '请选择数据范围目标' }]}
-                request={async () => {
-                  if (!accountTarget) return [];
-                  if (scopeType === 'brand') {
-                    const brands = await listBrands({ merchantId: accountTarget.id });
+                key={`${accountTarget?.id ?? 'none'}:${scopeType}`}
+                params={{ merchantId: accountTarget?.id, scopeType }}
+                request={async (params) => {
+                  if (!params.merchantId) return [];
+                  if (params.scopeType === 'brand') {
+                    const brands = await listBrands({ merchantId: params.merchantId });
                     return brands.map((brand) => ({ label: brand.name, value: brand.id }));
                   }
-                  const stores = await listStores({ merchantId: accountTarget.id });
+                  const stores = await listStores({ merchantId: params.merchantId });
                   return stores.map((store) => ({ label: store.name, value: store.id }));
                 }}
               />
@@ -449,8 +451,8 @@ const MerchantsPage: React.FC = () => {
             { label: '单个门店（旗下全部数据）', value: 'store' },
           ]}
           fieldProps={{
-            onChange: (value) => {
-              if (value === 'merchant') scopeFormRef.current?.setFieldsValue({ scopeId: undefined });
+            onChange: () => {
+              scopeFormRef.current?.setFieldsValue({ scopeId: undefined });
             },
           }}
         />
@@ -461,13 +463,15 @@ const MerchantsPage: React.FC = () => {
                 name="scopeId"
                 label={scopeType === 'brand' ? '品牌' : '门店'}
                 rules={[{ required: true, message: '请选择数据范围目标' }]}
-                request={async () => {
-                  if (!scopeTarget) return [];
-                  if (scopeType === 'brand') {
-                    const brands = await listBrands({ merchantId: accountTarget?.id });
+                key={`${accountTarget?.id ?? 'none'}:${scopeType}`}
+                params={{ merchantId: accountTarget?.id, scopeType }}
+                request={async (params) => {
+                  if (!params.merchantId) return [];
+                  if (params.scopeType === 'brand') {
+                    const brands = await listBrands({ merchantId: params.merchantId });
                     return brands.map((brand) => ({ label: brand.name, value: brand.id }));
                   }
-                  const stores = await listStores({ merchantId: accountTarget?.id });
+                  const stores = await listStores({ merchantId: params.merchantId });
                   return stores.map((store) => ({ label: store.name, value: store.id }));
                 }}
               />

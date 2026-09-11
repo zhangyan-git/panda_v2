@@ -16,6 +16,7 @@ import {
   ProFormTextArea,
   ProTable,
 } from '@ant-design/pro-components';
+import { ProFormImageUpload } from '@panda-v2/ui';
 import { useAccess } from '@umijs/max';
 import { Button, message, Popconfirm, Space, Tag, Tooltip } from 'antd';
 import { useRef, useState } from 'react';
@@ -33,6 +34,8 @@ import {
   type BrandStatus,
 } from '../../services/brand';
 import { listMerchants } from '../../services/merchant';
+import { deletionErrorMessage } from '../../services/requestError';
+import { uploadImage } from '../../services/upload';
 
 const STATUS_TAG: Record<BrandStatus, { color: string; label: string }> = {
   active: { color: 'green', label: '启用' },
@@ -169,9 +172,13 @@ const BrandsPage: React.FC = () => {
             <Popconfirm
               title="品牌下存在门店时无法删除，确认删除？"
               onConfirm={async () => {
-                await deleteBrand(row.id);
-                message.success('已删除');
-                actionRef.current?.reload();
+                try {
+                  await deleteBrand(row.id);
+                  message.success('已删除');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  message.error(deletionErrorMessage(error));
+                }
               }}
             >
               <Button type="link" size="small" danger icon={<DeleteOutlined />}>
@@ -258,8 +265,18 @@ const BrandsPage: React.FC = () => {
           label="品牌名称"
           rules={[{ required: true, message: '请输入品牌名称' }]}
         />
-        <ProFormText name="logo" label="Logo URL" />
-        <ProFormText name="banner" label="Banner URL" />
+        <ProFormImageUpload
+          name="logo"
+          label="Logo"
+          colProps={{ span: 12 }}
+          upload={uploadImage}
+        />
+        <ProFormImageUpload
+          name="banner"
+          label="Banner"
+          colProps={{ span: 12 }}
+          upload={uploadImage}
+        />
         <ProFormTextArea name="description" label="品牌描述" />
         <ProFormTextArea name="remark" label="备注" />
         <ProFormSwitch name="visible" label="小程序可见" />

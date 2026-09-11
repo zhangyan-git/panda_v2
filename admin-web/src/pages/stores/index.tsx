@@ -17,15 +17,24 @@ import {
   ProFormTextArea,
   ProTable,
 } from '@ant-design/pro-components';
+import { ProFormImageUpload, ProFormRegionCascader, namesToPath, regionFields } from '@panda-v2/ui';
 import { useAccess } from '@umijs/max';
 import { Button, message, Popconfirm, Space, Tag, Tooltip } from 'antd';
 import { useRef, useState } from 'react';
-import type { ActionType, ProColumns } from '@ant-design/pro-components';
+import type { ActionType, ProColumns, ProFormInstance } from '@ant-design/pro-components';
 import { auditStore, createStore, deleteStore, listStores, updateStore, updateStoreStatus, type Store, type StoreInput, type StoreStatus } from '../../services/store';
 import { listBrands } from '../../services/brand';
 import { listMerchants } from '../../services/merchant';
+import { deletionErrorMessage } from '../../services/requestError';
+import { uploadImage } from '../../services/upload';
 
 import type { AuditStatus } from '../../services/brand';
+
+/**
+ * 表单值 = 后端入参 + 级联框自己的编码路径。
+ * `region` 只活在表单里，提交前由 regionFields 摊回三个区名与三个编码。
+ */
+type StoreFormValues = StoreInput & { region?: string[] };
 
 const AUDIT_STATUS_TAG: Record<AuditStatus, { color: string; label: string }> = {
   pending: { color: 'gold', label: '待审核' },
@@ -41,6 +50,7 @@ const STATUS_TAG: Record<StoreStatus, { color: string; label: string }> = {
 const StoresPage: React.FC = () => {
   const access = useAccess();
   const actionRef = useRef<ActionType>();
+  const formRef = useRef<ProFormInstance<StoreFormValues>>();
 
   // 新建/编辑 modal（editing 为 null 表示新建）
   const [formOpen, setFormOpen] = useState(false);
@@ -179,9 +189,13 @@ const StoresPage: React.FC = () => {
             <Popconfirm
               title="指向该门店的账号范围将回收为商户级，确认删除？"
               onConfirm={async () => {
-                await deleteStore(row.id);
-                message.success('已删除');
-                actionRef.current?.reload();
+                try {
+                  await deleteStore(row.id);
+                  message.success('已删除');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  message.error(deletionErrorMessage(error));
+                }
               }}
             >
               <Button type="link" size="small" danger icon={<DeleteOutlined />}>
@@ -224,8 +238,12 @@ const StoresPage: React.FC = () => {
       />
 
       {/* 新建/编辑门店 */}
-      <ModalForm<StoreInput>
+      <ModalForm<StoreFormValues>
         key={editing?.id ?? 'create'}
+        formRef={formRef}
+        onValuesChange={(changed) => {
+          if ('merchantId' in changed) formRef.current?.setFieldValue('brandId', undefined);
+        }}
         title={editing ? `编辑门店「${editing.name}」` : '新建门店'}
         open={formOpen}
         onOpenChange={setFormOpen}
@@ -240,9 +258,9 @@ const StoresPage: React.FC = () => {
                 name: editing.name,
                 logo: editing.logo,
                 photos: editing.photos,
-                province: editing.province,
-                city: editing.city,
-                district: editing.district,
+                // 名字换成编码路径。库里可能有「北京」这种自由文本，解析不出来就是
+                // undefined（级联框空着），提交时再由 regionFields 原样兜回去。
+                region: namesToPath([editing.province, editing.city, editing.district]),
                 address: editing.address,
                 longitude: editing.longitude ?? undefined,
                 latitude: editing.latitude ?? undefined,
@@ -257,11 +275,16 @@ const StoresPage: React.FC = () => {
             : { visible: true }
         }
         onFinish={async (values) => {
+          // 级联框只提交一个编码路径，三个区名与三个编码都在这里一次算出来。
+          // 解析不出来（用户没碰过这个字段、而库里是历史自由文本）时，regionFields
+          // 会把 editing 上的原值原样带回来——绝不能因为打开一次编辑就把老数据洗成空。
+          const { region, ...rest } = values;
+          const payload = { ...rest, ...regionFields(region, editing) };
           if (editing) {
-            await updateStore(editing.id, { ...values, merchantId: editing.merchantId });
+            await updateStore(editing.id, { ...payload, merchantId: editing.merchantId });
             message.success('已保存，修改直接生效并留痕');
           } else {
-            await createStore(values);
+            await createStore(payload);
             message.success('已创建，审核状态为待审核');
           }
           actionRef.current?.reload();
@@ -284,7 +307,9 @@ const StoresPage: React.FC = () => {
               label="所属品牌"
               colProps={{ span: 12 }}
               key={merchantId ?? 'none'}
-              request={() => brandOptions(merchantId)}
+              params={{ merchantId }}
+              request={(params) => brandOptions(params.merchantId)}
+              disabled={!merchantId}
               fieldProps={{ showSearch: true, optionFilterProp: 'label' }}
               rules={[{ required: true, message: '请选择所属品牌' }]}
               extra="仅可选择该商户名下的品牌"
@@ -297,10 +322,13 @@ const StoresPage: React.FC = () => {
           colProps={{ span: 12 }}
           rules={[{ required: true, message: '请输入门店名称' }]}
         />
-        <ProFormText name="logo" label="Logo URL" colProps={{ span: 12 }} />
-        <ProFormText name="province" label="省份" colProps={{ span: 8 }} />
-        <ProFormText name="city" label="城市" colProps={{ span: 8 }} />
-        <ProFormText name="district" label="区/县" colProps={{ span: 8 }} />
+        <ProFormImageUpload
+          name="logo"
+          label="Logo"
+          colProps={{ span: 12 }}
+          upload={uploadImage}
+        />
+        <ProFormRegionCascader name="region" label="省 / 市 / 区" colProps={{ span: 24 }} />
         <ProFormText name="address" label="详细地址" colProps={{ span: 24 }} />
         <ProFormDigit
           name="longitude"
@@ -323,12 +351,13 @@ const StoresPage: React.FC = () => {
           colProps={{ span: 12 }}
           placeholder="如 09:00-22:00"
         />
-        <ProFormSelect
+        <ProFormImageUpload
           name="photos"
           label="门店照片"
-          colProps={{ span: 12 }}
-          mode="tags"
-          tooltip="输入照片 URL 后回车添加，可多个"
+          colProps={{ span: 24 }}
+          maxCount={9}
+          tooltip="上传门店照片，可多张"
+          upload={uploadImage}
         />
         <ProFormTextArea name="detail" label="门店介绍" colProps={{ span: 24 }} />
         <ProFormTextArea name="remark" label="备注" colProps={{ span: 24 }} />

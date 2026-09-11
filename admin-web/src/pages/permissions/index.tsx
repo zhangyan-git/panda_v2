@@ -188,7 +188,7 @@ const PermissionsPage: React.FC = () => {
         <ProFormText
           name="code"
           label="权限码"
-          placeholder="如 admin:roles:read"
+          placeholder="如 admin:roles:view"
           rules={[{ required: true, message: '请输入权限码' }]}
         />
         <ProFormText

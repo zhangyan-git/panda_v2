@@ -17,6 +17,10 @@ export type Store = {
   province: string;
   city: string;
   district: string;
+  // 区划编码与名称并存：名字给人看，编码用来定位与迁移。历史行为空串。
+  provinceCode: string;
+  cityCode: string;
+  districtCode: string;
   address: string;
   longitude: number | null;
   latitude: number | null;
@@ -44,6 +48,9 @@ export type StoreInput = {
   province?: string;
   city?: string;
   district?: string;
+  provinceCode?: string;
+  cityCode?: string;
+  districtCode?: string;
   address?: string;
   longitude?: number | null;
   latitude?: number | null;

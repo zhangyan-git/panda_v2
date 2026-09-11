@@ -85,7 +85,7 @@ const AdminUsersPage: React.FC = () => {
               分配角色
             </Button>
           )}
-          {access.can('admin:users:write') &&
+          {access.can('admin:users:manage') &&
             (row.status === 'active' ? (
               <Popconfirm
                 title="确认禁用该账号？"
@@ -137,7 +137,7 @@ const AdminUsersPage: React.FC = () => {
         }}
         search={{ labelWidth: 'auto' }}
         toolBarRender={() => [
-          access.can('admin:users:write') && (
+          access.can('admin:users:manage') && (
             <Button
               key="add"
               type="primary"
@@ -172,8 +172,19 @@ const AdminUsersPage: React.FC = () => {
           label="初始密码"
           rules={[{ required: true, message: '请输入初始密码' }]}
         />
-        <ProFormText name="name" label="姓名" />
-        <ProFormText name="email" label="邮箱" />
+        <ProFormText
+          name="name"
+          label="姓名"
+          rules={[{ required: true, message: '请输入姓名' }]}
+        />
+        <ProFormText
+          name="email"
+          label="邮箱"
+          rules={[
+            { required: true, message: '请输入邮箱' },
+            { type: 'email', message: '邮箱格式不正确' },
+          ]}
+        />
       </ModalForm>
 
       {/* 分配角色 */}

@@ -1,6 +1,6 @@
 import { history, type RequestConfig } from '@umijs/max';
 import { renderMenuIcon } from './menuIcons';
-import { myMenuTree, type MenuNode } from './services/menu';
+import { loadMyMenus, type MenuNode } from './services/menu';
 import { fetchCurrentUser, logout as logoutRequest } from './services/user';
 import type { CurrentUser } from './services/user';
 
@@ -35,11 +35,14 @@ export const request: RequestConfig = {
   ],
   responseInterceptors: [
     (response: any) => {
-      // 解包后端统一信封 {success, data, message}
+      // 解包后端统一信封 {success, data, errorCode, errorMessage, showType}
       const body = response.data;
       if (body && typeof body === 'object' && 'success' in body) {
         if (!body.success) {
-          return Promise.reject(new Error(body.message || '请求失败'));
+          // 字段名是 errorMessage：读 body.message 的话这里永远是 undefined，
+          // 后端所有措辞过的中文提示（「文件超过 10MB」「非图片格式」）都会被吞成
+          // 「请求失败」。requestError.ts 里那几个辅助函数读的也是这个字段名。
+          return Promise.reject(new Error(body.errorMessage || '请求失败'));
         }
         response.data = body.data;
       }
@@ -70,10 +73,8 @@ export const layout = ({
   // mix 模式才有顶部栏，右上角才会渲染头像/用户名/退出下拉（side 模式会渲染到侧栏底部）
   layout: 'mix' as const,
   navTheme: 'light' as const,
-  // 侧栏菜单由服务端菜单树驱动；拿不到时回退到路由配置的静态菜单
-  ...(initialState?.menus?.length
-    ? { menuDataRender: () => toMenuData(initialState.menus!) }
-    : {}),
+  // 始终以服务端结果为准，包括合法空数组；失败时也不显示静态入口。
+  menuDataRender: () => toMenuData(initialState?.menus ?? []),
   onPageChange() {
     const { location } = history;
     if (location.pathname === LOGIN_PATH) return;
@@ -105,11 +106,7 @@ export async function getInitialState(): Promise<{
   try {
     const currentUser = await fetchCurrentUser();
     const name = currentUser.name || currentUser.username;
-    // 菜单树拉取失败不阻塞登录，侧栏回退静态菜单；后端重启等瞬时失败重试一次
-    const menus = await myMenuTree().catch(() => myMenuTree().catch(() => undefined));
-    if (!menus?.length) {
-      console.warn('[menu] 服务端菜单拉取失败，侧栏回退静态菜单');
-    }
+    const menus = await loadMyMenus();
     return {
       currentUser,
       permissions: currentUser.permissions ?? [],

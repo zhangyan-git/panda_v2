@@ -4,9 +4,9 @@ export type CurrentUser = {
   id: string;
   username: string;
   name: string;
-  avatar?: string;
+  email: string;
   merchantId: string;
-  roles: string[];
+  merchantName: string;
 };
 
 /** 获取当前登录商户用户信息 */

@@ -2,7 +2,8 @@ import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import { LoginForm, ProFormText } from '@ant-design/pro-components';
 import { history, useModel } from '@umijs/max';
 import { message } from 'antd';
-import { login } from '../../services/user';
+import { fetchCurrentUser, login } from '../../services/user';
+import { clearSession, requestErrorMessage, saveTokens } from '../../services/session';
 
 const LoginPage: React.FC = () => {
   const { setInitialState } = useModel('@@initialState');
@@ -10,13 +11,15 @@ const LoginPage: React.FC = () => {
   const handleSubmit = async (values: { username: string; password: string }) => {
     try {
       const tokens = await login(values);
-      localStorage.setItem('panda.auth.tokens', JSON.stringify(tokens));
-      await setInitialState((s) => ({ ...s }));
+      saveTokens(tokens);
+      const currentUser = await fetchCurrentUser();
+      await setInitialState((s) => ({ ...s, currentUser }));
       message.success('登录成功');
-      history.push('/dashboard');
+      history.replace('/dashboard');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '登录失败，请检查用户名和密码';
-      message.error(msg);
+      clearSession();
+      await setInitialState((s) => ({ ...s, currentUser: undefined }));
+      message.error(requestErrorMessage(err, '登录失败，请检查用户名和密码'));
     }
   };
 

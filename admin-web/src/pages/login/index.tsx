@@ -2,6 +2,7 @@ import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import { LoginForm, ProFormText } from '@ant-design/pro-components';
 import { history, useModel } from '@umijs/max';
 import { message } from 'antd';
+import { loadMyMenus } from '../../services/menu';
 import { fetchCurrentUser, login } from '../../services/user';
 
 const LoginPage: React.FC = () => {
@@ -13,10 +14,14 @@ const LoginPage: React.FC = () => {
       localStorage.setItem('panda.auth.tokens', JSON.stringify(tokens));
       // token 已存入，拦截器现在能注入 Authorization，直接拉取用户信息
       const currentUser = await fetchCurrentUser();
+      const menus = await loadMyMenus();
       await setInitialState((s: any) => ({
         ...s,
         currentUser,
         permissions: currentUser.permissions ?? [],
+        menus,
+        name: currentUser.name || currentUser.username,
+        avatar: currentUser.avatar || false,
       }));
       message.success('登录成功');
       history.push('/dashboard');

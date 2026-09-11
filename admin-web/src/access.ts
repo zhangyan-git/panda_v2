@@ -20,41 +20,41 @@ export default function access(initialState: {
 
   return {
     // 角色管理
-    canViewRoles:   has('admin:roles:read'),
-    canWriteRoles:  has('admin:roles:write'),
+    canViewRoles:   has('admin:roles:view'),
+    canWriteRoles:  has('admin:roles:manage'),
     canDeleteRoles: has('admin:roles:delete'),
 
     // 权限管理
-    canViewPermissions:   has('admin:permissions:read'),
-    canWritePermissions:  has('admin:permissions:write'),
+    canViewPermissions:   has('admin:permissions:view'),
+    canWritePermissions:  has('admin:permissions:manage'),
     canDeletePermissions: has('admin:permissions:delete'),
 
     // 绑定管理（角色分配权限 / 用户分配角色）
-    canViewBindings:  has('admin:bindings:read'),
-    canWriteBindings: has('admin:bindings:write'),
+    canViewBindings:  has('admin:bindings:view'),
+    canWriteBindings: has('admin:bindings:manage'),
 
     // 管理员用户管理
-    canViewAdminUsers:  has('admin:users:read'),
-    canWriteAdminUsers: has('admin:users:write'),
+    canViewAdminUsers:  has('admin:users:view'),
+    canWriteAdminUsers: has('admin:users:manage'),
 
     // 菜单管理
-    canViewMenus:   has('admin:menus:read'),
-    canWriteMenus:  has('admin:menus:write'),
+    canViewMenus:   has('admin:menus:view'),
+    canWriteMenus:  has('admin:menus:manage'),
     canDeleteMenus: has('admin:menus:delete'),
 
     // 商户管理
-    canViewMerchants:   has('admin:merchants:read'),
-    canWriteMerchants:  has('admin:merchants:write'),
+    canViewMerchants:   has('admin:merchants:view'),
+    canWriteMerchants:  has('admin:merchants:manage'),
     canDeleteMerchants: has('admin:merchants:delete'),
 
     // 品牌管理
-    canViewBrands:   has('admin:brands:read'),
-    canWriteBrands:  has('admin:brands:write'),
+    canViewBrands:   has('admin:brands:view'),
+    canWriteBrands:  has('admin:brands:manage'),
     canDeleteBrands: has('admin:brands:delete'),
 
     // 门店管理
-    canViewStores:   has('admin:stores:read'),
-    canWriteStores:  has('admin:stores:write'),
+    canViewStores:   has('admin:stores:view'),
+    canWriteStores:  has('admin:stores:manage'),
     canDeleteStores: has('admin:stores:delete'),
 
     // 原始检查——当需要用权限码直接判断时

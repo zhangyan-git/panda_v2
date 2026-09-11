@@ -28,7 +28,9 @@ import {
   type Permission,
   type Role,
 } from '../../services/iam';
+import { requestErrorMessage, roleSaveErrorMessage } from '../../services/requestError';
 import { renderMenuIcon } from '../../menuIcons';
+import { mergeGroupSelection } from './permSelection';
 import {
   assignMenusToRole,
   listMenuTree,
@@ -41,20 +43,26 @@ const RolesPage: React.FC = () => {
   const actionRef = useRef<ActionType>();
   const [editing, setEditing] = useState<Role | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const reservedCode = editing?.code === 'super_admin' || editing?.code === '超级管理员';
 
   // 分配权限 modal 状态
   const [permModal, setPermModal] = useState(false);
   const [permTarget, setPermTarget] = useState<Role | null>(null);
   const [allPerms, setAllPerms] = useState<Permission[]>([]);
   const [checkedPerms, setCheckedPerms] = useState<string[]>([]);
+  const [permSaving, setPermSaving] = useState(false);
 
   const openPermModal = async (role: Role) => {
-    setPermTarget(role);
-    // 回显当前角色已绑定的权限；保存时整体覆盖
-    const [perms, bound] = await Promise.all([listPermissions(), listRolePermissions(role.id)]);
-    setAllPerms(perms);
-    setCheckedPerms(bound.map((p) => p.id));
-    setPermModal(true);
+    try {
+      // 回显当前角色已绑定的权限；保存时整体覆盖
+      const [perms, bound] = await Promise.all([listPermissions(), listRolePermissions(role.id)]);
+      setPermTarget(role);
+      setAllPerms(perms);
+      setCheckedPerms(bound.map((p) => p.id));
+      setPermModal(true);
+    } catch (error) {
+      message.error(requestErrorMessage(error, '加载权限失败，请稍后重试'));
+    }
   };
 
   // 分配菜单 modal 状态
@@ -62,13 +70,18 @@ const RolesPage: React.FC = () => {
   const [menuTarget, setMenuTarget] = useState<Role | null>(null);
   const [menuTree, setMenuTree] = useState<MenuNode[]>([]);
   const [checkedMenus, setCheckedMenus] = useState<string[]>([]);
+  const [menuSaving, setMenuSaving] = useState(false);
 
   const openMenuModal = async (role: Role) => {
-    setMenuTarget(role);
-    const [tree, checked] = await Promise.all([listMenuTree(), listRoleMenus(role.id)]);
-    setMenuTree(tree);
-    setCheckedMenus(checked);
-    setMenuModal(true);
+    try {
+      const [tree, checked] = await Promise.all([listMenuTree(), listRoleMenus(role.id)]);
+      setMenuTarget(role);
+      setMenuTree(tree);
+      setCheckedMenus(checked);
+      setMenuModal(true);
+    } catch (error) {
+      message.error(requestErrorMessage(error, '加载菜单失败，请稍后重试'));
+    }
   };
 
   const toTreeData = (nodes: MenuNode[]): DataNode[] =>
@@ -162,6 +175,9 @@ const RolesPage: React.FC = () => {
   }, {});
 
   const allPermIds = allPerms.map((p) => p.id);
+  // 弹窗只展示 allPerms 中的权限；角色若残留已删除权限的绑定，不计入「已选/总数」，
+  // 但仍留在 checkedPerms 里，保存时不会被误删。
+  const checkedAllCount = allPermIds.filter((id) => checkedPerms.includes(id)).length;
   const togglePerms = (ids: string[], checked: boolean) => {
     setCheckedPerms((prev) => {
       const next = new Set(prev);
@@ -207,12 +223,11 @@ const RolesPage: React.FC = () => {
 
       {/* 新建 / 编辑角色 */}
       <ModalForm<{ code: string; name: string; description?: string }>
+        key={editing?.id ?? 'create'}
         title={editing ? '编辑角色' : '新建角色'}
         open={modalOpen}
-        onOpenChange={(v) => {
-          setModalOpen(v);
-          if (!v) setEditing(null);
-        }}
+        onOpenChange={setModalOpen}
+        modalProps={{ destroyOnClose: true }}
         initialValues={
           editing
             ? {
@@ -223,21 +238,28 @@ const RolesPage: React.FC = () => {
             : undefined
         }
         onFinish={async (values) => {
-          if (editing) {
-            await updateRole(editing.id, values);
-            message.success('已更新');
-          } else {
-            await createRole(values);
-            message.success('已创建');
+          try {
+            if (editing) {
+              await updateRole(editing.id, values);
+              message.success('已更新');
+            } else {
+              await createRole(values);
+              message.success('已创建');
+            }
+            actionRef.current?.reload();
+            return true;
+          } catch (error) {
+            message.error(roleSaveErrorMessage(error));
+            return false;
           }
-          actionRef.current?.reload();
-          return true;
         }}
       >
         <ProFormText
           name="code"
           label="角色代码"
           placeholder="如 operator"
+          disabled={reservedCode}
+          extra={reservedCode ? '系统保留角色的授权代码不可修改，名称和说明仍可编辑' : undefined}
           rules={[{ required: true, message: '请输入角色代码' }]}
         />
         <ProFormText
@@ -254,11 +276,20 @@ const RolesPage: React.FC = () => {
         title={`为「${menuTarget?.name || menuTarget?.code}」分配菜单`}
         open={menuModal}
         onCancel={() => setMenuModal(false)}
-        onOk={async () => {
+        confirmLoading={menuSaving}
+        // 不返回 Promise：失败时自行提示并保持弹窗打开，避免 antd 把已保存状态当成功关闭。
+        onOk={() => {
           if (!menuTarget) return;
-          await assignMenusToRole(menuTarget.id, checkedMenus);
-          message.success('菜单已更新');
-          setMenuModal(false);
+          setMenuSaving(true);
+          assignMenusToRole(menuTarget.id, checkedMenus)
+            .then(() => {
+              message.success('菜单已更新');
+              setMenuModal(false);
+            })
+            .catch((error) => {
+              message.error(requestErrorMessage(error, '菜单保存失败，请稍后重试'));
+            })
+            .finally(() => setMenuSaving(false));
         }}
         width={480}
       >
@@ -277,21 +308,30 @@ const RolesPage: React.FC = () => {
         title={`为「${permTarget?.name || permTarget?.code}」分配权限`}
         open={permModal}
         onCancel={() => setPermModal(false)}
-        onOk={async () => {
+        confirmLoading={permSaving}
+        // 不返回 Promise：保存失败时保留勾选状态与弹窗，用户可以改完再试。
+        onOk={() => {
           if (!permTarget) return;
-          await assignPermissionsToRole(permTarget.id, checkedPerms);
-          message.success('权限已更新');
-          setPermModal(false);
+          setPermSaving(true);
+          assignPermissionsToRole(permTarget.id, checkedPerms)
+            .then(() => {
+              message.success('权限已更新');
+              setPermModal(false);
+            })
+            .catch((error) => {
+              message.error(requestErrorMessage(error, '权限保存失败，请稍后重试'));
+            })
+            .finally(() => setPermSaving(false));
         }}
         width={600}
       >
         <div style={{ marginBottom: 12 }}>
           <Checkbox
-            indeterminate={checkedPerms.length > 0 && checkedPerms.length < allPermIds.length}
-            checked={allPermIds.length > 0 && checkedPerms.length === allPermIds.length}
+            indeterminate={checkedAllCount > 0 && checkedAllCount < allPermIds.length}
+            checked={allPermIds.length > 0 && checkedAllCount === allPermIds.length}
             onChange={(e) => togglePerms(allPermIds, e.target.checked)}
           >
-            全选（已选 {checkedPerms.length}/{allPermIds.length}）
+            全选（已选 {checkedAllCount}/{allPermIds.length}）
           </Checkbox>
         </div>
         {Object.entries(permGroups).map(([group, perms]) => {
@@ -318,9 +358,12 @@ const RolesPage: React.FC = () => {
                   全选
                 </Checkbox>
               </div>
+              {/* 分组是独立的 Checkbox.Group，onChange 只回传本组的值，必须合并而不是替换。 */}
               <Checkbox.Group
-                value={checkedPerms}
-                onChange={(vals) => setCheckedPerms(vals as string[])}
+                value={groupIds.filter((id) => checkedPerms.includes(id))}
+                onChange={(vals) =>
+                  setCheckedPerms(mergeGroupSelection(checkedPerms, groupIds, vals as string[]))
+                }
                 style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}
               >
                 {perms.map((p) => (
