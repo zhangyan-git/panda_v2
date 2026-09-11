@@ -1,0 +1,80 @@
+// Package migrations embeds the SQL migration sets this repository ships.
+//
+// The SQL lives outside every Go module tree, so it is embedded here and handed
+// to platform/database/migrate as an fs.FS. Three sets exist:
+//
+//   - Legacy: the pre-split single-database chain (001…009). It is kept
+//     byte-for-byte as it was applied, so a database that predates the split can
+//     still be described exactly as it was built.
+//   - Identity: user-service's database.
+//   - Merchant: merchant-service's database.
+//
+// Identity and Merchant each encode the state the legacy chain converges to for
+// their own domain — no cross-database foreign key, no table that moved to the
+// other service — and then carry only their own history. A fresh database runs
+// one set from the beginning. A database that predates the split is adopted with
+// `panda-migrate adopt`, which records the versions it already satisfies and
+// applies whatever follows.
+//
+// The two domains never reference each other across the boundary: the shared
+// identity is a value (merchant_id, scope_id), not a foreign key.
+// TestSetsDoNotCrossTheDatabaseBoundary fails if a set ever reintroduces one.
+package migrations
+
+import (
+	"embed"
+	"fmt"
+	"io/fs"
+	"sort"
+	"strings"
+)
+
+//go:embed *.sql
+var legacyFiles embed.FS
+
+//go:embed identity/*.sql
+var identityFiles embed.FS
+
+//go:embed merchant/*.sql
+var merchantFiles embed.FS
+
+// Legacy is the pre-split single-database migration chain.
+var Legacy fs.FS = sub(legacyFiles, ".")
+
+// Identity is user-service's migration set.
+var Identity fs.FS = sub(identityFiles, "identity")
+
+// Merchant is merchant-service's migration set.
+var Merchant fs.FS = sub(merchantFiles, "merchant")
+
+// Versions lists a set's migration file names in the order the runner applies
+// them: top-level *.sql, sorted by name. It mirrors platform/database/migrate's
+// own ordering so a caller can talk about "everything up to and including X"
+// without restating the rule and drifting from it.
+func Versions(fsys fs.FS) ([]string, error) {
+	entries, err := fs.ReadDir(fsys, ".")
+	if err != nil {
+		return nil, fmt.Errorf("migrations: read set: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// sub narrows an embedded tree to one directory. platform/database/migrate reads
+// the top level of the FS it is given and does not descend, so each set must be
+// handed over already rooted at its own directory.
+func sub(fsys fs.FS, dir string) fs.FS {
+	narrowed, err := fs.Sub(fsys, dir)
+	if err != nil {
+		// Both arguments are compile-time constants of the embed directives
+		// above, so this can only fire if a directive and this call disagree.
+		panic("migrations: embedded directory " + dir + ": " + err.Error())
+	}
+	return narrowed
+}

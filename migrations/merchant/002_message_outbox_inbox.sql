@@ -1,5 +1,15 @@
--- Message durability tables. Execute this migration in each service-owned database.
--- +goose Up
+-- merchant/002: outbox / inbox 表（商户库）
+--
+-- 与 identity/003_message_outbox_inbox.sql 内容相同：两个库各自需要一对
+-- outbox / inbox，跨库写不共享表。
+--
+-- 本文件绝不能带 goose 的 Down 段：platform/database/migrate.Apply 把整个文件
+-- 丢给一次 Exec、不识别 goose 指令，带上就会在同一个事务里建完表再删掉，
+-- 而且不报错。Apply 会显式拒绝这种文件（见 migrate.go 里的字符串判断）。
+--
+-- 顺序也是硬要求：ALTER 必须先于 CREATE INDEX，否则对「由早期 schema 建出来、
+-- 没有 lease 列」的表执行本文件时会因缺列而失败。
+
 CREATE TABLE IF NOT EXISTS message_outbox (
     event_id TEXT PRIMARY KEY CHECK (char_length(trim(event_id)) > 0),
     event_type TEXT NOT NULL DEFAULT '',
@@ -43,7 +53,3 @@ CREATE INDEX IF NOT EXISTS message_outbox_pending_idx
 CREATE INDEX IF NOT EXISTS message_outbox_lease_idx
     ON message_outbox (lease_until)
     WHERE published_at IS NULL;
-
--- +goose Down
-DROP TABLE IF EXISTS message_inbox;
-DROP TABLE IF EXISTS message_outbox;
