@@ -26,7 +26,11 @@ func TestAuthorizationTimeoutConfiguration(t *testing.T) {
 		// A stack that sets this for every service must not break the services
 		// that have no live authorization to bound: the invalid value is ignored
 		// and the code default stands, exactly like MERCHANT_OWNERSHIP_TIMEOUT_MS.
-		{name: "unrelated service ignores it", service: "order-service", env: "test", timeout: "invalid", want: 2000},
+		// gateway-service is the stand-in here because it is the one service that
+		// requires nothing at all; a service that acquires a requirement (as
+		// order-service did when it started asking for live grants) stops being a
+		// valid example for this case.
+		{name: "unrelated service ignores it", service: "gateway-service", env: "test", timeout: "invalid", want: 2000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -56,11 +60,12 @@ func TestOwnershipConfiguration(t *testing.T) {
 	const token = "test-only-internal-credential-32-bytes"
 	const userGRPC = "127.0.0.1:19081"
 	const merchantGRPC = "127.0.0.1:19082"
+	const coffeeMachineGRPC = "127.0.0.1:19085"
 	// MERCHANT_SERVICE_URL is intentionally never set below: user-service reaches
 	// merchant-service over gRPC now, so the HTTP URL belongs to the gateway only.
 	tests := []struct {
-		name, service, env, timeout, userGRPC, merchantGRPC, token string
-		wantErr                                                    bool
+		name, service, env, timeout, userGRPC, merchantGRPC, coffeeMachineGRPC, token string
+		wantErr                                                                       bool
 	}{
 		{name: "remote default", service: "user-service", env: "production", merchantGRPC: merchantGRPC, token: token},
 		{name: "remote missing gRPC address", service: "user-service", env: "production", token: token, wantErr: true},
@@ -80,8 +85,19 @@ func TestOwnershipConfiguration(t *testing.T) {
 		// the infrastructure RPCs coupon-service does not call.
 		{name: "coupon needs user gRPC address", service: "coupon-service", env: "production", wantErr: true},
 		{name: "coupon needs no service token", service: "coupon-service", env: "production", userGRPC: userGRPC},
-		{name: "unrelated service needs no merchant settings", service: "order-service", env: "production"},
-		{name: "unrelated service ignores ownership settings", service: "order-service", env: "production", timeout: "invalid"},
+		// order-service asks user-service for live grants (like coupon-service) and
+		// coffee-machine-service for the device facts a drink order is validated
+		// against, presenting the shared service token for the second one. Both
+		// addresses and the token are required, and each case below omits exactly one.
+		{name: "order needs user gRPC address", service: "order-service", env: "production", coffeeMachineGRPC: coffeeMachineGRPC, token: token, wantErr: true},
+		{name: "order needs coffee machine gRPC address", service: "order-service", env: "production", userGRPC: userGRPC, token: token, wantErr: true},
+		{name: "order needs the service token", service: "order-service", env: "production", userGRPC: userGRPC, coffeeMachineGRPC: coffeeMachineGRPC, wantErr: true},
+		{name: "order is fully configured", service: "order-service", env: "production", userGRPC: userGRPC, coffeeMachineGRPC: coffeeMachineGRPC, token: token},
+		// gateway-service is the stand-in for "a service with no special settings":
+		// it owns no database and dials nothing. Do not reuse a domain service name
+		// here — each one acquires requirements over time and stops being unrelated.
+		{name: "unrelated service needs no merchant settings", service: "gateway-service", env: "production"},
+		{name: "unrelated service ignores ownership settings", service: "gateway-service", env: "production", timeout: "invalid"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -89,6 +105,7 @@ func TestOwnershipConfiguration(t *testing.T) {
 			t.Setenv("MERCHANT_OWNERSHIP_TIMEOUT_MS", tt.timeout)
 			t.Setenv("USER_GRPC_ADDR", tt.userGRPC)
 			t.Setenv("MERCHANT_GRPC_ADDR", tt.merchantGRPC)
+			t.Setenv("COFFEE_MACHINE_GRPC_ADDR", tt.coffeeMachineGRPC)
 			t.Setenv("MERCHANT_INTERNAL_TOKEN", tt.token)
 			cfg, err := Load(tt.service)
 			if (err != nil) != tt.wantErr {

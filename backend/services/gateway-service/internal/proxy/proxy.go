@@ -35,7 +35,13 @@ type Config struct {
 	// CoffeeMachineServiceURL 同上：可留空，留空时 /v1/admin/coffee-machines 保持
 	// 404。设备域是后加的服务，不填不该让网关起不来。
 	CoffeeMachineServiceURL string
-	RequestTimeout          time.Duration
+	// OrderServiceURL 同上：可留空，留空时订单域的四条路径都保持 404（订单域是后加的
+	// 服务）。注意它接的是订单与售后两个资源、两端各一棵：/v1/admin/orders、
+	// /v1/admin/after-sales、/v1/miniapp/orders、/v1/miniapp/after-sales，后两个落在
+	// user-service 的 /v1/miniapp 前缀里——顺序和「留空时不许落到 user-service」
+	// 这两件事都在 NewHandler 的那条 case 上，见那里的注释。
+	OrderServiceURL string
+	RequestTimeout  time.Duration
 	// UploadTimeout replaces RequestTimeout for the upload path only, so one slow
 	// route does not buy every other route a two-minute hang.
 	UploadTimeout time.Duration
@@ -80,6 +86,14 @@ func NewHandler(cfg Config) (http.Handler, error) {
 			return nil, fmt.Errorf("coffee machine service URL: %w", err)
 		}
 	}
+	// 订单域同样后加。
+	var order http.Handler
+	if strings.TrimSpace(cfg.OrderServiceURL) != "" {
+		order, err = newProxy(cfg.OrderServiceURL, cfg.HTTPClient)
+		if err != nil {
+			return nil, fmt.Errorf("order service URL: %w", err)
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := normalizePath(r.URL.Path)
 		r.URL.Path = path
@@ -89,6 +103,32 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		var upstream http.Handler
 		timeout := cfg.RequestTimeout
 		switch {
+		// 订单域的四条路径必须先于 user-service 那一条：/v1/miniapp/orders 与
+		// /v1/miniapp/after-sales 同时落在「/v1/miniapp →user-service」这个前缀里，
+		// 而 Go 的 switch 取第一个成立的 case，写在它后面就永远轮不到。放到前面的
+		// 代价只是多几次前缀比较。
+		//
+		// 售后是订单域的第二棵树（订单与售后各自一棵），所以四个前缀都写出来，而不是
+		// 只写一个 /v1/ 的宽前缀：后台与小程序是两棵不同的端树，订单与售后是两个不同的
+		// 资源，将来任何一端或任何一个挪走，都不该把其余的带走。
+		//
+		// 漏掉售后那两条的后果不是 404 而是一句更难查的话：/v1/admin/after-sales 落到
+		// default 直接 404，/v1/miniapp/after-sales 落到下面的 /v1/miniapp 被转给
+		// user-service，客户端拿到的 404 看着像「用户服务没有这个接口」。
+		//
+		// 这里刻意不把 order == nil 合进 case 条件：那样没配上游时这些路径会落到
+		// 下面的 /v1/miniapp，被转给 user-service，客户端拿到的 404 看着像「用户
+		// 服务没有这个接口」。真正的原因是订单服务没接上，就该在这里 404——与优惠券、
+		// 设备域「没配上游就 404」是同一条约定。
+		case hasPathPrefix(path, "/v1/admin/orders"),
+			hasPathPrefix(path, "/v1/admin/after-sales"),
+			hasPathPrefix(path, "/v1/miniapp/orders"),
+			hasPathPrefix(path, "/v1/miniapp/after-sales"):
+			if order == nil {
+				http.NotFound(w, r)
+				return
+			}
+			upstream = order
 		case isNestedMerchantUsersPath(path),
 			// 小程序用户管理。单独一条，是因为 /v1/admin/users 的前缀匹配
 			// （下一行）管不到它——hasPathPrefix 按路径段比较，不按字符串前缀。

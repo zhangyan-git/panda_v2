@@ -1,0 +1,152 @@
+import { describe, expect, it } from 'vitest';
+import {
+  ACTOR_TYPE,
+  AFTER_SALE_SCOPE,
+  AFTER_SALE_STATUS,
+  AGGREGATE_TYPE,
+  FULFILLMENT_STATUS,
+  ORDER_LINE_TYPE,
+  orderComposition,
+  ORDER_SOURCE,
+  ORDER_STATUS,
+  PAYMENT_LINE_STATUS,
+  PAYMENT_LINE_TYPE,
+  paymentMethodLabel,
+} from './orderLabels';
+
+/**
+ * 这几张表是页面显示的全部依据，取值来自 order-service 的 model 常量（也就是各表
+ * 迁移里的 CHECK 约束）。逐条钉住码→文案，是为了让「枚举加了一个值而页面没跟上」
+ * 在测试里就能看出来，而不是等运营在界面上看见一个 pending_payment。
+ *
+ * 钉的是**取值全集**而不是「有没有文案」：前者能在后端加码时失败，后者只在漏写
+ * 文案时失败——而漏写文案本来就是少数，多出来的那个码才是常见的。
+ */
+describe('枚举文案表', () => {
+  it('覆盖 orders.status 的七个取值', () => {
+    expect(Object.keys(ORDER_STATUS).sort()).toEqual([
+      'cancelled', 'completed', 'expired', 'paid', 'pending_payment', 'refunded', 'refunding',
+    ]);
+  });
+
+  it('覆盖 orders.fulfillment_status 的七个取值', () => {
+    expect(Object.keys(FULFILLMENT_STATUS).sort()).toEqual([
+      'cancelled', 'completed', 'failed', 'making', 'none', 'pending', 'ready',
+    ]);
+  });
+
+  it('覆盖 orders.source 的两个取值', () => {
+    expect(Object.keys(ORDER_SOURCE).sort()).toEqual(['miniapp', 'screen_qr']);
+  });
+
+  it('覆盖 order_lines.line_type 的三个取值', () => {
+    expect(Object.keys(ORDER_LINE_TYPE).sort()).toEqual(['addon', 'drink', 'membership']);
+  });
+
+  it('覆盖 order_payment_lines.line_type 的六个出资方', () => {
+    expect(Object.keys(PAYMENT_LINE_TYPE).sort()).toEqual([
+      'coffee_bean', 'fortune_card', 'other', 'unionpay', 'wallet', 'wechat',
+    ]);
+  });
+
+  it('覆盖 order_payment_lines.status 的五个取值', () => {
+    expect(Object.keys(PAYMENT_LINE_STATUS).sort()).toEqual([
+      'failed', 'released', 'reserved', 'reversed', 'succeeded',
+    ]);
+  });
+
+  it('覆盖 order_after_sales.status 的七个取值', () => {
+    expect(Object.keys(AFTER_SALE_STATUS).sort()).toEqual([
+      'approved', 'cancelled', 'failed', 'pending', 'refunded', 'refunding', 'rejected',
+    ]);
+  });
+
+  it('覆盖 order_after_sales.scope 的四个取值', () => {
+    expect(Object.keys(AFTER_SALE_SCOPE).sort()).toEqual(['addon', 'all', 'drink', 'membership']);
+  });
+
+  it('覆盖 order_state_transitions.actor_type 的四个取值', () => {
+    expect(Object.keys(ACTOR_TYPE).sort()).toEqual(['admin', 'merchant', 'system', 'user']);
+  });
+
+  it('覆盖 order_state_transitions.aggregate_type 的四个取值', () => {
+    expect(Object.keys(AGGREGATE_TYPE).sort()).toEqual([
+      'after_sale', 'order', 'order_line', 'payment_line',
+    ]);
+  });
+
+  it('每个取值都有非空文案', () => {
+    for (const map of [
+      ORDER_STATUS,
+      FULFILLMENT_STATUS,
+      ORDER_SOURCE,
+      ORDER_LINE_TYPE,
+      PAYMENT_LINE_TYPE,
+      PAYMENT_LINE_STATUS,
+      AFTER_SALE_STATUS,
+      AFTER_SALE_SCOPE,
+      ACTOR_TYPE,
+      AGGREGATE_TYPE,
+    ]) {
+      for (const [value, meta] of Object.entries(map)) {
+        expect(meta.text, value).toBeTruthy();
+      }
+    }
+  });
+});
+
+describe('approved 的文案', () => {
+  it('「已通过」而不是「已退款」', () => {
+    // 后端 approve 只把售后单标成 approved，钱由 payment-service 退（还没建）。
+    // 文案写成「已退款」会让审核人以为钱出去了，从而不去追下一步。
+    expect(AFTER_SALE_STATUS.approved.text).toBe('已通过');
+    expect(AFTER_SALE_STATUS.refunded.text).toBe('已退款');
+  });
+});
+
+describe('paymentMethodLabel', () => {
+  it('认识的值给中文', () => {
+    expect(paymentMethodLabel('wechat')).toBe('微信支付');
+  });
+
+  it('不认识的值原样回显', () => {
+    // 与枚举表相反的地方：这张表本来就是不全的（后端没有枚举，值是从支付事件里抄的），
+    // 所以「原样回显」是常态而不是兜底——查库也查不到那份名单。
+    expect(paymentMethodLabel('wechat_v3')).toBe('wechat_v3');
+  });
+
+  it.each([undefined, null, '', '   '])('空值给占位符 %j', (value) => {
+    expect(paymentMethodLabel(value)).toBe('—');
+  });
+
+  it('两端空白不参与匹配', () => {
+    // 自由字符串是别人写进来的，前后带空格是常态。
+    expect(paymentMethodLabel('  wechat  ')).toBe('微信支付');
+  });
+});
+
+describe('orderComposition', () => {
+  const flags = (drink: boolean, addon: boolean, membership: boolean) => ({
+    hasDrinkLine: drink,
+    hasAddonLine: addon,
+    hasMembershipLine: membership,
+  });
+
+  it('顺序固定为饮品 / 加购 / 会员，不跟着入参的顺序走', () => {
+    expect(orderComposition(flags(true, true, true))).toEqual(['drink', 'addon', 'membership']);
+  });
+
+  it('合并单三种都有——它就是同时在三个分类列表里出现的那种单', () => {
+    // 这条是「后台按订单类型分类」的核心口径：列表之间不互斥，一张单可以同时在几个列表里。
+    expect(orderComposition(flags(true, true, false))).toEqual(['drink', 'addon']);
+  });
+
+  it('纯会员单只有会员——它的履约状态是 none，没有要出杯的东西', () => {
+    expect(orderComposition(flags(false, false, true))).toEqual(['membership']);
+  });
+
+  it('一种都没有时回空数组（不是 undefined）', () => {
+    // 页面对空数组显示「—」；回 undefined 会让 .map 直接抛，而这是列表里的一格。
+    expect(orderComposition(flags(false, false, false))).toEqual([]);
+  });
+});

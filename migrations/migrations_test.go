@@ -32,7 +32,7 @@ func TestLegacySetIsFrozen(t *testing.T) {
 }
 
 func TestSetsAreUsable(t *testing.T) {
-	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "legacy": Legacy} {
+	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "legacy": Legacy} {
 		t.Run(name, func(t *testing.T) {
 			versions, err := Versions(set)
 			if err != nil {
@@ -68,8 +68,14 @@ func TestSetsDoNotCrossTheDatabaseBoundary(t *testing.T) {
 		"merchant":       regexp.MustCompile(`REFERENCES\s+(admin_\w+|merchant_users|casbin_rule)\s*\(`),
 		"coupon":         regexp.MustCompile(`REFERENCES\s+(merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule)\s*\(`),
 		"coffee_machine": regexp.MustCompile(`REFERENCES\s+(merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule|coupon_\w+|user_coupons|payment_methods)\s*\(`),
+		// order-service owns no other service's state: users, stores, devices,
+		// drinks, coupons, memberships and 账户 all appear in its tables as values
+		// (user_id, store_id, coupon_id…), never as foreign keys. Its own two
+		// tables — order_lines and order_after_sales — are deliberately absent
+		// from this list, because those references are inside the database.
+		"order": regexp.MustCompile(`REFERENCES\s+(merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule|coupon_\w+|user_coupons|coupon_templates|coupon_batches|payment_methods|devices|drinks|device_drinks|manufacturers|memberships|membership_plans|users|user_accounts)\s*\(`),
 	}
-	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine} {
+	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order} {
 		t.Run(name, func(t *testing.T) {
 			versions, err := Versions(set)
 			if err != nil {
@@ -90,7 +96,7 @@ func TestSetsDoNotCrossTheDatabaseBoundary(t *testing.T) {
 
 // Every database needs its own pair of message tables — the outbox is written in
 // the same transaction as the business row, so it cannot be a shared table. That
-// makes four copies of the same DDL, and four places to forget.
+// makes five copies of the same DDL, and five places to forget.
 //
 // The copies are compared on their CREATE TABLE column lists, in order. Comments,
 // formatting, and the ALTER block the identity and merchant sets carry (it exists
@@ -108,6 +114,7 @@ var messageTableCopies = []struct {
 	{Merchant, "002_message_outbox_inbox.sql", "merchant"},
 	{Coupon, "001_coupon_core.sql", "coupon"},
 	{CoffeeMachine, "001_coffee_machine_core.sql", "coffee_machine"},
+	{Order, "001_order_core.sql", "order"},
 }
 
 func TestMessageTablesStayInSyncAcrossSets(t *testing.T) {
@@ -157,7 +164,7 @@ func TestMessageTablesAddLeaseColumnsBeforeIndexes(t *testing.T) {
 }
 
 // tableColumns returns the column definitions of one CREATE TABLE, in order and
-// without the trailing commas. One column per line is the convention these four
+// without the trailing commas. One column per line is the convention these
 // copies already follow, so anything else here is a parse failure worth seeing.
 func tableColumns(migration, table string) []string {
 	statement := regexp.MustCompile(`(?s)CREATE TABLE (?:IF NOT EXISTS )?` + table + `\s*\((.*?)\n\);`)

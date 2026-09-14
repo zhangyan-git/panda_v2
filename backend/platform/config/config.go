@@ -27,9 +27,14 @@ type Config struct {
 	// introduced by the split. Each falls back to DatabaseURL, so a stack that
 	// still runs on one database starts unchanged.
 	UserDatabaseURL, MerchantDatabaseURL string
+	// OrderDatabaseURL is order-service's database, kept alongside the two above
+	// for the callers that read a specific service's database rather than their
+	// own. A service that owns a database reads ServiceDatabaseURL.
+	OrderDatabaseURL string
 	// ServiceDatabaseURL is the database this service owns: user-service reads
-	// UserDatabaseURL, merchant-service reads MerchantDatabaseURL, and every
-	// other service (including the gateway, which owns none) reads DatabaseURL.
+	// UserDatabaseURL, merchant-service reads MerchantDatabaseURL, order-service
+	// reads OrderDatabaseURL, and every other service (including the gateway,
+	// which owns none) reads DatabaseURL.
 	ServiceDatabaseURL string
 	// MigrateOnStart applies this service's migration set during startup. It is
 	// off by default and stays off in production, where the release process
@@ -39,8 +44,12 @@ type Config struct {
 	// endpoints. They are used until service discovery is enabled, and remain the
 	// fallback afterwards.
 	UserGRPCAddress, MerchantGRPCAddress string
-	MerchantInternalToken                string
-	MerchantOwnershipTimeoutMS           int
+	// CoffeeMachineGRPCAddress 是 order-service 问设备事实的地址（下单时校验设备状态，
+	// 方案 5.8）。缺了它 order-service 无法启动：那一版里它是唯一一条服务端校验，
+	// 没有它，「这台机器能不能出杯」就只剩调用方说了算。
+	CoffeeMachineGRPCAddress   string
+	MerchantInternalToken      string
+	MerchantOwnershipTimeoutMS int
 	// AuthorizationTimeoutMS bounds one live authorization lookup. It is a
 	// per-request budget, not a cache TTL: services that use it re-check the
 	// caller's grants on every admin request.
@@ -150,11 +159,19 @@ func Load(service string) (Config, error) {
 		return Config{}, err
 	}
 	merchantToken := os.Getenv("MERCHANT_INTERNAL_TOKEN")
-	if service == "merchant-service" && len([]byte(merchantToken)) < 32 {
-		return Config{}, fmt.Errorf("MERCHANT_INTERNAL_TOKEN must be at least 32 bytes")
+	// merchant-service 自己要用它验内部调用；coffee-machine-service 要用它去问点位；
+	// order-service 要用它去读设备（下单时校验设备状态）。
+	//
+	// 发送方和服务方一个标准：服务方（merchant-service、coffee-machine-service）拒绝
+	// 短于 32 字节的配置，所以任何一个能通过校验的令牌都至少是 32 字节。发送方这边配
+	// 短了不是「一个更弱的令牌」——它压根匹配不上，每一次调用都会被判 401。在启动时
+	// 拦下来，比让每一单饮品都回 503 好。
+	if (service == "merchant-service" || service == "coffee-machine-service" || service == "order-service") && len([]byte(merchantToken)) < 32 {
+		return Config{}, fmt.Errorf("MERCHANT_INTERNAL_TOKEN must be at least 32 bytes for %s", service)
 	}
 	userGRPCAddr := strings.TrimSpace(os.Getenv("USER_GRPC_ADDR"))
 	merchantGRPCAddr := strings.TrimSpace(os.Getenv("MERCHANT_GRPC_ADDR"))
+	coffeeMachineGRPCAddr := strings.TrimSpace(os.Getenv("COFFEE_MACHINE_GRPC_ADDR"))
 	// Each service now reaches its peer over gRPC, so it needs that peer's
 	// address rather than its own. MERCHANT_SERVICE_URL is deliberately no longer
 	// required here: user-service stopped calling merchant-service over HTTP, and
@@ -167,15 +184,28 @@ func Load(service string) (Config, error) {
 			return Config{}, fmt.Errorf("MERCHANT_INTERNAL_TOKEN must be at least 32 bytes for user-service")
 		}
 	}
-	// 这三个服务都按请求调用 user-service 取实时授权，所以都要地址。
-	if (service == "merchant-service" || service == "coupon-service" || service == "coffee-machine-service") && userGRPCAddr == "" {
+	// 这几个服务都按请求调用 user-service 取实时授权，所以都要地址。
+	if (service == "merchant-service" || service == "coupon-service" || service == "coffee-machine-service" || service == "order-service") && userGRPCAddr == "" {
 		return Config{}, fmt.Errorf("USER_GRPC_ADDR is required for %s", service)
+	}
+	// order-service 还要 coffee-machine-service：下单时校验设备（在不在、启没启用、
+	// 点位对不对，方案 5.8）。和上面那条同样的理由——地址缺席不是「少个可选依赖」，
+	// 校验会整条失效，所以在这里拒绝启动，而不是等到第一次下单。
+	if service == "order-service" && coffeeMachineGRPCAddr == "" {
+		return Config{}, fmt.Errorf("COFFEE_MACHINE_GRPC_ADDR is required for order-service")
+	}
+	// coffee-machine-service 还要 merchant-service：设备挂点位之前，这个点位存不存在、
+	// 还能不能用，只有商户服务说了算（见 client.StoreResolver）。地址缺席不是「少个
+	// 可选依赖」——校验会整条失效，所以在这里就拒绝启动，而不是等到第一次保存设备。
+	if service == "coffee-machine-service" && merchantGRPCAddr == "" {
+		return Config{}, fmt.Errorf("MERCHANT_GRPC_ADDR is required for coffee-machine-service")
 	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	userDatabaseURL := os.Getenv("USER_DATABASE_URL")
 	merchantDatabaseURL := os.Getenv("MERCHANT_DATABASE_URL")
 	couponDatabaseURL := os.Getenv("COUPON_DATABASE_URL")
 	coffeeMachineDatabaseURL := os.Getenv("COFFEE_MACHINE_DATABASE_URL")
+	orderDatabaseURL := os.Getenv("ORDER_DATABASE_URL")
 	return Config{
 		ServiceName:                service,
 		Version:                    version,
@@ -186,7 +216,8 @@ func Load(service string) (Config, error) {
 		DatabaseURL:                databaseURL,
 		UserDatabaseURL:            userDatabaseURL,
 		MerchantDatabaseURL:        merchantDatabaseURL,
-		ServiceDatabaseURL:         resolveDatabase(service, databaseURL, userDatabaseURL, merchantDatabaseURL, couponDatabaseURL, coffeeMachineDatabaseURL),
+		OrderDatabaseURL:           orderDatabaseURL,
+		ServiceDatabaseURL:         resolveDatabase(service, databaseURL, userDatabaseURL, merchantDatabaseURL, couponDatabaseURL, coffeeMachineDatabaseURL, orderDatabaseURL),
 		MigrateOnStart:             parseBoolEnv("DB_MIGRATE_ON_START"),
 		RedisAddress:               os.Getenv("REDIS_ADDR"),
 		RedisPassword:              os.Getenv("REDIS_PASSWORD"),
@@ -198,6 +229,7 @@ func Load(service string) (Config, error) {
 		MerchantServiceURL:         os.Getenv("MERCHANT_SERVICE_URL"),
 		UserGRPCAddress:            userGRPCAddr,
 		MerchantGRPCAddress:        merchantGRPCAddr,
+		CoffeeMachineGRPCAddress:   coffeeMachineGRPCAddr,
 		MerchantInternalToken:      merchantToken,
 		MerchantOwnershipTimeoutMS: ownershipTimeout,
 		AuthorizationTimeoutMS:     authorizationTimeout,
@@ -228,13 +260,14 @@ func Load(service string) (Config, error) {
 // resolveDatabase picks the database a service owns after the split. Each
 // per-service variable falls back to the shared DATABASE_URL, so a stack that
 // still runs on one database keeps working; user-service, merchant-service,
-// coupon-service and coffee-machine-service have an owned database today.
+// coupon-service, coffee-machine-service and order-service have an owned
+// database today.
 //
 // A service missing from this switch silently reads DATABASE_URL — that is the
 // identity database in the dev stack, so the failure looks like working code
 // writing to the wrong database, not like a misconfiguration. Add the case in
 // the same change that adds the service.
-func resolveDatabase(service, shared, user, merchant, coupon, coffeeMachine string) string {
+func resolveDatabase(service, shared, user, merchant, coupon, coffeeMachine, order string) string {
 	var owned string
 	switch service {
 	case "user-service":
@@ -245,6 +278,8 @@ func resolveDatabase(service, shared, user, merchant, coupon, coffeeMachine stri
 		owned = coupon
 	case "coffee-machine-service":
 		owned = coffeeMachine
+	case "order-service":
+		owned = order
 	}
 	if strings.TrimSpace(owned) == "" {
 		return shared

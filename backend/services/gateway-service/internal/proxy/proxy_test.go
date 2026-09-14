@@ -160,6 +160,93 @@ func TestNewHandlerRoutesCoffeeMachineAdmin(t *testing.T) {
 	}
 }
 
+// 订单域的四条路径都要转发到订单服务，尤其是 /v1/miniapp/orders 与
+// /v1/miniapp/after-sales——它们同时落在「/v1/miniapp →user-service」那个前缀里，
+// 而 switch 取第一个成立的 case。
+// 这一条测的就是那个顺序：把订单的 case 挪到 user-service 后面，只有这里会红。
+func TestNewHandlerRoutesOrderAheadOfTheMiniappPrefix(t *testing.T) {
+	var gotPath string
+	order := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer order.Close()
+
+	user := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = "user:" + r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer user.Close()
+
+	h, err := NewHandler(Config{
+		MerchantServiceURL: "http://merchant.test",
+		UserServiceURL:     user.URL,
+		OrderServiceURL:    order.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	for _, path := range []string{
+		"/v1/admin/orders",
+		"/v1/admin/orders/8f1c/cancel",
+		"/v1/miniapp/orders",
+		"/api/v1/miniapp/orders/8f1c",
+		// 售后是订单域的第二个资源。少了这几条，漏掉售后前缀的改动不会被这里拦住：
+		// /v1/admin/after-sales 会变成网关的 404，而 /v1/miniapp/after-sales 会被
+		// user-service 用「没有这个接口」答掉。
+		"/v1/admin/after-sales",
+		"/v1/admin/after-sales/REF202609140001/approve",
+		"/v1/miniapp/orders/8f1c/after-sales",
+		"/v1/miniapp/after-sales/REF202609140001/cancel",
+	} {
+		t.Run(path, func(t *testing.T) {
+			gotPath = ""
+			res := httptest.NewRecorder()
+			h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+			if res.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d", res.Code, http.StatusNoContent)
+			}
+			if gotPath != normalizePath(path) {
+				t.Errorf("upstream path = %q, want %q (user-service answered instead of order-service)", gotPath, normalizePath(path))
+			}
+		})
+	}
+
+	// 反方向：同前缀下的其它小程序路径仍然归 user-service。少了这一条，把
+	// /v1/miniapp 整段挪给订单服务也能让上面四条全绿。
+	gotPath = ""
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/v1/miniapp/auth/login", nil))
+	if gotPath != "user:/v1/miniapp/auth/login" {
+		t.Fatalf("upstream = %q, want the user-service one", gotPath)
+	}
+
+	// 没配上游时保持 404，而不是落到下面的 /v1/miniapp 去让 user-service 回答：
+	// 那样客户端拿到的 404 看着像「用户服务没有这个接口」，而真相是订单服务没接上。
+	unset, err := NewHandler(Config{MerchantServiceURL: "http://merchant.test", UserServiceURL: user.URL})
+	if err != nil {
+		t.Fatalf("NewHandler() without an order upstream error = %v", err)
+	}
+	unsetRes := httptest.NewRecorder()
+	unset.ServeHTTP(unsetRes, httptest.NewRequest(http.MethodGet, "/v1/miniapp/orders", nil))
+	if unsetRes.Code != http.StatusNotFound {
+		t.Fatalf("status without upstream = %d, want %d", unsetRes.Code, http.StatusNotFound)
+	}
+	// 售后单独再验一次，而且验的是「谁答的」而不只是状态码：没配订单上游时
+	// /v1/miniapp/after-sales 一旦落到下面那条 /v1/miniapp，user-service 会回自己的
+	// 404，状态码一样是 404，只比状态码看不出区别。
+	gotPath = ""
+	unsetAfterSaleRes := httptest.NewRecorder()
+	unset.ServeHTTP(unsetAfterSaleRes, httptest.NewRequest(http.MethodPost, "/v1/miniapp/after-sales/REF1/cancel", nil))
+	if unsetAfterSaleRes.Code != http.StatusNotFound {
+		t.Fatalf("after-sale status without upstream = %d, want %d", unsetAfterSaleRes.Code, http.StatusNotFound)
+	}
+	if gotPath != "" {
+		t.Fatalf("after-sale without an order upstream reached %q, want nobody answered it", gotPath)
+	}
+}
+
 // 客户端塞进来的 X-Forwarded-For 必须被丢掉、换成真实的 RemoteAddr。
 // 追加语义（httputil 的默认行为）会把伪造值留在链首，下游按「第一个」取来源时
 // 拿到的就是它——限流键、审计里的来源都会跟着错。

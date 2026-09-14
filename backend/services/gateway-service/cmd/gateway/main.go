@@ -57,8 +57,10 @@ func main() {
 		CouponServiceURL: os.Getenv("COUPON_SERVICE_URL"),
 		// 设备域同理。
 		CoffeeMachineServiceURL: os.Getenv("COFFEE_MACHINE_SERVICE_URL"),
-		RequestTimeout:          timeout,
-		UploadTimeout:           uploadTimeout,
+		// 订单域同理。
+		OrderServiceURL: os.Getenv("ORDER_SERVICE_URL"),
+		RequestTimeout:  timeout,
+		UploadTimeout:   uploadTimeout,
 	})
 	if err != nil {
 		log.Fatalf("gateway-service: configure proxy: %v", err)

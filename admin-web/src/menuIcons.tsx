@@ -6,9 +6,12 @@ import {
   FileOutlined,
   HistoryOutlined,
   MenuOutlined,
+  ProfileOutlined,
+  RollbackOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
   ShopOutlined,
+  ShoppingCartOutlined,
   TagOutlined,
   EnvironmentOutlined,
   TeamOutlined,
@@ -36,6 +39,10 @@ export const MENU_ICONS: Record<string, ReactNode> = {
   TagOutlined: <TagOutlined />,
   EnvironmentOutlined: <EnvironmentOutlined />,
   CoffeeOutlined: <CoffeeOutlined />,
+  // 订单域（identity/018 那三个菜单用的就是这三个名字）
+  ShoppingCartOutlined: <ShoppingCartOutlined />,
+  ProfileOutlined: <ProfileOutlined />,
+  RollbackOutlined: <RollbackOutlined />,
 };
 
 export const MENU_ICON_NAMES = Object.keys(MENU_ICONS);

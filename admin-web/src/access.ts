@@ -86,6 +86,16 @@ export default function access(initialState: {
     canWriteCoffeeMachines: has('coffee_machine:manage'),
     canAdjustCoffeeBalance: has('coffee_machine:balance'),
 
+    // 订单域。三个码的破坏力差两档，与后端 order-service routes/admin.go 里那三个
+    // 常量一一对应：
+    //   read  只是看；
+    //   manage 能替用户把待支付的单关掉（人工干预，且写审计）；
+    //   after-sale:audit 直接决定要不要把用户的钱退回去。
+    // 「能看」与后面两个分开，是为了让客服能查单而不必同时拿到动单和动钱的权力。
+    canViewOrders: has('order:read'),
+    canCancelOrders: has('order:manage'),
+    canReviewAfterSales: has('order:after-sale:audit'),
+
     // 原始检查——当需要用权限码直接判断时
     can: (code: string) => has(code),
   };

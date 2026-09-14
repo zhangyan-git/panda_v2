@@ -49,8 +49,13 @@
 
 `panda_coffee_machine`（coffee-machine-service）
 : `manufacturers` `manufacturer_credentials` `devices` `device_payment_methods`
-  `drinks` `device_drinks` `device_events` `device_balance_ledger`
+  `drinks` `device_events` `device_balance_ledger`
   `message_outbox` `message_inbox`
+
+`drinks` 一行就是「某台设备上的一杯」：`device_id` 直接挂在这一行上（可空，`ON DELETE
+CASCADE`），价格与上下架都在同一行，没有单独的设备×饮品关系表。判重键因此是
+`(device_id, manufacturer_id, origin_id)` 的部分唯一索引（`origin_id <> ''`），同一款饮品
+在 N 台设备上就是 N 行。
 
 `panda_coffee_machine` 是这几套里唯一**自带资金写入口**的：`devices.coffee_balance`
 与 `device_balance_ledger` 记的是咖啡余额，所以那张流水表只允许追加（触发器拦 UPDATE /
@@ -58,6 +63,18 @@ DELETE），冲正走反向记录而不是原地改数，幂等靠 `request_id` 
 `store_id` 关联部署点位、饮品通过 `manufacturer_id` 关联厂商，两者都只存值不建外键——
 `store_id` 指向的 `stores` 在商户库，`REFERENCES` 跨过去就是拆库没做完。设备侧
 **不持有 `merchant_id`**，商户归属从点位一侧推。
+
+不建外键不等于不校验。写设备（新建与编辑）时本服务会调 merchant-service 的 `GetStore`
+确认这个点位存在且未被停用，问不到就拒写并回 503——**fail-closed，不是「校验不了就
+跳过」**，那样校验只在商户服务正常时才生效，等于没有校验。「不存在」与「问不到」在
+服务层是两个不同的结果：前者是调用方填错了（400），后者不是（503）。
+
+授权这条链（§5.2.3 的操作员 → 授权点位 → 点位下设备）本服务**不发事件、不维护投影**，
+将来按 §5.2.4 允许的另一条路走：查询时实时向持有那一方的服务取关系。选它的理由是
+后台设备页人少，实时调用换掉一份投影表和它的一致性维护（事件延迟、遗漏、服务重启，
+§5.2.4 对这些都有要求）更划算。代价是列表接口必须先在数据层限定范围再分页，且依赖
+问不到时按「权限归属未知」拒绝访问，不能退化成看全部。挂载前的点位校验走的是同一个
+模式，客户端都在 `internal/client/`。
 
 这条边界不只是表归属，还有一条对外契约：**厂商接入凭据与令牌由 coffee-machine-service
 唯一持有并签发**。出杯由 fulfillment-service 直连厂商执行（§5.11），但厂商账号、`access_token`
@@ -95,12 +112,15 @@ DELETE），冲正走反向记录而不是原地改数，幂等靠 `request_id` 
 | merchant-service → user-service `AdminAccessService.GetAdminAccess` | 转发管理员的授权判定 |
 | user-service → merchant-service `GetBrandMerchant` / `GetStoreMerchant` | 账号范围指向的实体归属 |
 | user-service → merchant-service `ResolveScopeNames` | 把 scope 上的 id 换成名字 |
+| coffee-machine-service → merchant-service `GetStore` | 设备挂点位前确认这个点位存在且可用 |
 
 其余 proto（coupon、order、payment…）目前是占位服务，没有实现，不构成契约。
 
-coffee-machine-service 是例外里的一半：它已实现 `GetDevice`（只读，供下单时校验设备
-状态，§5.8 L454），但调用方 order-service 尚未落地，所以它也不进上表——契约要等到
-真有调用方那一天才成立。写入、同步与出杯那几条链路同样还没实现。
+coffee-machine-service 两头各占一半。作为**调用方**它进了上表：设备要挂点位，而点位
+存不存在、还能不能用只有商户服务说了算。作为**被调方**它还没进：`GetDevice`（只读，
+供下单时校验设备状态，§5.8 L454）已经实现，但调用方 order-service 尚未落地——
+**被调的一方没进表不代表那条 RPC 没实现，只代表还没有人依赖它**，契约要等到真有调用方
+那一天才成立。写入、同步与出杯那几条链路同样还没实现。
 
 `platform/client.Dial` 决定用静态地址还是服务发现：注册中心真的实现了
 `Resolver`+`Watcher` 就走 discovery，否则退回静态地址。**这不是「发现失败就退回静态
@@ -117,8 +137,9 @@ coffee-machine-service 是例外里的一半：它已实现 `GetDevice`（只读
   这次删不掉，也不要留下「实体没了、账号范围还指着它」的状态。
 - 角色/权限保存后要刷新 Casbin 快照。刷新失败 → 返回「已保存但未生效，请重试」。
   变更已经在库里了，但**不假装它生效了**。
-- 审计与通知事件走 outbox：业务事务里同时写 `message_outbox`，relay 异步投递到
-  RabbitMQ。这是**唯一**允许延迟的一类，因为它承载的是通知/审计，不是状态。
+- 审计走 outbox：业务事务里同时写 `message_outbox`，relay 异步投递到 RabbitMQ。
+  这是**唯一**允许延迟的一类，走这条路的今天只有 `admin.operation.logged`（纯通知）。
+  审计是跟着写入走的旁路记录，投递慢一拍不影响业务状态本身。
 
 `RABBITMQ_URL` 为空时 `NewRabbitMQ` 返回 Noop。platform/server 特意**不给 Noop 发布器
 配 relay**：Noop 会接受每一次投递并回报成功，配上 relay 等于把每条事件标成「已投递」

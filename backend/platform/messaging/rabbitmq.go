@@ -81,9 +81,18 @@ func (c RabbitConfig) routeKey(eventType string) string {
 
 // bindKey is the pattern this service's queue subscribes to. With no configured
 // key the queue takes everything: a topic exchange delivers only what a binding
-// matches, so an empty binding would strand every event. That failure is not
-// quiet — publishes are mandatory and confirmed, so a stranded event comes back
-// as a returned message and the relay retries it forever.
+// matches, so an empty binding would strand every event.
+//
+// 「strand 了也不会静默」这句原先写在这里，是错的，实测推翻（2026-09-14，本地
+// broker）：路由键没有任何绑定时，broker 确实回了 basic.return / NO_ROUTE，发布
+// 也是 mandatory+confirm 的，但**退回被丢掉、Publish 报成功**。原因是确认和退回在
+// 客户端是两条路：退回经 NotifyReturn 进 buffered channel，还要过一个
+// dispatchReturns goroutine 才派发到等的人；确认直接叫醒 waitConfirmation，它的
+// defer 先把待派发登记删了，派发时查到 0 个等待者就扔。5 次里 5 次如此，不是偶发。
+//
+// 实际语义因此是：**消息投到交易所即算成功，没人订阅就等于没人要，安静丢弃、不重试**
+// —— 对扇出型事件这多半正是想要的（没有消费者时无限重试更糟），但要有别的意思就得
+// 另外做。判断有没有人收，看交易所的绑定，别指望 Publish 回错。
 func (c RabbitConfig) bindKey() string {
 	if c.RoutingKey != "" {
 		return c.RoutingKey
@@ -637,6 +646,10 @@ func (r *rabbitClient) waitConfirmation(ctx context.Context, confirmation *amqp.
 		case outcome := <-result:
 			return outcome.acked, outcome.err
 		case returned := <-returnedCh:
+			// 正常不会走到这条：退回要过 dispatchReturns 才送到这里，而确认通常先到、
+			// 上面那个 defer 已经把登记清掉，派发时就找不到等待者了。留着是因为这不
+			// 是**保证**——broker 回确认慢、退回先派发时这里仍然接得住。详见 bindKey
+			// 的注释和 2026-09-14 的实测。
 			return false, fmt.Errorf("messaging: message returned: %s", returned.ReplyText)
 		case <-ctx.Done():
 			return false, ctx.Err()
