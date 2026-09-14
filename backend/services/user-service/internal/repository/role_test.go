@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/panda-dev/panda-v2/backend/platform/audit"
+	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/casbin"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/model"
 )
 
@@ -127,16 +128,13 @@ func TestBindingReplacement(t *testing.T) {
 	checkPermissions := func(want []string) {
 		t.Helper()
 		check(values(`SELECT p.code FROM admin_role_permissions b JOIN admin_permissions p ON p.id=b.permission_id WHERE b.role_id=$1 ORDER BY p.code`, r1), want)
-		check(values(`SELECT v2 FROM casbin_rule WHERE ptype='p' AND v0='r1' AND v1='' ORDER BY v2`), want)
 	}
 	checkRoles := func(want []string) {
 		t.Helper()
 		check(values(`SELECT r.code FROM admin_user_role_bindings b JOIN admin_roles r ON r.id=b.role_id WHERE b.admin_user_id=$1 ORDER BY r.code`, u1), want)
-		check(values(`SELECT v1 FROM casbin_rule WHERE ptype='g' AND v0=$1 AND v2='' ORDER BY v1`, u1), want)
 	}
 	must(repo.AssignPermissionsToRole(ctx, r2, []string{p1}))
 	must(repo.AssignRolesToUser(ctx, u2, []string{r2}))
-	exec(`INSERT INTO casbin_rule(ptype,v0,v1,v2,v3) VALUES ('p','r1','tenant','read','*'),('g',$1,'r1','tenant','')`, u1)
 
 	t.Run("permissions replace clear and rollback", func(t *testing.T) {
 		must(repo.AssignPermissionsToRole(ctx, r1, []string{p1, p2, p1}))
@@ -172,12 +170,9 @@ func TestBindingReplacement(t *testing.T) {
 			t.Fatal("missing user accepted")
 		}
 	})
-	check(values(`SELECT v2 FROM casbin_rule WHERE ptype='p' AND v0='r2' AND v1=''`), []string{"read"})
+	// 别人（r2/u2）的绑定全程没被这两轮整体替换碰到。
 	check(values(`SELECT permission_id::text FROM admin_role_permissions WHERE role_id=$1`, r2), []string{p1})
-	check(values(`SELECT v1 FROM casbin_rule WHERE ptype='g' AND v0=$1 AND v2=''`, u2), []string{"r2"})
 	check(values(`SELECT role_id::text FROM admin_user_role_bindings WHERE admin_user_id=$1`, u2), []string{r2})
-	check(values(`SELECT v2 FROM casbin_rule WHERE ptype='p' AND v0='r1' AND v1='tenant'`), []string{"read"})
-	check(values(`SELECT v1 FROM casbin_rule WHERE ptype='g' AND v0=$1 AND v2='tenant'`, u1), []string{"r1"})
 }
 
 func mustExec(t *testing.T, pool *pgxpool.Pool, q string, args ...any) {
@@ -215,7 +210,11 @@ func sameColumn(t *testing.T, pool *pgxpool.Pool, q string, want []string, args 
 	}
 }
 
-// TestRoleCodeRename 覆盖改名必须在同一事务内迁移平台域授权标识。
+// TestRoleCodeRename 覆盖角色改名的边界：换成一个已被占用的 code 要报冲突并回滚，
+// 换成合法的新 code 则绑定全须全尾地留着。
+//
+// 这里曾经还要验证「改名要把平台域的策略标识从旧码迁到新码」——策略现在从 admin_roles
+// 按 id 关联派生，绑定挂的是 role_id，改名根本碰不到它们，那类迁移代码已经删掉。
 func TestRoleCodeRename(t *testing.T) {
 	pool := bindingTestPool(t)
 	ctx := context.Background()
@@ -236,8 +235,6 @@ func TestRoleCodeRename(t *testing.T) {
 	if err := bindings.AssignRolesToUser(ctx, user, []string{roleA}); err != nil {
 		t.Fatal(err)
 	}
-	// 其他域的规则必须原样保留，不能被改名连带修改。
-	mustExec(t, pool, `INSERT INTO casbin_rule(ptype,v0,v1,v2,v3) VALUES ('p','ops_old','tenant','read','*'),('g',$1,'ops_old','tenant','')`, user)
 
 	rename := func(code string) error {
 		t.Helper()
@@ -251,43 +248,37 @@ func TestRoleCodeRename(t *testing.T) {
 	checkRenamed := func(code string) {
 		t.Helper()
 		sameColumn(t, pool, `SELECT code FROM admin_roles WHERE id=$1`, []string{code}, roleA)
-		sameColumn(t, pool, `SELECT v2 FROM casbin_rule WHERE ptype='p' AND v0=$1 AND v1=''`, []string{"read"}, code)
-		sameColumn(t, pool, `SELECT v1 FROM casbin_rule WHERE ptype='g' AND v0=$1 AND v2=''`, []string{code}, user)
 		// 角色 UUID 未变，基于 role_id 的绑定全部保留。
 		sameColumn(t, pool, `SELECT permission_id::text FROM admin_role_permissions WHERE role_id=$1`, []string{perm}, roleA)
 		sameColumn(t, pool, `SELECT role_id::text FROM admin_user_role_bindings WHERE admin_user_id=$1`, []string{roleA}, user)
 	}
 
-	t.Run("rename migrates platform domain only", func(t *testing.T) {
+	t.Run("rename keeps the bindings", func(t *testing.T) {
 		if err := rename("ops_new"); err != nil {
 			t.Fatal(err)
 		}
 		checkRenamed("ops_new")
-		// 其他域的规则仍指向旧标识，说明改名只动了平台域。
-		sameColumn(t, pool, `SELECT v2 FROM casbin_rule WHERE ptype='p' AND v0='ops_old' AND v1='tenant'`, []string{"read"})
-		sameColumn(t, pool, `SELECT v0 FROM casbin_rule WHERE ptype='g' AND v1='ops_old' AND v2='tenant'`, []string{user})
-		sameColumn(t, pool, `SELECT count(*)::text FROM casbin_rule WHERE v0='ops_old' AND v1='' AND ptype='p'`, []string{"0"})
+		// code 换了，但这条授权没变：判定仍要放行新码下的同一份权限。
+		enforcer, err := casbin.New(pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		allowed, err := enforcer.Enforce(user, "", "read", "*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !allowed {
+			t.Fatal("改名之后原有的授权不再放行")
+		}
 	})
 
 	t.Run("existing role code conflicts and rolls back", func(t *testing.T) {
-		before := column(t, pool, `SELECT count(*)::text FROM casbin_rule`)
 		err := rename("ops_b")
 		if !errors.Is(err, model.ErrRoleCodeConflict) {
 			t.Fatalf("rename to an existing code: got %v want ErrRoleCodeConflict", err)
 		}
 		checkRenamed("ops_new")
 		sameColumn(t, pool, `SELECT code FROM admin_roles WHERE id=$1`, []string{"ops_b"}, roleB)
-		sameColumn(t, pool, `SELECT count(*)::text FROM casbin_rule`, before)
-	})
-
-	t.Run("residual platform rules conflict and roll back", func(t *testing.T) {
-		mustExec(t, pool, `INSERT INTO casbin_rule(ptype,v0,v1,v2,v3) VALUES ('p','ghost','','read','*')`)
-		err := rename("ghost")
-		if !errors.Is(err, model.ErrRoleCodeConflict) {
-			t.Fatalf("rename onto residual rules: got %v want ErrRoleCodeConflict", err)
-		}
-		checkRenamed("ops_new")
-		sameColumn(t, pool, `SELECT count(*)::text FROM casbin_rule WHERE v0='ghost'`, []string{"1"})
 	})
 
 	t.Run("reserved and malformed codes are refused", func(t *testing.T) {
@@ -357,9 +348,19 @@ func TestRoleCodeRename(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("binding did not finish after the rename committed")
 		}
-		// 绑定必须在锁内读到新 code，否则会写回旧授权标识。
-		sameColumn(t, pool, `SELECT v1 FROM casbin_rule WHERE ptype='g' AND v0=$1 AND v2=''`, []string{"ops_locked"}, other)
+		// 绑定必须在锁内读到改名后的角色，不能拿着改名前的快照写库。
 		sameColumn(t, pool, `SELECT r.code FROM admin_user_role_bindings b JOIN admin_roles r ON r.id=b.role_id WHERE b.admin_user_id=$1`, []string{"ops_locked"}, other)
+	})
+
+	// 残留规则不再参与判定，也就不该再挡住一个角色码：casbin_rule 里有一条 'ghost' 的
+	// p 行，但 admin_roles 里没有这个码，改名过去必须成功。放在最后是因为这一步会把
+	// roleA 的 code 改掉。
+	t.Run("a stale policy row no longer occupies a role code", func(t *testing.T) {
+		mustExec(t, pool, `INSERT INTO casbin_rule(ptype,v0,v1,v2,v3) VALUES ('p','ghost','','read','*')`)
+		if err := rename("ghost"); err != nil {
+			t.Fatalf("rename onto a stale policy row: %v", err)
+		}
+		checkRenamed("ghost")
 	})
 }
 
@@ -377,6 +378,7 @@ type rbacFixture struct {
 	roleID   string
 	permID   string
 	userID   string
+	enforcer *casbin.Enforcer
 }
 
 func newRBACFixture(t *testing.T) *rbacFixture {
@@ -384,6 +386,10 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	pool := bindingTestPool(t)
 	ctx := context.Background()
 	now := time.Now()
+	enforcer, err := casbin.New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f := &rbacFixture{
 		pool:     pool,
 		roles:    NewAdminRoleRepository(pool, audit.NewRecorder()),
@@ -392,6 +398,7 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 		roleID:   uuid.NewString(),
 		permID:   uuid.NewString(),
 		userID:   uuid.NewString(),
+		enforcer: enforcer,
 	}
 	mustExec(t, pool, `INSERT INTO admin_users (id) VALUES ($1)`, f.userID)
 	if err := f.perms.Create(ctx, &model.AdminPermission{ID: f.permID, Code: fixturePermCode, Name: "查看品牌", CreatedAt: now}); err != nil {
@@ -406,17 +413,34 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	if err := f.bindings.AssignRolesToUser(ctx, f.userID, []string{f.roleID}); err != nil {
 		t.Fatal(err)
 	}
-	// 夹具先自证立住了：下面几条断言的是「操作完之后没有了」，
-	// 若建的时候就没写进去，那些断言会假通过。
-	sameColumn(t, pool, `SELECT v2 FROM casbin_rule WHERE ptype='p' AND v0=$1 AND v1=''`, []string{fixturePermCode}, fixtureRoleCode)
-	sameColumn(t, pool, `SELECT v1 FROM casbin_rule WHERE ptype='g' AND v0=$1 AND v2=''`, []string{fixtureRoleCode}, f.userID)
+	// 夹具先自证立住了：下面几条断言的是「操作完之后不再放行」，
+	// 若建的时候就没生效，那些断言会假通过。
+	if !f.allows(t, fixturePermCode) {
+		t.Fatal("夹具没立住：新绑定的权限在鉴权路径上不生效")
+	}
 	return f
 }
 
-// casbin_rule 是唯一没有外键的授权表（migrations/identity/001_identity.sql:253），
-// 而 enforcer 只从它加载策略——删掉 admin_roles / admin_permissions 的行不会自动清规则，
-// 两张绑定表有 ON DELETE CASCADE，它没有。漏清的后果不是「慢」而是「撤销不生效」：
-// 被删角色的成员继续通过校验。这条用例就是钉住这件事。
+// allows 重新加载策略后判断夹具里的用户是否还有该权限码。
+//
+// 仓储层只管写库，重载是 service + Broadcaster 的事，所以这里先 Reload——这正是
+// 一次授权变更之后真正发生的事。断言走的是 enforcer 的实际判定，而不是「某张镜像表
+// 被清干净了」：前者才是「撤销生效」的本体，后者只是它曾经的一种实现。
+func (f *rbacFixture) allows(t *testing.T, object string) bool {
+	t.Helper()
+	if err := f.enforcer.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := f.enforcer.Enforce(f.userID, "", object, "*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+// 策略从 admin_roles / admin_role_permissions / admin_user_role_bindings 派生，删掉
+// 角色行，它在两张绑定表里的行靠 ON DELETE CASCADE 一起消失，派生出来的规则也就不存在了。
+// 这条用例钉住的是结果：被删角色的成员必须立刻通不过校验。
 func TestRoleDeleteClearsPolicy(t *testing.T) {
 	f := newRBACFixture(t)
 	ctx := context.Background()
@@ -429,12 +453,11 @@ func TestRoleDeleteClearsPolicy(t *testing.T) {
 	// 级联负责的两张表。
 	sameColumn(t, f.pool, `SELECT count(*)::text FROM admin_role_permissions WHERE role_id=$1`, []string{"0"}, f.roleID)
 	sameColumn(t, f.pool, `SELECT count(*)::text FROM admin_user_role_bindings WHERE role_id=$1`, []string{"0"}, f.roleID)
-	// 需要显式清理的两类规则：p 用 v0 存角色码，g 用 v1 存角色码。
-	sameColumn(t, f.pool, `SELECT count(*)::text FROM casbin_rule WHERE ptype='p' AND v0=$1 AND v1=''`, []string{"0"}, fixtureRoleCode)
-	sameColumn(t, f.pool, `SELECT count(*)::text FROM casbin_rule WHERE ptype='g' AND v1=$1 AND v2=''`, []string{"0"}, fixtureRoleCode)
+	if f.allows(t, fixturePermCode) {
+		t.Fatal("角色已删，成员却仍然通过校验")
+	}
 
-	// 残留规则最容易被撞见的具体症状：同名 code 再也建不回来，
-	// 因为 Create 的 checkRolePolicyConflict 会把残留规则判成冲突。
+	// 连带效果：同名 code 可以立刻重建。策略里不会有残留规则把它判成冲突。
 	now := time.Now()
 	if err := f.roles.Create(ctx, &model.AdminRole{
 		ID: uuid.NewString(), Code: fixtureRoleCode, Name: "重建", CreatedAt: now, UpdatedAt: now,
@@ -453,13 +476,15 @@ func TestPermissionDeleteClearsPolicy(t *testing.T) {
 
 	sameColumn(t, f.pool, `SELECT count(*)::text FROM admin_permissions WHERE id=$1`, []string{"0"}, f.permID)
 	sameColumn(t, f.pool, `SELECT count(*)::text FROM admin_role_permissions WHERE permission_id=$1`, []string{"0"}, f.permID)
-	// 权限码是 p 规则的 v2。不清的话，每个曾拥有它的角色都还留着这条授权，
+	// 权限码就是策略里的 obj。不跟着消失的话，每个曾拥有它的角色都还留着这条授权，
 	// 而 RequirePermission 是按码匹配的——权限删了却还能用。
-	sameColumn(t, f.pool, `SELECT count(*)::text FROM casbin_rule WHERE ptype='p' AND v2=$1`, []string{"0"}, fixturePermCode)
+	if f.allows(t, fixturePermCode) {
+		t.Fatal("权限已删，持有它的角色却仍然通过校验")
+	}
 }
 
-// 权限改名和角色改名是同一件事的两种写法：code 变了，策略里的标识必须同期迁移，
-// 否则旧码的授权留着、新码一条没有，看起来改成功了实际是「旧的还生效、新的不生效」。
+// 权限改名之后判定要跟着新码走，且旧码立刻失效——两条一起断言，只看新码生效是不够的：
+// 旧码还留着同样是有权限（而且更难发现）。
 func TestPermissionRenameMigratesPolicy(t *testing.T) {
 	f := newRBACFixture(t)
 	ctx := context.Background()
@@ -473,8 +498,12 @@ func TestPermissionRenameMigratesPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sameColumn(t, f.pool, `SELECT v2 FROM casbin_rule WHERE ptype='p' AND v0=$1 AND v1=''`, []string{"brands:edit"}, fixtureRoleCode)
-	sameColumn(t, f.pool, `SELECT count(*)::text FROM casbin_rule WHERE v2=$1`, []string{"0"}, fixturePermCode)
+	if !f.allows(t, "brands:edit") {
+		t.Fatal("改名后的权限码没有生效")
+	}
+	if f.allows(t, fixturePermCode) {
+		t.Fatal("旧权限码改名后仍然放行")
+	}
 	// 绑定表按 id 关联，改名不该动它。
 	sameColumn(t, f.pool, `SELECT permission_id::text FROM admin_role_permissions WHERE role_id=$1`, []string{f.permID}, f.roleID)
 }

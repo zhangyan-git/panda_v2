@@ -1,4 +1,5 @@
 import { request } from '@umijs/max';
+import type { PageQuery, PageResult } from './pagination';
 
 // ——— 类型 ———
 
@@ -30,8 +31,9 @@ export type AdminUser = {
 
 // ——— 权限 ———
 
-export async function listPermissions() {
-  return request<Permission[]>('/api/v1/admin/permissions');
+/** 权限列表（服务端分页）。角色授权弹窗要全集，见 FULL_PAGE_PARAMS。 */
+export async function listPermissions(params?: PageQuery) {
+  return request<PageResult<Permission>>('/api/v1/admin/permissions', { params });
 }
 
 export async function createPermission(data: {
@@ -62,8 +64,9 @@ export async function deletePermission(id: string) {
 
 // ——— 角色 ———
 
-export async function listRoles() {
-  return request<Role[]>('/api/v1/admin/roles');
+/** 角色列表（服务端分页）。用户授权弹窗要全集，见 FULL_PAGE_PARAMS。 */
+export async function listRoles(params?: PageQuery) {
+  return request<PageResult<Role>>('/api/v1/admin/roles', { params });
 }
 
 export async function createRole(data: {
@@ -104,8 +107,9 @@ export async function removePermissionFromRole(roleId: string, permissionId: str
 
 // ——— 管理员用户 ———
 
-export async function listAdminUsers() {
-  return request<AdminUser[]>('/api/v1/admin/users');
+/** 平台管理员列表（服务端分页）。 */
+export async function listAdminUsers(params?: PageQuery) {
+  return request<PageResult<AdminUser>>('/api/v1/admin/users', { params });
 }
 
 export async function createAdminUser(data: {

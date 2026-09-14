@@ -34,7 +34,7 @@ func runPermission(t *testing.T, service *Service, grant Grant, codes ...string)
 
 func TestRequirePermissionAllowsGrantedCode(t *testing.T) {
 	service := newTestService(t)
-	grant := Grant{Subject: "s1", Permissions: []string{"role:manage", "menu:manage"}}
+	grant := Grant{Realm: RealmPlatform, Subject: "s1", Permissions: []string{"role:manage", "menu:manage"}}
 
 	if response := runPermission(t, service, grant, "menu:manage"); response.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
@@ -43,7 +43,7 @@ func TestRequirePermissionAllowsGrantedCode(t *testing.T) {
 
 func TestRequirePermissionRejectsMissingCode(t *testing.T) {
 	service := newTestService(t)
-	grant := Grant{Subject: "s1", Permissions: []string{"role:manage"}}
+	grant := Grant{Realm: RealmPlatform, Subject: "s1", Permissions: []string{"role:manage"}}
 
 	response := runPermission(t, service, grant, "admin:manage")
 	if response.Code != http.StatusForbidden {
@@ -55,7 +55,7 @@ func TestRequirePermissionRejectsMissingCode(t *testing.T) {
 // console relied on this to bootstrap the very first role assignment.
 func TestRequirePermissionAllowsSuperAdminWithoutCodes(t *testing.T) {
 	service := newTestService(t)
-	grant := Grant{Subject: "s1", IsSuper: true}
+	grant := Grant{Realm: RealmPlatform, Subject: "s1", IsSuper: true}
 
 	if response := runPermission(t, service, grant, "admin:manage"); response.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
@@ -65,7 +65,7 @@ func TestRequirePermissionAllowsSuperAdminWithoutCodes(t *testing.T) {
 // Any one of the listed codes suffices, matching the legacy OR semantics.
 func TestRequirePermissionAcceptsAnyOfSeveralCodes(t *testing.T) {
 	service := newTestService(t)
-	grant := Grant{Subject: "s1", Permissions: []string{"log:manage"}}
+	grant := Grant{Realm: RealmPlatform, Subject: "s1", Permissions: []string{"log:manage"}}
 
 	if response := runPermission(t, service, grant, "admin:manage", "log:manage"); response.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)

@@ -27,6 +27,9 @@ func NewAdminMenuHandler(svc *service.AdminMenuService) *AdminMenuHandler {
 //	@Security    BearerAuth
 //	@Success     200 {object} api.Response{data=[]service.MenuNode}
 //	@Router      /v1/admin/menus [get]
+//
+// 不分页：这是树，切成页会把父子拆到两页导致前端拼不出层级。
+// 只有平铺表格才走 api.PageResponse。
 func (h *AdminMenuHandler) List(w http.ResponseWriter, r *http.Request) {
 	tree, err := h.svc.ListTree(r.Context())
 	if err != nil {
@@ -44,6 +47,9 @@ func (h *AdminMenuHandler) List(w http.ResponseWriter, r *http.Request) {
 //	@Security    BearerAuth
 //	@Success     200 {object} api.Response{data=[]service.MenuNode}
 //	@Router      /v1/admin/menus/me [get]
+//
+// 不分页，理由同 /v1/admin/menus：树不可切。这条还是侧栏的数据源，
+// 少一个节点就是少一个入口，而且是静默的。
 func (h *AdminMenuHandler) MeTree(w http.ResponseWriter, r *http.Request) {
 	identity, ok := auth.IdentityFromRequest(r)
 	if !ok {
@@ -149,6 +155,9 @@ func (h *AdminMenuHandler) Delete(w http.ResponseWriter, r *http.Request) {
 //	@Success     200 {object} api.Response{data=[]string}
 //	@Failure     404 {object} api.Response
 //	@Router      /v1/admin/roles/{roleId}/menus [get]
+//
+// 裸 []string 而非分页包裹：前端拿它做菜单树的勾选回显与「全选」比对，
+// 分页只会让它在第一页上做全选，把没加载到的勾选全清掉。
 func (h *AdminMenuHandler) RoleMenus(w http.ResponseWriter, r *http.Request) {
 	roleID := pathVar(r, "roleId")
 	ids, err := h.svc.RoleMenuIDs(r.Context(), roleID)

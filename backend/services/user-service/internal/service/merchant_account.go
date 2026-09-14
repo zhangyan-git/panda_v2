@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/repository"
 	"golang.org/x/crypto/bcrypt"
@@ -30,18 +31,26 @@ func NewMerchantAccountService(merchants MerchantAccessPort, users repository.Me
 	return &MerchantAccountService{merchants: merchants, users: users, resources: resources}
 }
 
-func (s *MerchantAccountService) ListUsers(ctx context.Context, merchantID string) ([]*model.MerchantUser, error) {
+// ListUsers 返回某商户下的一页账号及其总数。
+//
+// scope 名称只对当前页解析：那是逐行展示用的补充信息，给整批账号预先解析
+// 等于把分页省下的开销又还回去。
+func (s *MerchantAccountService) ListUsers(ctx context.Context, merchantID string, page, pageSize int) ([]*model.MerchantUser, int64, error) {
 	if _, err := s.merchants.FindStatus(ctx, merchantID); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	users, err := s.users.FindByMerchant(ctx, merchantID)
+	users, err := s.users.FindPage(ctx, merchantID, pageSize, api.PageOffset(page, pageSize))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if err := s.decorateScopeNames(ctx, users...); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return users, nil
+	total, err := s.users.Count(ctx, merchantID)
+	if err != nil {
+		return nil, 0, err
+	}
+	return users, total, nil
 }
 
 // decorateScopeNames fills in each account's scope display name. The names come

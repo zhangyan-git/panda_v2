@@ -118,7 +118,7 @@ func TestScopeSurvivesTheTokenRoundTrip(t *testing.T) {
 		StoreIDs:    []string{"store-1", "store-2"},
 		Regions:     []string{"浙江省"},
 	}
-	token, err := service.SignAccessGrant(Grant{Subject: "account-1", Scope: scope})
+	token, err := service.SignAccessGrant(Grant{Realm: RealmPlatform, Subject: "account-1", Scope: scope})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestScopeSurvivesTheTokenRoundTrip(t *testing.T) {
 // grant no data rather than defaulting to unrestricted.
 func TestTokenWithoutScopeClaimGrantsNoData(t *testing.T) {
 	service := scopeService(t)
-	token, err := service.SignAccessGrant(Grant{Subject: "account-1", Permissions: []string{"device:manage"}})
+	token, err := service.SignAccessGrant(Grant{Realm: RealmPlatform, Subject: "account-1", Permissions: []string{"device:manage"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +175,7 @@ func TestSigningRejectsAnOversizedScope(t *testing.T) {
 		ids[i] = "store-" + strconv.Itoa(i)
 	}
 	if _, err := service.SignAccessGrant(Grant{
+		Realm:   RealmPlatform,
 		Subject: "account-1",
 		Scope:   Scope{Type: ScopeCustom, StoreIDs: ids},
 	}); err != ErrScopeTooLarge {
@@ -215,7 +216,7 @@ func TestScopeFromRequest(t *testing.T) {
 func TestIdentityScopeIsACopy(t *testing.T) {
 	service := scopeService(t)
 	ids := []string{"store-1"}
-	token, err := service.SignAccessGrant(Grant{Subject: "a", Scope: Scope{Type: ScopeCustom, StoreIDs: ids}})
+	token, err := service.SignAccessGrant(Grant{Realm: RealmPlatform, Subject: "a", Scope: Scope{Type: ScopeCustom, StoreIDs: ids}})
 	if err != nil {
 		t.Fatal(err)
 	}

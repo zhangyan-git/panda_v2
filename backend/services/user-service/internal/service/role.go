@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/repository"
 )
@@ -42,8 +43,16 @@ func (s *AdminRoleService) reload() error {
 	return reloadPolicy(s.reloader)
 }
 
-func (s *AdminRoleService) List(ctx context.Context) ([]*model.AdminRole, error) {
-	return s.roles.FindAll(ctx)
+func (s *AdminRoleService) List(ctx context.Context, page, pageSize int) ([]*model.AdminRole, int64, error) {
+	roles, err := s.roles.FindPage(ctx, pageSize, api.PageOffset(page, pageSize))
+	if err != nil {
+		return nil, 0, err
+	}
+	total, err := s.roles.Count(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	return roles, total, nil
 }
 
 func (s *AdminRoleService) GetByID(ctx context.Context, id string) (*model.AdminRole, error) {
@@ -110,113 +119,3 @@ func (s *AdminRoleService) Delete(ctx context.Context, id string) error {
 //
 // Create 不重载：新建的权限码没有任何绑定，策略不会因此改变。
 // Update/Delete 会——权限码就是策略里的 obj，改名和删除都要让 enforcer 重新加载。
-type AdminPermissionService struct {
-	perms    repository.AdminPermissionRepository
-	reloader PolicyReloader
-}
-
-func NewAdminPermissionService(perms repository.AdminPermissionRepository, reloader PolicyReloader) *AdminPermissionService {
-	return &AdminPermissionService{perms: perms, reloader: reloader}
-}
-
-func (s *AdminPermissionService) reload() error {
-	return reloadPolicy(s.reloader)
-}
-
-func (s *AdminPermissionService) List(ctx context.Context) ([]*model.AdminPermission, error) {
-	return s.perms.FindAll(ctx)
-}
-
-func (s *AdminPermissionService) GetByID(ctx context.Context, id string) (*model.AdminPermission, error) {
-	return s.perms.FindByID(ctx, id)
-}
-
-func (s *AdminPermissionService) ListByRole(ctx context.Context, roleID string) ([]*model.AdminPermission, error) {
-	return s.perms.FindByRole(ctx, roleID)
-}
-
-func (s *AdminPermissionService) Create(ctx context.Context, code, name, description, group string) (*model.AdminPermission, error) {
-	now := time.Now()
-	p := &model.AdminPermission{
-		ID:          uuid.NewString(),
-		Code:        code,
-		Name:        name,
-		Description: description,
-		PermGroup:   group,
-		CreatedAt:   now,
-	}
-	if err := s.perms.Create(ctx, p); err != nil {
-		return nil, err
-	}
-	return p, nil
-}
-
-func (s *AdminPermissionService) Update(ctx context.Context, id, code, name, description, group string) (*model.AdminPermission, error) {
-	p, err := s.perms.FindByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	p.Code = code
-	p.Name = name
-	p.Description = description
-	p.PermGroup = group
-	if err := s.perms.Update(ctx, p); err != nil {
-		return nil, err
-	}
-	if err := s.reload(); err != nil {
-		return nil, err
-	}
-	return p, nil
-}
-
-func (s *AdminPermissionService) Delete(ctx context.Context, id string) error {
-	if err := s.perms.Delete(ctx, id); err != nil {
-		return err
-	}
-	return s.reload()
-}
-
-// AdminBindingService 角色-权限、用户-角色绑定管理
-//
-// 绑定改动直接决定谁能做什么，所以每次改动后都要刷新策略并广播，
-// 走的是和角色变更同一条 PolicyReloader，不是直接操作 enforcer。
-type AdminBindingService struct {
-	bindings repository.AdminBindingRepository
-	reloader PolicyReloader
-}
-
-func NewAdminBindingService(bindings repository.AdminBindingRepository, reloader PolicyReloader) *AdminBindingService {
-	return &AdminBindingService{bindings: bindings, reloader: reloader}
-}
-
-func (s *AdminBindingService) AssignPermissionsToRole(ctx context.Context, roleID string, permissionIDs []string) error {
-	if err := s.bindings.AssignPermissionsToRole(ctx, roleID, permissionIDs); err != nil {
-		return err
-	}
-	return reloadPolicy(s.reloader)
-}
-
-func (s *AdminBindingService) RemovePermissionFromRole(ctx context.Context, roleID, permissionID string) error {
-	if err := s.bindings.RemovePermissionFromRole(ctx, roleID, permissionID); err != nil {
-		return err
-	}
-	return reloadPolicy(s.reloader)
-}
-
-func (s *AdminBindingService) AssignRolesToUser(ctx context.Context, userID string, roleIDs []string) error {
-	if err := s.bindings.AssignRolesToUser(ctx, userID, roleIDs); err != nil {
-		return err
-	}
-	return reloadPolicy(s.reloader)
-}
-
-func (s *AdminBindingService) RemoveRoleFromUser(ctx context.Context, userID, roleID string) error {
-	if err := s.bindings.RemoveRoleFromUser(ctx, userID, roleID); err != nil {
-		return err
-	}
-	return reloadPolicy(s.reloader)
-}
-
-func (s *AdminBindingService) ListRolesByUser(ctx context.Context, userID string) ([]*model.AdminRole, error) {
-	return s.bindings.FindRolesByUser(ctx, userID)
-}

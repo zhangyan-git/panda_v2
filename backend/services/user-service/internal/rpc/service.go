@@ -89,11 +89,13 @@ func (s *AdminAccessServiceServer) GetAdminAccess(ctx context.Context, _ *userv1
 		return nil, err
 	}
 	// Same guards as the HTTP handler: the token must describe one platform
-	// account (subject == user id) and must not be a merchant tenant token.
+	// account (subject == user id), carry no tenant, AND have been minted in the
+	// platform realm. The realm is not redundant — a C-end token satisfies the
+	// first two conditions, so omitting it admits a miniapp customer.
 	if identity.Subject != identity.UserID {
 		return nil, status.Error(codes.Unauthenticated, "access token subject mismatch")
 	}
-	if identity.Tenant != "" {
+	if !identity.IsPlatformAdmin() {
 		return nil, status.Error(codes.PermissionDenied, "platform administrator required")
 	}
 	user, err := s.authSvc.Profile(ctx, identity.UserID)

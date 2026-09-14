@@ -25,6 +25,7 @@ import {
   type AdminUser,
   type Role,
 } from '../../services/iam';
+import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 
 const AdminUsersPage: React.FC = () => {
   const access = useAccess();
@@ -39,8 +40,12 @@ const AdminUsersPage: React.FC = () => {
 
   const openRoleModal = async (user: AdminUser) => {
     setRoleTarget(user);
-    const [roles, userRoles] = await Promise.all([listRoles(), listUserRoles(user.id)]);
-    setAllRoles(roles);
+    // 候选角色要全集：分页后只给 Transfer 第 1 页会静默少几项可选项。
+    const [roles, userRoles] = await Promise.all([
+      listRoles(FULL_PAGE_PARAMS),
+      listUserRoles(user.id),
+    ]);
+    setAllRoles(roles.items);
     setTargetKeys(userRoles.map((r) => r.id));
     setRoleModal(true);
   };
@@ -131,9 +136,9 @@ const AdminUsersPage: React.FC = () => {
         rowKey="id"
         columns={columns}
         scroll={{ x: 1080 }}
-        request={async () => {
-          const data = await listAdminUsers();
-          return { data, success: true };
+        request={async (params) => {
+          const result = await listAdminUsers(toPageParams(params));
+          return { data: result.items, total: result.total, success: true };
         }}
         search={{ labelWidth: 'auto' }}
         toolBarRender={() => [

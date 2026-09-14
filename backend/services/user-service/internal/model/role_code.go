@@ -11,8 +11,22 @@ var (
 	ErrRoleCodeConflict = errors.New("角色代码已存在或存在同名平台授权规则，请使用其他代码")
 )
 
+// 超级管理员的角色码。两种写法在数据里都出现过：「超级管理员」是早期形式。
+// 这枚角色码也是平台唯一「绕过权限模型」的标记，所以它既被保留（不允许创建或
+// 改名）又被鉴权用于放行判断，两处必须是同一份定义。
+const (
+	SuperRoleCode       = "super_admin"
+	legacySuperRoleCode = "超级管理员"
+)
+
+// IsSuperRoleCode reports whether the code marks a super administrator, who
+// passes every permission check.
+func IsSuperRoleCode(code string) bool {
+	return code == SuperRoleCode || code == legacySuperRoleCode
+}
+
 func IsReservedRoleCode(code string) bool {
-	return code == "super_admin" || code == "超级管理员"
+	return IsSuperRoleCode(code)
 }
 
 // ValidateRoleCode preserves the current CSV adapter's exact authorization identifier.

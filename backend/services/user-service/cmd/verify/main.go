@@ -3,11 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
-
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
+	"log"
+	"os"
 )
 
 func main() {

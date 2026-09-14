@@ -56,6 +56,8 @@ func TestAdminMeRejectsBeforeLiveAccess(t *testing.T) {
 		{"unauthenticated", nil, nil, nil, 401, 0},
 		{"tenant identity", &auth.Identity{Subject: "admin", UserID: "admin", Tenant: "merchant"}, nil, nil, 403, 0},
 		{"whitespace tenant", &auth.Identity{Subject: "admin", UserID: "admin", Tenant: " "}, nil, nil, 403, 0},
+		// C 端 token 的 subject 同样等于 user id、同样没有 tenant，只有 realm 能区分。
+		{"consumer identity", &auth.Identity{Realm: auth.RealmConsumer, Subject: "user-1", UserID: "user-1"}, nil, nil, 403, 0},
 		{"subject mismatch", &auth.Identity{Subject: "other", UserID: "admin"}, nil, nil, 401, 0},
 		{"missing user id", &auth.Identity{Subject: "admin"}, nil, nil, 401, 0},
 		{"disabled", &auth.Identity{Subject: "admin", UserID: "admin", IsSuper: true}, &model.AdminUser{ID: "admin", Status: "disabled"}, nil, 403, 1},

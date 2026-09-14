@@ -43,7 +43,7 @@ func Middleware(service *Service, tokenTypes ...TokenType) func(http.Handler) ht
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token, ok := bearerToken(r.Header.Get("Authorization"))
+			token, ok := BearerToken(r.Header.Get("Authorization"))
 			if !ok || service == nil {
 				writeUnauthorized(w)
 				return
@@ -59,6 +59,7 @@ func Middleware(service *Service, tokenTypes ...TokenType) func(http.Handler) ht
 				Subject:     claims.Subject,
 				UserID:      claims.UserID,
 				Tenant:      claims.Tenant,
+				Realm:       claims.Realm,
 				Roles:       append([]string(nil), claims.Roles...),
 				Permissions: append([]string(nil), claims.Permissions...),
 				IsSuper:     claims.IsSuper,
@@ -130,7 +131,11 @@ func BearerMiddleware(service *Service, tokenTypes ...TokenType) func(http.Handl
 	return Middleware(service, tokenTypes...)
 }
 
-func bearerToken(header string) (string, bool) {
+// BearerToken extracts the raw token from an Authorization header value,
+// accepting any casing of the scheme. It is exported for services that forward
+// the caller's own token onward — the platform's parser living in one place is
+// what keeps the forwarded value byte-identical to the one already verified.
+func BearerToken(header string) (string, bool) {
 	parts := strings.Fields(header)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
 		return "", false

@@ -78,7 +78,7 @@ func (f *fakePermRepo) Delete(_ context.Context, id string) error {
 	return f.deleteErr
 }
 
-// 删除角色必须重载策略。仓储层已经在同一个事务里清掉了 casbin_rule 的 p/g 行，
+// 删除角色必须重载策略。仓储层删掉的行已经让派生策略里不再有这个角色，
 // 但 enforcer 手里还是旧快照——不重载的话，被删角色的成员继续通过校验，
 // 而「撤销没生效」在界面上看不出任何异常。这是权限撤销不生效，不是延迟生效。
 func TestAdminRoleDeleteReloadsPolicy(t *testing.T) {
@@ -140,8 +140,8 @@ func TestAdminPermissionDeleteReloadsPolicy(t *testing.T) {
 	}
 }
 
-// 改名同样要重载：仓储层把 casbin_rule.v2 从旧码迁到新码，
-// enforcer 不重新加载就还在按旧码放行。
+// 改名同样要重载：权限码就是策略里的 obj，改了名之后 enforcer 不重新加载
+// 就还在按旧码放行。
 func TestAdminPermissionUpdateReloadsPolicy(t *testing.T) {
 	repo := &fakePermRepo{perm: &model.AdminPermission{ID: "p1", Code: "brands:view"}}
 	reloader := &countingReloader{}

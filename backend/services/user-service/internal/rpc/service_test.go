@@ -132,7 +132,7 @@ func (h *harness) userCtx(t *testing.T, grant auth.Grant) context.Context {
 }
 
 func platformGrant() auth.Grant {
-	return auth.Grant{Subject: "admin-1", UserID: "admin-1", AccountID: "admin-1"}
+	return auth.Grant{Realm: auth.RealmPlatform, Subject: "admin-1", UserID: "admin-1", AccountID: "admin-1"}
 }
 
 func TestUserServiceInternalRPCsRequireServiceToken(t *testing.T) {
@@ -220,12 +220,17 @@ func TestGetAdminAccessFailClosed(t *testing.T) {
 		wantLookup int
 	}{
 		{
-			name: "subject mismatch", grant: auth.Grant{Subject: "other", UserID: "admin-1"},
+			name: "subject mismatch", grant: auth.Grant{Realm: auth.RealmPlatform, Subject: "other", UserID: "admin-1"},
 			user: &model.AdminUser{ID: "admin-1", Status: "active"}, wantCode: codes.Unauthenticated,
 		},
 		{
-			name: "merchant tenant", grant: auth.Grant{Subject: "admin-1", UserID: "admin-1", Tenant: "merchant-1"},
+			name: "merchant tenant", grant: auth.Grant{Realm: auth.RealmPlatform, Subject: "admin-1", UserID: "admin-1", Tenant: "merchant-1"},
 			user: &model.AdminUser{ID: "admin-1", Status: "active"}, wantCode: codes.PermissionDenied,
+		},
+		{
+			// 形状与管理员一致，只有 realm 不同：这条守住的就是那个区别。
+			name: "consumer token", grant: auth.Grant{Realm: auth.RealmConsumer, Subject: "user-1", UserID: "user-1"},
+			user: &model.AdminUser{ID: "user-1", Status: "active"}, wantCode: codes.PermissionDenied,
 		},
 		{
 			name: "missing account", grant: platformGrant(), userErr: pgx.ErrNoRows,

@@ -24,7 +24,11 @@ type roleRepoStub struct {
 	created   *model.AdminRole
 }
 
-func (r *roleRepoStub) FindAll(context.Context) ([]*model.AdminRole, error) { return nil, nil }
+func (r *roleRepoStub) FindPage(context.Context, int, int) ([]*model.AdminRole, error) {
+	return nil, nil
+}
+
+func (r *roleRepoStub) Count(context.Context) (int64, error) { return 0, nil }
 
 func (r *roleRepoStub) FindByID(context.Context, string) (*model.AdminRole, error) {
 	if r.existing == nil {

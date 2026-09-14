@@ -64,6 +64,7 @@ func TestUnaryServerInterceptorAcceptsServiceToken(t *testing.T) {
 
 func TestUnaryServerInterceptorAcceptsUserToken(t *testing.T) {
 	claims := validTestClaims(AccessTokenType)
+	claims.Roles = []string{"super_admin"}
 	claims.Permissions = []string{"merchant.view"}
 	claims.IsSuper = true
 	interceptor := UnaryServerInterceptor(newTestService(t), testServiceToken)
@@ -81,11 +82,19 @@ func TestUnaryServerInterceptorAcceptsUserToken(t *testing.T) {
 	if identity.UserID != "user-1" || identity.Subject != "subject-1" {
 		t.Fatalf("identity = %+v, want the token's subject and user", identity)
 	}
-	// The token's permission snapshot must not be trusted as live grants: an RPC
-	// that authorized on it would keep honoring revoked permissions until the
-	// token expired, which is exactly what this layer exists to avoid.
+	// No authorization claim survives this layer — not permissions, not roles,
+	// not the super flag. They were signed at login and never change, so an RPC
+	// authorizing on them would keep honoring revoked grants and demoted
+	// administrators until the token expired, which is exactly what asking the
+	// identity service for live grants exists to avoid.
 	if len(identity.Permissions) != 0 {
 		t.Fatalf("identity carried the token's permission snapshot: %v", identity.Permissions)
+	}
+	if len(identity.Roles) != 0 {
+		t.Fatalf("identity carried the token's role snapshot: %v", identity.Roles)
+	}
+	if identity.IsSuper {
+		t.Fatal("identity carried the token's super flag")
 	}
 	if _, err := RequireUser(ctx); err != nil {
 		t.Fatalf("RequireUser = %v, want nil", err)

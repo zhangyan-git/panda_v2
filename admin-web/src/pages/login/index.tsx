@@ -4,6 +4,7 @@ import { history, useModel } from '@umijs/max';
 import { message } from 'antd';
 import { loadMyMenus } from '../../services/menu';
 import { fetchCurrentUser, login } from '../../services/user';
+import { clearTokens, saveTokens } from '../../services/token';
 
 const LoginPage: React.FC = () => {
   const { setInitialState } = useModel('@@initialState');
@@ -11,7 +12,7 @@ const LoginPage: React.FC = () => {
   const handleSubmit = async (values: { username: string; password: string }) => {
     try {
       const tokens = await login(values);
-      localStorage.setItem('panda.auth.tokens', JSON.stringify(tokens));
+      saveTokens(tokens);
       // token 已存入，拦截器现在能注入 Authorization，直接拉取用户信息
       const currentUser = await fetchCurrentUser();
       const menus = await loadMyMenus();
@@ -26,7 +27,7 @@ const LoginPage: React.FC = () => {
       message.success('登录成功');
       history.push('/dashboard');
     } catch (err) {
-      localStorage.removeItem('panda.auth.tokens');
+      clearTokens();
       const msg = err instanceof Error ? err.message : '登录失败，请检查用户名和密码';
       message.error(msg);
     }

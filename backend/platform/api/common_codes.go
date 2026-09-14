@@ -11,10 +11,13 @@ const (
 	CodeNotFound         = "NOT_FOUND"
 	CodeConflict         = "CONFLICT"
 	CodeMethodNotAllowed = "METHOD_NOT_ALLOWED"
-	CodeInternal         = "INTERNAL_ERROR"
-	CodeUnavailable      = "SERVICE_UNAVAILABLE"
-	CodeTimeout          = "TIMEOUT"
-	CodeNotImplemented   = "NOT_IMPLEMENTED"
+	// CodeTooManyRequests 是唯一一个「这个请求本身没错，只是现在不能做」的错误码。
+	// 客户端据此知道要等，而不是去改请求参数或提示用户检查输入。
+	CodeTooManyRequests = "TOO_MANY_REQUESTS"
+	CodeInternal        = "INTERNAL_ERROR"
+	CodeUnavailable     = "SERVICE_UNAVAILABLE"
+	CodeTimeout         = "TIMEOUT"
+	CodeNotImplemented  = "NOT_IMPLEMENTED"
 )
 
 // CodeForStatus 根据 HTTP 状态码返回对应的业务错误码字符串。
@@ -32,6 +35,8 @@ func CodeForStatus(status int) string {
 		return CodeConflict
 	case http.StatusMethodNotAllowed:
 		return CodeMethodNotAllowed
+	case http.StatusTooManyRequests:
+		return CodeTooManyRequests
 	case http.StatusServiceUnavailable:
 		return CodeUnavailable
 	case http.StatusGatewayTimeout:

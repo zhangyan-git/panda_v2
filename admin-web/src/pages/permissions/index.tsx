@@ -17,6 +17,7 @@ import {
   updatePermission,
   type Permission,
 } from '../../services/iam';
+import { FULL_PAGE_PARAMS } from '../../services/pagination';
 
 type PermissionRow = Permission & { isGroup?: boolean; children?: PermissionRow[] };
 
@@ -119,7 +120,9 @@ const PermissionsPage: React.FC = () => {
         expandable={{ defaultExpandAllRows: true }}
         scroll={{ x: 1080 }}
         request={async () => {
-          const perms = await listPermissions();
+          // 这一页要全集：权限被聚合成「分组父行 + 权限子行」的树，只取第 1 页
+          // 会把后面的分组整组漏掉，而表格看起来仍然正常。
+          const perms = (await listPermissions(FULL_PAGE_PARAMS)).items;
           // 按 group 聚合成树：分组为父行，权限为子行
           const grouped = new Map<string, Permission[]>();
           perms.forEach((p) => {
@@ -163,6 +166,11 @@ const PermissionsPage: React.FC = () => {
           setModalOpen(v);
           if (!v) setEditing(null);
         }}
+        // 表单只在首次挂载时读 initialValues，而 Modal 默认关闭时不卸载子节点。
+        // 少了这两行，「编辑 A → 取消 → 编辑 B」表单里留着的还是 A 的字段值，
+        // 点确定却按 editing.id 提交 —— 后端是全量覆盖，等于把 A 写到 B 上。
+        key={editing?.id ?? 'new'}
+        modalProps={{ destroyOnClose: true }}
         initialValues={
           editing
             ? {

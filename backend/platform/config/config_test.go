@@ -131,21 +131,25 @@ func TestLoadReadsDotEnv(t *testing.T) {
 
 func TestResolveDatabasePrefersTheServiceOwnedURL(t *testing.T) {
 	for _, tc := range []struct {
-		name                            string
-		service, shared, user, merchant string
-		want                            string
+		name                                                   string
+		service, shared, user, merchant, coupon, coffeeMachine string
+		want                                                   string
 	}{
-		{"user service reads its own database", "user-service", "shared", "identity", "merchant", "identity"},
-		{"merchant service reads its own database", "merchant-service", "shared", "identity", "merchant", "merchant"},
-		{"user service falls back when unset", "user-service", "shared", "", "merchant", "shared"},
-		{"merchant service falls back when unset", "merchant-service", "shared", "identity", "", "shared"},
-		{"blank override is not an override", "user-service", "shared", "  ", "", "shared"},
-		{"a service without an owned database stays shared", "gateway-service", "shared", "identity", "merchant", "shared"},
+		{"user service reads its own database", "user-service", "shared", "identity", "merchant", "coupon", "coffee", "identity"},
+		{"merchant service reads its own database", "merchant-service", "shared", "identity", "merchant", "coupon", "coffee", "merchant"},
+		{"coupon service reads its own database", "coupon-service", "shared", "identity", "merchant", "coupon", "coffee", "coupon"},
+		{"coffee machine service reads its own database", "coffee-machine-service", "shared", "identity", "merchant", "coupon", "coffee", "coffee"},
+		{"user service falls back when unset", "user-service", "shared", "", "merchant", "coupon", "coffee", "shared"},
+		{"merchant service falls back when unset", "merchant-service", "shared", "identity", "", "coupon", "coffee", "shared"},
+		{"coupon service falls back when unset", "coupon-service", "shared", "identity", "merchant", "", "coffee", "shared"},
+		{"coffee machine service falls back when unset", "coffee-machine-service", "shared", "identity", "merchant", "coupon", "", "shared"},
+		{"blank override is not an override", "user-service", "shared", "  ", "", "", "", "shared"},
+		{"a service without an owned database stays shared", "gateway-service", "shared", "identity", "merchant", "coupon", "coffee", "shared"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := resolveDatabase(tc.service, tc.shared, tc.user, tc.merchant); got != tc.want {
-				t.Fatalf("resolveDatabase(%q, %q, %q, %q) = %q, want %q",
-					tc.service, tc.shared, tc.user, tc.merchant, got, tc.want)
+			if got := resolveDatabase(tc.service, tc.shared, tc.user, tc.merchant, tc.coupon, tc.coffeeMachine); got != tc.want {
+				t.Fatalf("resolveDatabase(%q, %q, %q, %q, %q, %q) = %q, want %q",
+					tc.service, tc.shared, tc.user, tc.merchant, tc.coupon, tc.coffeeMachine, got, tc.want)
 			}
 		})
 	}

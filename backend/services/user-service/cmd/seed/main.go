@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
-	"time"
-
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
+	"log"
+	"os"
+	"time"
 )
 
 func main() {

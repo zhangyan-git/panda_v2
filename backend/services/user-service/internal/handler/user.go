@@ -39,14 +39,22 @@ func toAdminUserResponse(u *model.AdminUser) adminUserResponse {
 
 // List godoc
 //
-//	@Summary     获取所有平台管理员
+//	@Summary     获取平台管理员列表（服务端分页）
 //	@Tags        admin-users
 //	@Produce     json
 //	@Security    BearerAuth
-//	@Success     200 {object} api.Response{data=[]adminUserResponse}
+//	@Param       page     query int false "页码，从 1 开始，默认 1"
+//	@Param       pageSize query int false "每页条数，1..200，默认 20"
+//	@Success     200 {object} api.Response{data=api.PageResponse{items=[]adminUserResponse}}
+//	@Failure     400 {object} api.Response
 //	@Router      /v1/admin/users [get]
 func (h *AdminUserHandler) List(w http.ResponseWriter, r *http.Request) {
-	users, err := h.svc.List(r.Context())
+	page, pageSize, ok, msg := api.ParsePage(r.URL.Query().Get("page"), r.URL.Query().Get("pageSize"), api.MaxPageSize)
+	if !ok {
+		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, msg)
+		return
+	}
+	users, total, err := h.svc.List(r.Context(), page, pageSize)
 	if err != nil {
 		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "服务内部错误")
 		return
@@ -55,7 +63,7 @@ func (h *AdminUserHandler) List(w http.ResponseWriter, r *http.Request) {
 	for i, u := range users {
 		resp[i] = toAdminUserResponse(u)
 	}
-	api.Success(w, resp)
+	api.Success(w, api.PageResponse{Items: resp, Total: total, Page: page, PageSize: pageSize})
 }
 
 // Get godoc

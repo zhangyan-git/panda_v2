@@ -38,9 +38,13 @@ type Config struct {
 	// UserGRPCAddress and MerchantGRPCAddress are the static internal gRPC
 	// endpoints. They are used until service discovery is enabled, and remain the
 	// fallback afterwards.
-	UserGRPCAddress, MerchantGRPCAddress     string
-	MerchantInternalToken                    string
-	MerchantOwnershipTimeoutMS               int
+	UserGRPCAddress, MerchantGRPCAddress string
+	MerchantInternalToken                string
+	MerchantOwnershipTimeoutMS           int
+	// AuthorizationTimeoutMS bounds one live authorization lookup. It is a
+	// per-request budget, not a cache TTL: services that use it re-check the
+	// caller's grants on every admin request.
+	AuthorizationTimeoutMS                   int
 	DevAccountInitEnabled                    bool
 	DevAdminUsername, DevAdminPassword       string
 	DevMerchantUsername, DevMerchantPassword string
@@ -55,6 +59,14 @@ type Config struct {
 	UploadPath                                                   string
 	UploadMaxFileSize                                            int64
 	UploadUseMD5                                                 bool
+	// 以下三项是微信小程序登录凭据，只有 user-service 用得上。
+	// 缺席不是错误：dev 栈没有小程序账号也能起，微信登录接口会回 503 并说明
+	// 缺的是哪一项——比启动失败好，因为其余接口都还能用。
+	WechatMiniappAppID, WechatMiniappSecret, WechatMiniappAPIBase string
+	// SmsDevLogCodes 用「把验证码写进日志」顶替真实短信通道，只在 PANDA_ENV=dev
+	// 下被接受（见 user-service 的 main.go）。默认关闭：宁可接口回 503，也不要
+	// 任何一个没配短信通道的环境悄悄把验证码写进日志。
+	SmsDevLogCodes bool
 }
 
 func Load(service string) (Config, error) {
@@ -93,6 +105,19 @@ func Load(service string) (Config, error) {
 		}
 		if ownershipTimeout < 1000 || ownershipTimeout > 30000 {
 			return Config{}, fmt.Errorf("MERCHANT_OWNERSHIP_TIMEOUT_MS must be between 1000 and 30000")
+		}
+	}
+	// 实时鉴权的单次查询预算。默认 2 秒：一次本地 gRPC 往返的正常耗时是毫秒级，
+	// 2 秒已经足够容忍抖动，又短到不至于让一个卡住的请求长时间占住连接。超过这个
+	// 预算即失败关闭（503），不会退回 token 里的权限快照。
+	authorizationTimeout := 2000
+	if service == "coupon-service" {
+		authorizationTimeout, err = parseIntEnv("AUTHZ_TIMEOUT_MS", 2000)
+		if err != nil {
+			return Config{}, err
+		}
+		if authorizationTimeout < 500 || authorizationTimeout > 30000 {
+			return Config{}, fmt.Errorf("AUTHZ_TIMEOUT_MS must be between 500 and 30000")
 		}
 	}
 	// 整请求超时按服务名给代码默认值：5 秒够普通 JSON 接口，装不下一次 10MB 的
@@ -142,12 +167,15 @@ func Load(service string) (Config, error) {
 			return Config{}, fmt.Errorf("MERCHANT_INTERNAL_TOKEN must be at least 32 bytes for user-service")
 		}
 	}
-	if service == "merchant-service" && userGRPCAddr == "" {
-		return Config{}, fmt.Errorf("USER_GRPC_ADDR is required for merchant-service")
+	// 这三个服务都按请求调用 user-service 取实时授权，所以都要地址。
+	if (service == "merchant-service" || service == "coupon-service" || service == "coffee-machine-service") && userGRPCAddr == "" {
+		return Config{}, fmt.Errorf("USER_GRPC_ADDR is required for %s", service)
 	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	userDatabaseURL := os.Getenv("USER_DATABASE_URL")
 	merchantDatabaseURL := os.Getenv("MERCHANT_DATABASE_URL")
+	couponDatabaseURL := os.Getenv("COUPON_DATABASE_URL")
+	coffeeMachineDatabaseURL := os.Getenv("COFFEE_MACHINE_DATABASE_URL")
 	return Config{
 		ServiceName:                service,
 		Version:                    version,
@@ -158,7 +186,7 @@ func Load(service string) (Config, error) {
 		DatabaseURL:                databaseURL,
 		UserDatabaseURL:            userDatabaseURL,
 		MerchantDatabaseURL:        merchantDatabaseURL,
-		ServiceDatabaseURL:         resolveDatabase(service, databaseURL, userDatabaseURL, merchantDatabaseURL),
+		ServiceDatabaseURL:         resolveDatabase(service, databaseURL, userDatabaseURL, merchantDatabaseURL, couponDatabaseURL, coffeeMachineDatabaseURL),
 		MigrateOnStart:             parseBoolEnv("DB_MIGRATE_ON_START"),
 		RedisAddress:               os.Getenv("REDIS_ADDR"),
 		RedisPassword:              os.Getenv("REDIS_PASSWORD"),
@@ -172,6 +200,7 @@ func Load(service string) (Config, error) {
 		MerchantGRPCAddress:        merchantGRPCAddr,
 		MerchantInternalToken:      merchantToken,
 		MerchantOwnershipTimeoutMS: ownershipTimeout,
+		AuthorizationTimeoutMS:     authorizationTimeout,
 		HTTPTimeoutMS:              httpTimeoutMS,
 		// 裸值透传：UPLOAD_PATH 为空时由 platform/upload 用它的 DefaultPrefix
 		// 兜底，默认值只有一处定义。OSSCNAME 留空则从 OSS_ENDPOINT 推公开基址。
@@ -183,6 +212,10 @@ func Load(service string) (Config, error) {
 		UploadPath:              strings.TrimSpace(os.Getenv("UPLOAD_PATH")),
 		UploadMaxFileSize:       int64(uploadMaxFileSize),
 		UploadUseMD5:            uploadUseMD5,
+		WechatMiniappAppID:      strings.TrimSpace(os.Getenv("WECHAT_MINIAPP_APP_ID")),
+		WechatMiniappSecret:     strings.TrimSpace(os.Getenv("WECHAT_MINIAPP_APP_SECRET")),
+		WechatMiniappAPIBase:    strings.TrimSpace(os.Getenv("WECHAT_MINIAPP_API_BASE")),
+		SmsDevLogCodes:          parseBoolEnv("SMS_DEV_LOG_CODES"),
 		CoffeeMachineServiceURL: os.Getenv("COFFEE_MACHINE_SERVICE_URL"),
 		DevAccountInitEnabled:   parseBoolEnv("DEV_ACCOUNT_INIT_ENABLED"),
 		DevAdminUsername:        os.Getenv("DEV_ADMIN_USERNAME"),
@@ -194,15 +227,24 @@ func Load(service string) (Config, error) {
 
 // resolveDatabase picks the database a service owns after the split. Each
 // per-service variable falls back to the shared DATABASE_URL, so a stack that
-// still runs on one database keeps working; only user-service and
-// merchant-service have an owned database today.
-func resolveDatabase(service, shared, user, merchant string) string {
+// still runs on one database keeps working; user-service, merchant-service,
+// coupon-service and coffee-machine-service have an owned database today.
+//
+// A service missing from this switch silently reads DATABASE_URL — that is the
+// identity database in the dev stack, so the failure looks like working code
+// writing to the wrong database, not like a misconfiguration. Add the case in
+// the same change that adds the service.
+func resolveDatabase(service, shared, user, merchant, coupon, coffeeMachine string) string {
 	var owned string
 	switch service {
 	case "user-service":
 		owned = user
 	case "merchant-service":
 		owned = merchant
+	case "coupon-service":
+		owned = coupon
+	case "coffee-machine-service":
+		owned = coffeeMachine
 	}
 	if strings.TrimSpace(owned) == "" {
 		return shared

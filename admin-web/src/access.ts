@@ -57,6 +57,35 @@ export default function access(initialState: {
     canWriteStores:  has('admin:stores:manage'),
     canDeleteStores: has('admin:stores:delete'),
 
+    // 优惠券管理
+    canViewCoupons: has('coupon:read'),
+    canViewCouponTypes: has('coupon:type:manage'),
+    canWriteCouponTypes: has('coupon:type:manage'),
+    canWriteCouponTemplates: has('coupon:template:manage'),
+    canAuditCouponTemplates: has('coupon:template:audit'),
+    canIssueCoupons: has('coupon:issue'),
+    canOverrideCouponIssue: has('coupon:issue:override'),
+    canViewCouponUserCoupons: has('coupon:user-coupon:read'),
+    canRedeemCoupon: has('coupon:user-coupon:redeem'),
+    canRevokeCoupon: has('coupon:user-coupon:revoke'),
+    canManageCouponBatches: has('coupon:batch:manage'),
+
+    // 小程序用户（C 端顾客，users 表）。与上面的「管理员用户」是两批人：
+    // 权限码也刻意分开，能管平台管理员不等于能看小程序用户的手机号。
+    canViewMiniappUsers: has('admin:miniapp-users:view'),
+    canManageMiniappUsers: has('admin:miniapp-users:manage'),
+
+    // 操作日志（admin_operation_logs）。只有 view：这张表是审计证据，页面只读，
+    // 后端也没有对应的写接口，加一个 canWrite 键会让人以为存在删除能力。
+    canViewOperationLogs: has('admin:operation-logs:view'),
+
+    // 咖啡机设备域（厂商 / 设备 / 饮品）。三个码的破坏力差一档，与后端 routes/admin.go
+    // 里那三个常量一一对应：manage 能改设备资料与饮品价格，balance 能直接动设备余额。
+    // 读与写分开，是为了让人维护饮品目录时不必连资金操作一起拿到。
+    canViewCoffeeMachines: has('coffee_machine:read'),
+    canWriteCoffeeMachines: has('coffee_machine:manage'),
+    canAdjustCoffeeBalance: has('coffee_machine:balance'),
+
     // 原始检查——当需要用权限码直接判断时
     can: (code: string) => has(code),
   };

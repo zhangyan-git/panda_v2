@@ -57,17 +57,25 @@ func toMerchantUserResponse(u *model.MerchantUser) merchantUserResponse {
 
 // ListUsers godoc
 //
-//	@Summary     获取商户下的登录账号列表
+//	@Summary     获取商户下的登录账号列表（服务端分页）
 //	@Tags        admin-merchants
 //	@Produce     json
 //	@Security    BearerAuth
-//	@Param       id path string true "商户ID"
-//	@Success     200 {object} api.Response{data=[]merchantUserResponse}
+//	@Param       id       path  string true  "商户ID"
+//	@Param       page     query int    false "页码，从 1 开始，默认 1"
+//	@Param       pageSize query int    false "每页条数，1..200，默认 20"
+//	@Success     200 {object} api.Response{data=api.PageResponse{items=[]merchantUserResponse}}
+//	@Failure     400 {object} api.Response
 //	@Failure     404 {object} api.Response
 //	@Router      /v1/admin/merchants/{id}/users [get]
 func (h *AdminMerchantHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	id := pathVar(r, "id")
-	users, err := h.accountSvc.ListUsers(r.Context(), id)
+	page, pageSize, ok, msg := api.ParsePage(r.URL.Query().Get("page"), r.URL.Query().Get("pageSize"), api.MaxPageSize)
+	if !ok {
+		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, msg)
+		return
+	}
+	users, total, err := h.accountSvc.ListUsers(r.Context(), id, page, pageSize)
 	if err != nil {
 		writeMerchantError(w, err, "服务内部错误")
 		return
@@ -76,7 +84,7 @@ func (h *AdminMerchantHandler) ListUsers(w http.ResponseWriter, r *http.Request)
 	for i, u := range users {
 		resp[i] = toMerchantUserResponse(u)
 	}
-	api.Success(w, resp)
+	api.Success(w, api.PageResponse{Items: resp, Total: total, Page: page, PageSize: pageSize})
 }
 
 // createMerchantUserRequest 创建商户账号；数据范围单点三选一：

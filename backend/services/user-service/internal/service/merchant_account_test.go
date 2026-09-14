@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -37,14 +38,34 @@ func (f *fakeMerchantUserRepo) FindByID(_ context.Context, id string) (*model.Me
 	return u, nil
 }
 
-func (f *fakeMerchantUserRepo) FindByMerchant(_ context.Context, merchantID string) ([]*model.MerchantUser, error) {
-	var list []*model.MerchantUser
+// FindPage 按 id 排序后再切片，让「哪几条落在这一页」可预测：map 的遍历顺序
+// 是随机的，直接切片会让分页用例时对时错。
+func (f *fakeMerchantUserRepo) FindPage(_ context.Context, merchantID string, limit, offset int) ([]*model.MerchantUser, error) {
+	var all []*model.MerchantUser
 	for _, u := range f.users {
 		if u.MerchantID == merchantID {
-			list = append(list, u)
+			all = append(all, u)
 		}
 	}
-	return list, nil
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	if offset >= len(all) {
+		return nil, nil
+	}
+	end := offset + limit
+	if limit <= 0 || end > len(all) {
+		end = len(all)
+	}
+	return all[offset:end], nil
+}
+
+func (f *fakeMerchantUserRepo) Count(_ context.Context, merchantID string) (int64, error) {
+	var n int64
+	for _, u := range f.users {
+		if u.MerchantID == merchantID {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (f *fakeMerchantUserRepo) Create(_ context.Context, u *model.MerchantUser) error {
@@ -195,9 +216,13 @@ func TestListUsersResolvesScopeNamesOverOneCall(t *testing.T) {
 	users.users["u3"] = &model.MerchantUser{ID: "u3", MerchantID: "m1", Username: "gone-boss", ScopeType: "brand", ScopeID: "deleted"}
 	users.users["u4"] = &model.MerchantUser{ID: "u4", MerchantID: "m1", Username: "whole-merchant", ScopeType: "merchant"}
 
-	list, err := svc.ListUsers(ctx, "m1")
+	// 一页装得下全部账号：这条用例关心的是范围名称怎么解析，不是分页本身。
+	list, total, err := svc.ListUsers(ctx, "m1", 1, 50)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if total != 4 {
+		t.Fatalf("总数应为 4, got %d", total)
 	}
 	got := map[string]string{}
 	for _, u := range list {
@@ -215,7 +240,7 @@ func TestListUsersResolvesScopeNamesOverOneCall(t *testing.T) {
 
 	// merchant-service 不可用时，列表必须失败而不是悄悄返回空名称。
 	resources.namesErr = errors.New("merchant service unavailable")
-	if _, err := svc.ListUsers(ctx, "m1"); err == nil {
+	if _, _, err := svc.ListUsers(ctx, "m1", 1, 50); err == nil {
 		t.Fatal("依赖不可用时应报错")
 	}
 }

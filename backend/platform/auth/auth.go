@@ -14,6 +14,7 @@ var (
 	ErrInvalidIssuer    = errors.New("invalid issuer")
 	ErrInvalidTokenType = errors.New("invalid token type")
 	ErrMissingSubject   = errors.New("missing subject")
+	ErrInvalidRealm     = errors.New("invalid or missing realm")
 )
 
 type TokenType string
@@ -23,6 +24,39 @@ const (
 	RefreshTokenType TokenType = "refresh"
 )
 
+// Realm names which population of principals a token was minted for. All three
+// share one signing key and one issuer, so the claim is the only thing that
+// separates them.
+//
+// It exists because the previous discriminator was structural — "a platform
+// administrator is a token whose Subject equals its UserID and whose Tenant is
+// empty" — and a C-end (miniapp) token satisfies both. Every gate that tested
+// only those two conditions treated a signed-in customer as an administrator,
+// and the ones that stopped them did so by accident (the id happened not to
+// exist in admin_users) rather than by construction.
+type Realm string
+
+const (
+	// RealmPlatform is a platform administrator.
+	RealmPlatform Realm = "platform"
+	// RealmMerchant is a merchant employee. Merchant tokens also carry a
+	// non-empty Tenant; the realm states it outright instead of relying on that.
+	RealmMerchant Realm = "merchant"
+	// RealmConsumer is a miniapp (C-end) customer. Consumer tokens are the ones
+	// that would otherwise be indistinguishable from administrator tokens.
+	RealmConsumer Realm = "consumer"
+)
+
+// Valid reports whether r is one of the defined realms.
+func (r Realm) Valid() bool {
+	switch r {
+	case RealmPlatform, RealmMerchant, RealmConsumer:
+		return true
+	default:
+		return false
+	}
+}
+
 // Claims is the application payload carried by an access or refresh token.
 type Claims struct {
 	UserID    string    `json:"user_id"`
@@ -30,6 +64,10 @@ type Claims struct {
 	Tenant    string    `json:"tenant"`
 	Roles     []string  `json:"roles,omitempty"`
 	TokenType TokenType `json:"token_type"`
+	// Realm names the population this token was minted for. Omitted on tokens
+	// signed before the field existed; Parse resolves that absence to
+	// RealmPlatform, which is what those tokens in fact were.
+	Realm Realm `json:"realm,omitempty"`
 	// Permissions carries the RBAC permission codes resolved at sign time, so a
 	// service can authorize a request without calling back to account-service.
 	// They therefore go stale until the token is refreshed.
@@ -47,10 +85,33 @@ type Identity struct {
 	Subject     string
 	UserID      string
 	Tenant      string
+	Realm       Realm
 	Roles       []string
 	Permissions []string
 	IsSuper     bool
 	Scope       Scope
+}
+
+// IsPlatformAdmin reports whether the identity is a platform administrator's.
+//
+// Every gate that admits only platform administrators must ask this rather than
+// restating the conditions. The test it replaces — a token whose subject equals
+// its user id and whose tenant is empty — is also true of a C-end token, so a
+// guard written that way admits a miniapp customer. The realm is the part that
+// cannot be inferred from the shape of the other claims, which is why it is
+// checked first.
+//
+// An empty realm counts as platform, matching how Parse resolves the absence of
+// the claim: tokens issued before the realm existed were platform tokens, and
+// the two spellings must not disagree about the same identity. That cannot be
+// reached by omission on a C-end token — SignGrant refuses to mint one without a
+// realm — so a consumer identity is only ever denied here for saying so.
+func (i Identity) IsPlatformAdmin() bool {
+	realm := i.Realm
+	if realm == "" {
+		realm = RealmPlatform
+	}
+	return realm == RealmPlatform && i.Subject == i.UserID && i.Tenant == ""
 }
 
 // HasPermission reports whether the identity may perform code. A super
@@ -69,10 +130,14 @@ func (i Identity) HasPermission(code string) bool {
 
 // Grant is the authorization payload embedded in a signed token.
 type Grant struct {
-	Subject     string
-	UserID      string
-	AccountID   string
-	Tenant      string
+	Subject   string
+	UserID    string
+	AccountID string
+	Tenant    string
+	// Realm is required by SignGrant: a grant that does not say which population
+	// it is for cannot be told apart from one minted for another, and the whole
+	// point of the field is that the distinction is explicit at mint time.
+	Realm       Realm
 	Roles       []string
 	Permissions []string
 	IsSuper     bool
@@ -104,14 +169,6 @@ func NewService(secret []byte, issuer string, accessTokenTTL, refreshTokenTTL ti
 	return &Service{secret: append([]byte(nil), secret...), issuer: issuer, accessTokenTTL: accessTokenTTL, refreshTokenTTL: refreshTokenTTL}, nil
 }
 
-func (s *Service) SignAccess(subject, userID, accountID, tenant string, roles []string) (string, error) {
-	return s.Sign(subject, userID, accountID, tenant, roles, AccessTokenType)
-}
-
-func (s *Service) SignRefresh(subject, userID, accountID, tenant string, roles []string) (string, error) {
-	return s.Sign(subject, userID, accountID, tenant, roles, RefreshTokenType)
-}
-
 // SignAccessGrant signs an access token carrying permissions and the super flag.
 func (s *Service) SignAccessGrant(grant Grant) (string, error) {
 	return s.SignGrant(grant, AccessTokenType)
@@ -126,18 +183,22 @@ func (s *Service) AccessTokenTTL() time.Duration {
 	return s.accessTokenTTL
 }
 
-func (s *Service) Sign(subject, userID, accountID, tenant string, roles []string, tokenType TokenType) (string, error) {
-	return s.SignGrant(Grant{
-		Subject: subject, UserID: userID, AccountID: accountID, Tenant: tenant, Roles: roles,
-	}, tokenType)
-}
-
+// SignGrant is the only way to mint a token, and it is the only way on purpose:
+// it takes a Grant, so every caller has to say which realm the token is for.
+// The positional-argument signers it replaced took no realm, which meant a mint
+// site could omit it and silently produce a platform administrator's token.
 func (s *Service) SignGrant(grant Grant, tokenType TokenType) (string, error) {
 	if grant.Subject == "" {
 		return "", ErrMissingSubject
 	}
 	if tokenType != AccessTokenType && tokenType != RefreshTokenType {
 		return "", ErrInvalidTokenType
+	}
+	// Refusing an unset realm rather than defaulting it: a caller that forgot
+	// would otherwise mint a console token for a miniapp user, and this is the
+	// one mistake the field exists to make impossible.
+	if !grant.Realm.Valid() {
+		return "", ErrInvalidRealm
 	}
 	if grant.Scope.size() > MaxScopeIDs {
 		return "", ErrScopeTooLarge
@@ -155,6 +216,7 @@ func (s *Service) SignGrant(grant Grant, tokenType TokenType) (string, error) {
 	claims := Claims{
 		UserID: grant.UserID, AccountID: grant.AccountID, Tenant: grant.Tenant,
 		Roles: append([]string(nil), grant.Roles...), TokenType: tokenType,
+		Realm:       grant.Realm,
 		Permissions: append([]string(nil), grant.Permissions...), IsSuper: grant.IsSuper,
 		Scope: scope,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -197,6 +259,18 @@ func (s *Service) Parse(tokenString string) (*Claims, error) {
 	}
 	if claims.TokenType != AccessTokenType && claims.TokenType != RefreshTokenType {
 		return nil, ErrInvalidTokenType
+	}
+	// A token minted before the realm existed carries none. Those tokens were
+	// only ever platform or merchant ones — no C-end realm shipped yet — so
+	// resolving the absence to RealmPlatform preserves exactly the behaviour
+	// they had. A token carrying a realm we do not define is rejected instead of
+	// guessed at: it means someone signed it with a vocabulary this build does
+	// not know, and defaulting it to platform would be the unsafe direction.
+	switch {
+	case claims.Realm == "":
+		claims.Realm = RealmPlatform
+	case !claims.Realm.Valid():
+		return nil, ErrInvalidRealm
 	}
 	return &claims, nil
 }

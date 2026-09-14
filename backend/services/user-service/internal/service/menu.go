@@ -56,22 +56,21 @@ func (s *AdminMenuService) ListTree(ctx context.Context) ([]*MenuNode, error) {
 
 // TreeForIdentity 返回当前身份可见的菜单树：
 // 超级管理员看到全部；其他身份取角色绑定菜单的并集，并补齐父级目录。
+//
+// 是否超管只看库里的实时角色，不看 token：token 里的角色在过期前不会变，
+// 用它就意味着「把某人踢出超管」后他仍能在最长 24 小时内看到全部入口。
 func (s *AdminMenuService) TreeForIdentity(ctx context.Context, identity auth.Identity) ([]*MenuNode, error) {
 	menus, err := s.menus.FindAll(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if isSuperIdentity(identity) {
-		return buildMenuTree(menus, nil), nil
-	}
-
 	roles, err := s.bindings.FindRolesByUser(ctx, identity.UserID)
 	if err != nil {
 		return nil, err
 	}
 	visible := make(map[string]bool)
 	for _, role := range roles {
-		if role.Code == "super_admin" {
+		if role != nil && model.IsSuperRoleCode(role.Code) {
 			return buildMenuTree(menus, nil), nil
 		}
 		menuIDs, err := s.menus.FindMenuIDsByRoleID(ctx, role.ID)
@@ -283,17 +282,4 @@ func toMenuNode(m *model.Menu) *MenuNode {
 		Icon:     m.Icon,
 		Sort:     m.Sort,
 	}
-}
-
-// isSuperIdentity 兼容 token 中的 super_admin 角色标识
-func isSuperIdentity(identity auth.Identity) bool {
-	if identity.IsSuper {
-		return true
-	}
-	for _, role := range identity.Roles {
-		if role == "super_admin" || role == "超级管理员" {
-			return true
-		}
-	}
-	return false
 }

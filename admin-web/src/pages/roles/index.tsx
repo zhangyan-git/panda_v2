@@ -28,6 +28,7 @@ import {
   type Permission,
   type Role,
 } from '../../services/iam';
+import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 import { requestErrorMessage, roleSaveErrorMessage } from '../../services/requestError';
 import { renderMenuIcon } from '../../menuIcons';
 import { mergeGroupSelection } from './permSelection';
@@ -55,9 +56,13 @@ const RolesPage: React.FC = () => {
   const openPermModal = async (role: Role) => {
     try {
       // 回显当前角色已绑定的权限；保存时整体覆盖
-      const [perms, bound] = await Promise.all([listPermissions(), listRolePermissions(role.id)]);
+      // 权限候选要全集：分页后只给勾选面板第 1 页，会把没加载到的分组整个漏掉。
+      const [perms, bound] = await Promise.all([
+        listPermissions(FULL_PAGE_PARAMS),
+        listRolePermissions(role.id),
+      ]);
       setPermTarget(role);
-      setAllPerms(perms);
+      setAllPerms(perms.items);
       setCheckedPerms(bound.map((p) => p.id));
       setPermModal(true);
     } catch (error) {
@@ -199,9 +204,9 @@ const RolesPage: React.FC = () => {
         rowKey="id"
         columns={columns}
         scroll={{ x: 1180 }}
-        request={async () => {
-          const data = await listRoles();
-          return { data, success: true };
+        request={async (params) => {
+          const result = await listRoles(toPageParams(params));
+          return { data: result.items, total: result.total, success: true };
         }}
         search={{ labelWidth: 'auto' }}
         toolBarRender={() => [

@@ -90,7 +90,7 @@ func UnaryServerInterceptor(service *Service, serviceToken string) grpc.UnarySer
 			if service == nil {
 				return nil, status.Error(codes.Unauthenticated, "token verification unavailable")
 			}
-			token, ok := bearerToken(authorization)
+			token, ok := BearerToken(authorization)
 			if !ok {
 				return nil, status.Error(codes.Unauthenticated, "malformed authorization metadata")
 			}
@@ -99,11 +99,18 @@ func UnaryServerInterceptor(service *Service, serviceToken string) grpc.UnarySer
 				return nil, status.Error(codes.Unauthenticated, "invalid access token")
 			}
 			identity := Identity{
+				// Who the caller is — and only that. The token's authorization
+				// claims (roles, permissions, the super flag) are deliberately NOT
+				// copied: they were signed at login and never change, so an RPC
+				// authorizing on them would keep honoring a revoked grant or a
+				// demoted administrator until the token expired. Callers that need
+				// grants ask the identity service for them.
+				//
+				// Realm IS copied: it is part of "who the caller is", and an RPC
+				// that admits only platform administrators (GetAdminAccess) has no
+				// other way to tell a C-end token from an administrator's.
 				Subject: claims.Subject, UserID: claims.UserID, Tenant: claims.Tenant,
-				Roles: append([]string(nil), claims.Roles...),
-				// The token's permission snapshot is deliberately NOT copied here:
-				// callers that need live grants ask the identity service instead.
-				IsSuper: claims.IsSuper,
+				Realm: claims.Realm,
 			}
 			if claims.Scope != nil {
 				identity.Scope = claims.Scope.clone()
@@ -168,7 +175,7 @@ func AccessTokenFromMetadata(ctx context.Context) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return bearerToken(firstValue(md, MetadataAuthorization))
+	return BearerToken(firstValue(md, MetadataAuthorization))
 }
 
 // unauthenticatedMethod lists the framework methods that must stay reachable
