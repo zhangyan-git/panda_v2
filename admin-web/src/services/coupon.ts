@@ -21,12 +21,19 @@ export type CouponTemplate = {
   name: string;
   shortTitle: string;
   description: string;
+  // 封面图与使用规则说明：接口一直有，以前没登记，详情里要摆出来。
+  coverImage: string;
+  useRuleDescription: string;
   // 金额单位一律是「分」（整数）。这一层不做换算：接口给什么就是什么，
   // 页面在录入/展示时按元转换（见 pages/coupon-templates 的 fen/yuan）。
   faceValue: number;
   minPurchaseAmount: number;
   purchasePrice: number;
   totalQuantity: number;
+  // 已发行 / 已预留。列表上的「剩余」由这三个算，接口没有单独的剩余字段，
+  // 因为剩余是导出量（total - issued - reserved），存一份就会有对不上的时候。
+  issuedQuantity: number;
+  reservedQuantity: number;
   validityMode: 'fixed' | 'relative';
   validFrom?: string;
   validTo?: string;
@@ -34,11 +41,24 @@ export type CouponTemplate = {
   // 后端模板校验要求 claimLimitMode 取 once_ever/unlimited_after_use/periodic，
   // redemptionType 取 platform/external_code/show_qr，缺任一项创建都会 400。
   claimLimitMode: 'once_ever' | 'unlimited_after_use' | 'periodic';
+  // 只有 claimLimitMode='periodic' 时才有值，库里那两条 CHECK 保证互斥。
+  claimPeriodUnit?: string;
+  claimPeriodQuantity?: number;
   redemptionType: 'platform' | 'external_code' | 'show_qr';
+  // 外部核销方式，同样只对部分 redemptionType 有意义（接口带 omitempty）。
+  externalUseMethod?: string;
   auditStatus: 'pending' | 'approved' | 'rejected';
+  auditRemark: string;
+  auditedAt?: string;
+  auditedBy?: string;
   status: 'draft' | 'active' | 'disabled' | 'closed';
+  isHot: boolean;
+  isRecommended: boolean;
+  sortOrder: number;
   visible: boolean;
+  createdBy?: string;
   createdAt: string;
+  updatedAt: string;
   // 适用范围。「商户」那层是上面的 merchantId（单选，null/undefined = 平台券）；
   // 这两个是品牌/门店两层，空数组 = 该层不限。
   brandIds: string[];
@@ -105,6 +125,11 @@ export type UserCoupon = {
 export type UserCouponQuery = {
   page?: number;
   pageSize?: number;
+  // 用户券自身的 id：客服拿着顾客发来的券号直接定位那一张。
+  id?: string;
+  // coupon_types.code（user_coupons 里存的是发券时抄下来的副本）。搜索下拉给的是
+  // 中文名，发出去的仍是编码，所以这里的类型是 string 而不是枚举字面量。
+  couponTypeCode?: string;
   userId?: string;
   status?: UserCouponStatus;
   batchId?: string;
@@ -161,6 +186,11 @@ export async function listCouponTemplates(params?: Record<string, unknown>) {
 }
 export async function createCouponTemplate(data: TemplateInput) {
   return request<CouponTemplate>('/api/v1/admin/coupons/templates', { method: 'POST', data });
+}
+// 详情单独取一次，不拿列表那一行凑合：已发行/剩余是会被人改动的数（别人刚发过券），
+// 列表数据在打开抽屉的那一刻可能已经旧了。
+export async function getCouponTemplate(id: string) {
+  return request<CouponTemplate>(`/api/v1/admin/coupons/templates/${id}`);
 }
 export async function updateCouponTemplate(id: string, data: Partial<TemplateInput>) {
   return request<CouponTemplate>(`/api/v1/admin/coupons/templates/${id}`, { method: 'PUT', data });

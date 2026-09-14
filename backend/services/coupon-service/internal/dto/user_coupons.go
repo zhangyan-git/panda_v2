@@ -3,12 +3,17 @@ package dto
 import "time"
 
 type UserCouponQuery struct {
-	Page       int
-	PageSize   int
-	UserID     string
-	Status     string
-	BatchID    string
-	TemplateID string
+	Page     int
+	PageSize int
+	// ID 是用户券自身的 id：客服拿着顾客发来的券号要能直接定位到那一张。
+	ID string
+	// CouponTypeCode 是 coupon_types.code 的冗余副本（发券时就写进 user_coupons 了），
+	// 不是 join 出来的。
+	CouponTypeCode string
+	UserID         string
+	Status         string
+	BatchID        string
+	TemplateID     string
 }
 type UserCouponStats struct {
 	Total       int64 `json:"total"`

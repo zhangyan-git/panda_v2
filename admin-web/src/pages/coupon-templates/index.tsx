@@ -1,21 +1,22 @@
 import {
   ModalForm,
   PageContainer,
+  ProDescriptions,
   ProFormDateTimePicker,
   ProFormDependency,
   ProFormDigit,
   ProFormSelect,
   ProFormSwitch,
   ProFormText,
-  ProFormTextArea,
   ProTable,
 } from '@ant-design/pro-components';
-import { Button, message, Popconfirm, Space, Tag } from 'antd';
+import { Button, Drawer, Form, Image, message, Popconfirm, Space, Tag } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { ActionType, ProColumns, ProFormInstance } from '@ant-design/pro-components';
 import {
   auditCouponTemplate,
   createCouponTemplate,
+  getCouponTemplate,
   issueCoupons,
   listCouponTemplates,
   listCouponTypes,
@@ -27,7 +28,17 @@ import {
 import { listBrands } from '../../services/brand';
 import { listStores, type Store } from '../../services/store';
 import { listMerchants } from '../../services/merchant';
-import { toRFC3339 } from '../../services/datetime';
+import {
+  AUDIT_STATUS,
+  CLAIM_LIMIT_MODE,
+  REDEMPTION_TYPE,
+  TEMPLATE_STATUS,
+  VALIDITY_MODE,
+} from '../../services/couponLabels';
+import { enumMeta, searchOptions } from '../../services/labels';
+import UserPicker, { type PickedUser } from '../../components/common/UserPicker';
+import { formatDateTime, toRFC3339 } from '../../services/datetime';
+import { requestErrorMessage } from '../../services/requestError';
 import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 import { useAccess } from '@umijs/max';
 
@@ -40,9 +51,12 @@ type TemplateFormValues = Omit<TemplateInput, 'faceValue' | 'minPurchaseAmount' 
 
 // 发券弹窗的表单值。templateName 只是把「发给哪个模板」显示出来，不进提交载荷：
 // 模板由行内按钮决定，不允许手填 ID。
+//
+// userIds 是选出来的对象数组而不是一串 ID 文本：界面上要显示成谁，提交时才取 .id。
+// 以前是手填 ID 的文本框，运营得先去别处把 ID 抄过来，抄错了只能等接口报错。
 type IssueFormValues = {
   templateName?: string;
-  userIds: string;
+  userIds: PickedUser[];
   quantityPerUser: number;
   reason?: string;
 };
@@ -56,6 +70,71 @@ const yuanToFen = (yuan?: number) => Math.round(Number(yuan ?? 0) * 100);
 const fenToYuan = (fen?: number) => Number(fen ?? 0) / 100;
 // 展示用，固定两位小数，与表单口径一致。不拼 ¥：这一列原本就没有币种前缀。
 const formatYuan = (fen?: number) => fenToYuan(fen).toFixed(2);
+
+// 剩余 = 总量 - 已发行 - 已预留，与库里的约束 issued + reserved <= total 同一个口径。
+// 减掉预留：那部分额度已经被订单占住、不会再发出去，算进剩余会让人以为还能发。
+// 不减「已释放」——释放是把占住的额度还回池子，本来就还没发行。
+const remainingOf = (template: CouponTemplate) =>
+  template.totalQuantity - template.issuedQuantity - template.reservedQuantity;
+
+// 有效期按模式拼一句人话。两个模式在库里有 CHECK 保证字段互斥（见 001 的
+// coupon_templates 约束），所以 relative 一定有 validDays、fixed 一定有起止。
+// 用 formatDateTime 而不是 valueType: 'dateTime'：这一格是拼出来的字符串，不是
+// 一个时间字段，ProTable 的 valueType 只对整格是时间的情况生效。
+const validityText = (template: CouponTemplate) =>
+  template.validityMode === 'relative'
+    ? `${template.validDays ?? '—'} 天（发放后起算）`
+    : `${formatDateTime(template.validFrom)} 至 ${formatDateTime(template.validTo)}`;
+
+// 两个金额字段的 0 都有专门含义，铺成「0.00」等于把含义抹掉：最低消费 0 是
+// 无门槛，售价 0 是免费领取（001 的列注释就是这么写的）。
+const thresholdText = (fen: number) => (fen === 0 ? '无门槛' : formatYuan(fen));
+const priceText = (fen: number) => (fen === 0 ? '免费领取' : formatYuan(fen));
+
+/**
+ * 「适用范围」的展示。
+ *
+ * 接口里是三个 id 字段（merchantId + brandIds + storeIds），直接把 id 铺出来没人
+ * 看得懂，这里换成名称。三者都空 = 不限，这是「没配」和「配了但界面上不显示」唯一
+ * 能区分开的地方——以前这个功能整条链路都没落地，界面上完全看不出来。
+ *
+ * 列表那一列和详情抽屉共用这一份：各写一遍的话，将来加一层范围（比如「渠道」）一定
+ * 会漏改一处，而漏掉的表现是一边显示「不限」、另一边把 id 原样吐出来。
+ *
+ * 名映射由调用方传入（页面里是三个 state），拿不到名字时退回显示原始 id：缺相应
+ * 权限时那几个请求会失败，而这只影响能不能看懂，不该让整页报错。
+ */
+function ScopeTags({
+  template,
+  merchantNames,
+  brandNames,
+  storeNames,
+}: {
+  template: CouponTemplate;
+  merchantNames: Record<string, string>;
+  brandNames: Record<string, string>;
+  storeNames: Record<string, string>;
+}) {
+  const merchant = template.merchantId
+    ? (merchantNames[template.merchantId] ?? template.merchantId)
+    : undefined;
+  const brands = (template.brandIds ?? []).map((id) => ({ id, name: brandNames[id] ?? id }));
+  const stores = (template.storeIds ?? []).map((id) => ({ id, name: storeNames[id] ?? id }));
+  if (!merchant && brands.length === 0 && stores.length === 0) {
+    return <span style={{ color: '#999' }}>不限</span>;
+  }
+  return (
+    <Space size={[4, 4]} wrap>
+      {merchant && <Tag color="blue">商户：{merchant}</Tag>}
+      {brands.map((item) => (
+        <Tag key={`brand:${item.id}`}>品牌：{item.name}</Tag>
+      ))}
+      {stores.map((item) => (
+        <Tag key={`store:${item.id}`}>门店：{item.name}</Tag>
+      ))}
+    </Space>
+  );
+}
 
 // validFrom/validTo 是 Go 的 *time.Time，只认 RFC3339；dateFormatter 在这里不生效，
 // 所以提交前显式转一次（见 services/datetime.ts 里的说明）。
@@ -122,6 +201,13 @@ export default function CouponTemplatesPage() {
   const [editing, setEditing] = useState<CouponTemplate>();
   const [issueOpen, setIssueOpen] = useState(false);
   const [issueTarget, setIssueTarget] = useState<CouponTemplate>();
+  // 详情抽屉。存的是**单独取回来的**那一条，不是列表那一行——见 services/coupon.ts
+  // 里 getCouponTemplate 的说明。
+  const [detail, setDetail] = useState<CouponTemplate>();
+  // 取详情的过程中把那一行的「详情」按钮转起来，取回来再开抽屉（照设备管理等详情的
+  // 做法）。先开再填的话，抽屉会先用空值挂一次，值回来时整片重画，用户看得见闪。
+  const [detailLoadingID, setDetailLoadingID] = useState<string>();
+  const [typeNames, setTypeNames] = useState<Record<string, string>>({});
   const [merchantNames, setMerchantNames] = useState<Record<string, string>>({});
   const [brandNames, setBrandNames] = useState<Record<string, string>>({});
   const [storeNames, setStoreNames] = useState<Record<string, string>>({});
@@ -150,6 +236,16 @@ export default function CouponTemplatesPage() {
         setStoreNames(Object.fromEntries(stores.items.map((item) => [item.id, item.name])));
       } catch {
         // 忽略：拿不到名字时列里显示原始 id
+      }
+      // 券类型名单独一个请求，不并进上面那组：类型接口的权限是 coupon:type:manage，
+      // 与列表的 coupon:read 不是一套（见 coupon-service internal/routes/admin.go）。
+      // 并进同一个 try 的话，只差这一个权限就会让商户/品牌/门店三列名字一起退回显示
+      // id——那三列跟类型权限毫无关系。
+      try {
+        const types = await listCouponTypes();
+        setTypeNames(Object.fromEntries(types.map((item) => [item.id, item.name])));
+      } catch {
+        // 忽略：同上，退回显示原始 id
       }
     })();
   }, []);
@@ -181,49 +277,161 @@ export default function CouponTemplatesPage() {
   };
 
   const columns: ProColumns<CouponTemplate>[] = [
-    { title: '名称', dataIndex: 'name' },
-    // 接口给的是「分」，直接铺出来就是「1250」；列表按元展示成「12.50」。
-    { title: '面值', dataIndex: 'faceValue', search: false, render: (_, record) => formatYuan(record.faceValue) },
-    { title: '总量', dataIndex: 'totalQuantity' },
     {
+      // 老系统那一列就摆在最前面（ID 之后）。用 Image 而不是 Avatar：封面上是券的
+      // 整张视觉，方形缩略图裁得看不出原样，而这里是能点开看大图的（Image 自带
+      // 预览）。没有封面时给「—」，不给占位图——分不清「没传」和「传了张灰图」。
+      title: '封面图',
+      dataIndex: 'coverImage',
+      search: false,
+      width: 80,
+      render: (_, record) =>
+        record.coverImage ? (
+          <Image src={record.coverImage} width={48} height={48} style={{ objectFit: 'cover' }} />
+        ) : (
+          '—'
+        ),
+    },
+    { title: '名称', dataIndex: 'name', width: 180, ellipsis: true },
+    {
+      // 列表以前完全看不出这是一张什么券（满减/折扣/代金），只能从名字猜。类型目录
+      // 本来就要为表单拉一次，顺手建映射，不新增请求。
+      title: '券类型',
+      dataIndex: 'couponTypeId',
+      search: false,
+      width: 100,
+      render: (_, record) => typeNames[record.couponTypeId] ?? record.couponTypeId,
+    },
+    // 接口给的是「分」，直接铺出来就是「1250」；列表按元展示成「12.50」。
+    {
+      title: '面值',
+      dataIndex: 'faceValue',
+      search: false,
+      width: 100,
+      render: (_, record) => formatYuan(record.faceValue),
+    },
+    // 「满 50 减 10」以前只写在名字里，接口有 minPurchaseAmount 却不显示：名字是
+    // 人随手起的，改个名字这张券的用法就从界面上消失了。
+    {
+      title: '最低消费',
+      dataIndex: 'minPurchaseAmount',
+      search: false,
+      width: 100,
+      render: (_, record) => thresholdText(record.minPurchaseAmount),
+    },
+    {
+      title: '售价',
+      dataIndex: 'purchasePrice',
+      search: false,
+      width: 100,
+      render: (_, record) => priceText(record.purchasePrice),
+    },
+    {
+      // 发出去的券什么时候过期，取决于这一列。以前只有编辑弹窗里看得到。
+      title: '有效期',
+      search: false,
+      width: 190,
+      render: (_, record) => validityText(record),
+    },
+    {
+      title: '核销方式',
+      dataIndex: 'redemptionType',
+      search: false,
+      width: 110,
+      render: (_, record) => enumMeta(REDEMPTION_TYPE, record.redemptionType).text,
+    },
+    // 不摆搜索框：按「发行总量等于多少」筛没有实际用法，而 ProTable 默认会为每个
+    // 列生成一个等值输入框——摆着但其实用不上。要按范围筛得先定口径（已发行还是
+    // 总量），是另一件事。
+    { title: '总量', dataIndex: 'totalQuantity', search: false, width: 90 },
+    {
+      // 摆出来是为了让「剩余」能自己对上：剩余 = 总量 - 已发行 - 已预留。只给总量和
+      // 剩余，两个数之间的差额是多少、被什么占着，界面上没有出处。
+      title: '已发行',
+      dataIndex: 'issuedQuantity',
+      search: false,
+      width: 100,
+    },
+    {
+      // 发到 0 就再也发不出去了（发券接口会回库存不足），所以剩多少是这一列要回答的
+      // 问题——总量旁边没有它，运营得自己记每批发了多少。
+      //
+      // 也没有搜索框，理由同总量：按「剩余等于多少」筛没有实际用法。
+      title: '剩余',
+      search: false,
+      width: 90,
+      render: (_, record) => remainingOf(record),
+    },
+    {
+      // valueEnum 同时管两件事：搜索下拉的选项，以及「这一列是可筛的」。后端
+      // ListTemplates 收 name/status/auditStatus 三个参数，改这里要跟它的
+      // CouponTemplateQuery 对上。
       title: '审核',
       dataIndex: 'auditStatus',
-      render: (_, record) => <Tag>{record.auditStatus}</Tag>,
+      valueType: 'select',
+      width: 100,
+      valueEnum: searchOptions(AUDIT_STATUS),
+      render: (_, record) => {
+        const meta = enumMeta(AUDIT_STATUS, record.auditStatus);
+        return <Tag color={meta.color}>{meta.text}</Tag>;
+      },
     },
-    { title: '状态', dataIndex: 'status' },
     {
-      // 适用范围在接口里是三个 id 字段，直接把 id 铺在表格里没人看得懂，这里换成
-      // 名称。三者都空 = 不限，这是「没配」和「配了但列表不显示」唯一能区分开的
-      // 地方——以前这个功能整条链路都没落地，界面上完全看不出来。
+      title: '状态',
+      dataIndex: 'status',
+      valueType: 'select',
+      width: 100,
+      valueEnum: searchOptions(TEMPLATE_STATUS),
+      render: (_, record) => {
+        const meta = enumMeta(TEMPLATE_STATUS, record.status);
+        return <Tag color={meta.color}>{meta.text}</Tag>;
+      },
+    },
+    {
       title: '适用范围',
       search: false,
-      render: (_, record) => {
-        const merchant = record.merchantId
-          ? (merchantNames[record.merchantId] ?? record.merchantId)
-          : undefined;
-        const brands = (record.brandIds ?? []).map((id) => ({ id, name: brandNames[id] ?? id }));
-        const stores = (record.storeIds ?? []).map((id) => ({ id, name: storeNames[id] ?? id }));
-        if (!merchant && brands.length === 0 && stores.length === 0) {
-          return <span style={{ color: '#999' }}>不限</span>;
-        }
-        return (
-          <Space size={[4, 4]} wrap>
-            {merchant && <Tag color="blue">商户：{merchant}</Tag>}
-            {brands.map((item) => (
-              <Tag key={`brand:${item.id}`}>品牌：{item.name}</Tag>
-            ))}
-            {stores.map((item) => (
-              <Tag key={`store:${item.id}`}>门店：{item.name}</Tag>
-            ))}
-          </Space>
-        );
-      },
+      width: 200,
+      render: (_, record) => (
+        <ScopeTags
+          template={record}
+          merchantNames={merchantNames}
+          brandNames={brandNames}
+          storeNames={storeNames}
+        />
+      ),
     },
     {
       title: '操作',
       valueType: 'option',
+      // 列变多之后横向一定要滚，操作列钉在右边：不钉的话「详情/编辑/发放」会被滚出
+      // 视野，而这几列正好是这一页唯一能点的地方。宽度要显式给，fixed 的列量不出来。
+      //
+      // 300 不是随手给的：最多的一行是「详情 发放 编辑 停用」（或「详情 编辑 通过
+      // 驳回」）四个按钮，实测每个 60px、加上 8px 间距和两侧内边距要 280px。之前
+      // 写 220，按钮放不下又不换行（Space 默认 nowrap），就从格子里溢出去、越过表格
+      // 右边缘——钉在右边也照样被切掉。
+      width: 300,
+      fixed: 'right',
       render: (_, record) => (
         <Space>
+          {/* 详情不限权限：接口与列表同一个 coupon:read，能看见这一行就能看见详情。
+              按钮不做权限门，否则会出现「有这一行但点不开」的死角。 */}
+          <Button
+            type="link"
+            loading={detailLoadingID === record.id}
+            onClick={async () => {
+              setDetailLoadingID(record.id);
+              try {
+                setDetail(await getCouponTemplate(record.id));
+              } catch (error) {
+                message.error(requestErrorMessage(error, '读取模板详情失败'));
+              } finally {
+                setDetailLoadingID(undefined);
+              }
+            }}
+          >
+            详情
+          </Button>
           {/* 只有 active + approved 的模板才发得出去：后端取模板时带
               status='active' AND audit_status='approved'，放行了别的行
               用户只会拿到一个看不懂的服务端报错。 */}
@@ -297,6 +505,14 @@ export default function CouponTemplatesPage() {
         rowKey="id"
         actionRef={ref}
         columns={columns}
+        // 券类型/封面图/费用/有效期/数量这几列加上之后一屏放不下，给一个下限宽度
+        // 让它横向滚动，而不是把每列挤成几个字。
+        //
+        // 这个数**必须等于各列 width 之和**（80+180+100+100+100+100+190+110+90+
+        // 100+90+100+100+200+300）：小于实际内容宽度时，钉在右边的操作列会按
+        // scroll.x 去算位置、而表体宽出那一截，结果是它跑到表格外面去。所以下面
+        // 每一列都写死了 width，不留 auto——auto 是浏览器量出来的，这个和永远算不准。
+        scroll={{ x: 1940 }}
         request={async (params) => {
           // ProTable 传的是 current，接口要的是 page，必须转一次：
           // 直接透传的话后端收不到 page，翻到第 2 页拿回来的还是第 1 页的数据。
@@ -321,6 +537,128 @@ export default function CouponTemplatesPage() {
             : []
         }
       />
+
+      {/* 模板详情。列的就是模板自己那些字段，一行一屏看不全的（说明、使用规则、
+          封面图、几处开关）都在这里。 */}
+      <Drawer
+        title="模板详情"
+        width={720}
+        open={!!detail}
+        onClose={() => setDetail(undefined)}
+        // 不加 destroyOnClose：这里没有需要重置的内部状态，而 ProDescriptions 每次
+        // 都按 dataSource 重画。加了反而会在关闭动画里闪一下空表。
+      >
+        {detail && (
+          <ProDescriptions<CouponTemplate>
+            column={2}
+            dataSource={detail}
+            // ProDescriptions 的 render 签名是 (dom, entity, index, action, schema)，
+            // 第二个参数是**整行数据**，不是这一格的字段值——在用户券详情那里就栽过：
+            // 按字段值用会拿到 [object Object]，界面上直接显示这串字。
+            columns={[
+              { title: '模板 ID', dataIndex: 'id', copyable: true, span: 2 },
+              { title: '模板名称', dataIndex: 'name' },
+              { title: '短标题', dataIndex: 'shortTitle', render: (_, record) => record.shortTitle || '—' },
+              {
+                title: '券类型',
+                dataIndex: 'couponTypeId',
+                render: (_, record) => typeNames[record.couponTypeId] ?? record.couponTypeId,
+              },
+              {
+                title: '状态',
+                dataIndex: 'status',
+                render: (_, record) => {
+                  const meta = enumMeta(TEMPLATE_STATUS, record.status);
+                  return <Tag color={meta.color}>{meta.text}</Tag>;
+                },
+              },
+              {
+                title: '审核',
+                dataIndex: 'auditStatus',
+                render: (_, record) => {
+                  const meta = enumMeta(AUDIT_STATUS, record.auditStatus);
+                  return <Tag color={meta.color}>{meta.text}</Tag>;
+                },
+              },
+              { title: '审核备注', dataIndex: 'auditRemark', render: (_, record) => record.auditRemark || '—' },
+              { title: '审核时间', dataIndex: 'auditedAt', valueType: 'dateTime' },
+              // 审核人是个管理员 UUID，这个页面拿不到姓名映射，原样显示：报障时对的就是它。
+              { title: '审核人', dataIndex: 'auditedBy', render: (_, record) => record.auditedBy || '—' },
+              {
+                title: '适用范围',
+                span: 2,
+                render: (_, record) => (
+                  <ScopeTags
+                    template={record}
+                    merchantNames={merchantNames}
+                    brandNames={brandNames}
+                    storeNames={storeNames}
+                  />
+                ),
+              },
+              { title: '面值', dataIndex: 'faceValue', render: (_, record) => formatYuan(record.faceValue) },
+              {
+                title: '最低消费',
+                dataIndex: 'minPurchaseAmount',
+                render: (_, record) => thresholdText(record.minPurchaseAmount),
+              },
+              { title: '售价', dataIndex: 'purchasePrice', render: (_, record) => priceText(record.purchasePrice) },
+              { title: '有效期', render: (_, record) => validityText(record) },
+              { title: '有效期模式', render: (_, record) => enumMeta(VALIDITY_MODE, record.validityMode).text },
+              { title: '总量', dataIndex: 'totalQuantity' },
+              { title: '已发行', dataIndex: 'issuedQuantity' },
+              { title: '已预留', dataIndex: 'reservedQuantity' },
+              { title: '剩余', render: (_, record) => remainingOf(record) },
+              {
+                title: '领取限制',
+                dataIndex: 'claimLimitMode',
+                render: (_, record) => enumMeta(CLAIM_LIMIT_MODE, record.claimLimitMode).text,
+              },
+              {
+                title: '核销方式',
+                dataIndex: 'redemptionType',
+                render: (_, record) => enumMeta(REDEMPTION_TYPE, record.redemptionType).text,
+              },
+              {
+                title: '外部核销说明',
+                dataIndex: 'externalUseMethod',
+                render: (_, record) => record.externalUseMethod || '—',
+              },
+              {
+                title: '前台可见',
+                dataIndex: 'visible',
+                render: (_, record) => (record.visible ? '是' : '否'),
+              },
+              { title: '热门', dataIndex: 'isHot', render: (_, record) => (record.isHot ? '是' : '否') },
+              {
+                title: '推荐',
+                dataIndex: 'isRecommended',
+                render: (_, record) => (record.isRecommended ? '是' : '否'),
+              },
+              { title: '排序', dataIndex: 'sortOrder' },
+              { title: '创建人', dataIndex: 'createdBy', render: (_, record) => record.createdBy || '—' },
+              { title: '创建时间', dataIndex: 'createdAt', valueType: 'dateTime' },
+              { title: '更新时间', dataIndex: 'updatedAt', valueType: 'dateTime' },
+              {
+                title: '封面图',
+                dataIndex: 'coverImage',
+                span: 2,
+                render: (_, record) =>
+                  record.coverImage ? <Image src={record.coverImage} width={160} /> : '—',
+              },
+              // 说明和使用规则是给人读的长文本，各占一整行。
+              { title: '说明', dataIndex: 'description', span: 2, render: (_, record) => record.description || '—' },
+              {
+                title: '使用规则',
+                dataIndex: 'useRuleDescription',
+                span: 2,
+                render: (_, record) => record.useRuleDescription || '—',
+              },
+            ]}
+          />
+        )}
+      </Drawer>
+
       <ModalForm<TemplateFormValues>
         formRef={formRef}
         open={open}
@@ -544,9 +882,7 @@ export default function CouponTemplatesPage() {
             issueCoupons({
               // templateId 取自行内按钮，不让用户手填
               templateId: issueTarget.id,
-              userIds: String(values.userIds)
-                .split(/[,\n\s]+/)
-                .filter(Boolean),
+              userIds: values.userIds.map((user) => user.id),
               quantityPerUser: Number(values.quantityPerUser),
               reason: values.reason,
             }),
@@ -556,13 +892,24 @@ export default function CouponTemplatesPage() {
         }}
       >
         <ProFormText name="templateName" label="模板" initialValue={issueTarget?.name} disabled />
-        <ProFormTextArea
+        {/* 用原生 Form.Item 而不是 ProFormXxx：这里是自定义控件（值是一组用户对象），
+            不是任何一个 ProForm 字段类型。required 交给 validator 判长度——
+            清空后值是空数组，`required` 对空数组不生效，只加 required 会放行一次
+            空提交，接口那边才报「len(userIds) < 1」。 */}
+        <Form.Item
           name="userIds"
-          label="用户 ID"
-          fieldProps={{ rows: 6 }}
-          placeholder="逗号、空格或换行分隔"
-          rules={[{ required: true }]}
-        />
+          label="用户"
+          rules={[
+            {
+              validator: (_, value: PickedUser[] | undefined) =>
+                value && value.length > 0
+                  ? Promise.resolve()
+                  : Promise.reject(new Error('请选择用户')),
+            },
+          ]}
+        >
+          <UserPicker />
+        </Form.Item>
         <ProFormDigit
           name="quantityPerUser"
           label="每人数量"

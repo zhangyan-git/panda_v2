@@ -56,12 +56,21 @@ func (c *AdminCouponController) Templates(w http.ResponseWriter, r *http.Request
 		// 默认页——但回显出去的仍是最初的入参，于是响应会声称「pageSize=500」
 		// 而实际只返回了 20 条。改成和其他列表接口同一套解析：非法值直接 400，
 		// 回显的一定是真正生效的值。
-		page, size, ok, msg := api.ParsePage(r.URL.Query().Get("page"), r.URL.Query().Get("pageSize"), maxCouponPageSize)
+		page, size, ok, msg := api.ParsePage(r.URL.Query().Get("page"), r.URL.Query().Get("pageSize"), dto.MaxPageSize)
 		if !ok {
 			api.Error(w, 400, "INVALID_ARGUMENT", msg)
 			return
 		}
-		items, total, err := c.coupons.ListTemplates(r.Context(), page, size)
+		// 三个筛选与批次/用户券两个列表同形（空串 = 不筛）。在这之前它们一直没被读，
+		// 界面上摆着却按了没反应：参数确实发出去了，只是服务端从头到尾只看 page/size。
+		q := dto.CouponTemplateQuery{
+			Page:        page,
+			PageSize:    size,
+			Name:        strings.TrimSpace(r.URL.Query().Get("name")),
+			Status:      strings.TrimSpace(r.URL.Query().Get("status")),
+			AuditStatus: strings.TrimSpace(r.URL.Query().Get("auditStatus")),
+		}
+		items, total, err := c.coupons.ListTemplates(r.Context(), q)
 		if err != nil {
 			templateError(w, err)
 			return

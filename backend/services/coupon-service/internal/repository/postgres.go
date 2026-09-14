@@ -225,21 +225,56 @@ func scanUserCoupon(row interface{ Scan(...any) error }) (*model.UserCoupon, err
 func (r *postgresRepository) GetUserCoupon(ctx context.Context, id string) (*model.UserCoupon, error) {
 	return scanUserCoupon(r.pool.QueryRow(ctx, `SELECT `+userCouponColumns+` FROM user_coupons WHERE id=$1`, id))
 }
+
+// userCouponListWhere 拼用户券列表的筛选子句与绑定参数，写法与 templateListWhere 一致。
+//
+// uuid 列必须转成 text 再比：PostgreSQL 会把参数按列类型解析，空串在 uuid 列上
+// 直接报 invalid input syntax，即便条件本意是「不筛」。
+func userCouponListWhere(q dto.UserCouponQuery) (string, []any) {
+	where := []string{"1=1"}
+	args := []any{}
+	add := func(clause string, value any) {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	if q.ID != "" {
+		add("id::text=$%d", q.ID)
+	}
+	if q.UserID != "" {
+		add("user_id::text=$%d", q.UserID)
+	}
+	if q.Status != "" {
+		add("status=$%d", q.Status)
+	}
+	if q.BatchID != "" {
+		add("batch_id::text=$%d", q.BatchID)
+	}
+	if q.TemplateID != "" {
+		add("template_id::text=$%d", q.TemplateID)
+	}
+	if q.CouponTypeCode != "" {
+		add("coupon_type_code=$%d", q.CouponTypeCode)
+	}
+	return strings.Join(where, " AND "), args
+}
+
 func (r *postgresRepository) ListUserCoupons(ctx context.Context, q dto.UserCouponQuery) ([]*model.UserCoupon, int64, error) {
 	if q.Page < 1 {
 		q.Page = 1
 	}
-	if q.PageSize < 1 || q.PageSize > 100 {
+	// 兜底：HTTP 层已由 api.ParsePage 按 dto.MaxPageSize 挡过一道。上限必须和那一处
+	// 一致，否则越界值会被**静默**改成 20 —— 请求页码 200 却只回 20 行，比报错更难查。
+	if q.PageSize < 1 || q.PageSize > dto.MaxPageSize {
 		q.PageSize = 20
 	}
-	// uuid 列必须转成 text 再比：PostgreSQL 会把参数按列类型解析，空串在
-	// uuid 列上直接报 invalid input syntax，即便 OR 左边永远为真。
-	w := ` WHERE ($1='' OR user_id::text=$1) AND ($2='' OR status=$2) AND ($3='' OR batch_id::text=$3) AND ($4='' OR template_id::text=$4)`
+	where, args := userCouponListWhere(q)
 	var total int64
-	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM user_coupons`+w, q.UserID, q.Status, q.BatchID, q.TemplateID).Scan(&total); err != nil {
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM user_coupons WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.pool.Query(ctx, `SELECT `+userCouponColumns+` FROM user_coupons`+w+` ORDER BY created_at DESC,id LIMIT $5 OFFSET $6`, q.UserID, q.Status, q.BatchID, q.TemplateID, q.PageSize, (q.Page-1)*q.PageSize)
+	args = append(args, q.PageSize, (q.Page-1)*q.PageSize)
+	rows, err := r.pool.Query(ctx, `SELECT `+userCouponColumns+` FROM user_coupons WHERE `+where+
+		fmt.Sprintf(` ORDER BY created_at DESC,id LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}

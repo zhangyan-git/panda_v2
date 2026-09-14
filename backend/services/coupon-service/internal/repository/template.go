@@ -2,7 +2,11 @@ package repository
 
 import (
 	"context"
+	"fmt"
+	"strings"
+
 	"github.com/jackc/pgx/v5"
+	"github.com/panda-dev/panda-v2/backend/services/coupon-service/internal/dto"
 	"github.com/panda-dev/panda-v2/backend/services/coupon-service/internal/model"
 )
 
@@ -14,7 +18,7 @@ type TemplateStats struct {
 }
 
 type CouponTemplateRepository interface {
-	ListTemplates(context.Context, int, int) ([]*model.CouponTemplate, int64, error)
+	ListTemplates(context.Context, dto.CouponTemplateQuery) ([]*model.CouponTemplate, int64, error)
 	GetTemplate(context.Context, string) (*model.CouponTemplate, error)
 	CreateTemplate(context.Context, *model.CouponTemplate) (*model.CouponTemplate, error)
 	UpdateTemplate(context.Context, *model.CouponTemplate) (*model.CouponTemplate, error)
@@ -24,13 +28,42 @@ type CouponTemplateRepository interface {
 	TemplateStats(context.Context, string) (*TemplateStats, error)
 }
 
-func (r *postgresRepository) ListTemplates(ctx context.Context, page, size int) ([]*model.CouponTemplate, int64, error) {
+// templateListWhere 拼模板列表的筛选子句与绑定参数。抽成单独一个函数是为了能被
+// 单测钉住：占位符编号和 args 顺序错位编译期看不出来，只会在 pgx 的 Bind 阶段炸，
+// 而这个包的 template_query_test.go 已经在防这一类（见那里的说明）。
+func templateListWhere(q dto.CouponTemplateQuery) (string, []any) {
+	where := []string{"1=1"}
+	args := []any{}
+	add := func(clause string, value any) {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	if q.Name != "" {
+		add("name ILIKE '%%' || $%d || '%%'", q.Name)
+	}
+	if q.Status != "" {
+		add("status=$%d", q.Status)
+	}
+	if q.AuditStatus != "" {
+		add("audit_status=$%d", q.AuditStatus)
+	}
+	return strings.Join(where, " AND "), args
+}
+
+// ListTemplates 按 q 里的条件分页查模板。WHERE 的拼法照 ListBatches：count 与取数
+// 共用同一段 whereSQL——两处分头拼是分页列表最经典的错法（total 是全表、items 是
+// 筛过的，翻页器跟着一起错）。
+func (r *postgresRepository) ListTemplates(ctx context.Context, q dto.CouponTemplateQuery) ([]*model.CouponTemplate, int64, error) {
+	whereSQL, args := templateListWhere(q)
+
 	var total int64
-	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM coupon_templates`).Scan(&total); err != nil {
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM coupon_templates WHERE `+whereSQL, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	off := (page - 1) * size
-	rows, err := r.pool.Query(ctx, `SELECT `+templateColumns+` FROM coupon_templates ORDER BY created_at DESC,id LIMIT $1 OFFSET $2`, size, off)
+	off := (q.Page - 1) * q.PageSize
+	args = append(args, q.PageSize, off)
+	rows, err := r.pool.Query(ctx, `SELECT `+templateColumns+` FROM coupon_templates WHERE `+whereSQL+
+		fmt.Sprintf(` ORDER BY created_at DESC,id LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -47,7 +80,7 @@ func (r *postgresRepository) ListTemplates(ctx context.Context, page, size int) 
 
 // attachScopes 把 coupon_template_scopes 的范围挂到已查出的模板上。
 //
-// 必须批量查：列表页一页最多 100 行，逐行查就是 100 次往返。注意模板列表也要带
+// 必须批量查：列表页一页最多 dto.MaxPageSize 行，逐行查就是那么多次往返。注意模板列表也要带
 // 范围——后台编辑弹窗用的是列表行的数据，列表不带的话，编辑后保存（PUT 是全量
 // 覆盖）会把范围静默清空。
 func (r *postgresRepository) attachScopes(ctx context.Context, items []*model.CouponTemplate) error {

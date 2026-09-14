@@ -18,13 +18,6 @@ import (
 
 type AdminCouponController struct{ coupons *service.CouponService }
 
-// maxCouponPageSize 是优惠券列表接口的 pageSize 上限。
-//
-// 比 api.MaxPageSize（200）紧一档，因为这里的上限本来就是 100、前端从未要过更大的页；
-// 后台那几个「要全集」的下拉/Transfer 只出现在身份与商户模块，与优惠券无关。
-// 收紧而不是放宽，是为了不改动任何已有调用方的可用范围。
-const maxCouponPageSize = 100
-
 func writeCouponMutationError(w http.ResponseWriter, err error, message string) {
 	if errors.Is(err, service.ErrInvalidRequestID) || errors.Is(err, service.ErrInvalidCouponID) || errors.Is(err, service.ErrInvalidActorID) || errors.Is(err, service.ErrInvalidReason) {
 		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
@@ -63,7 +56,7 @@ func (c *AdminCouponController) Batches(w http.ResponseWriter, r *http.Request) 
 	path := strings.TrimPrefix(r.URL.Path, "/v1/admin/coupons/batches")
 	if path == "" || path == "/" {
 		q := dto.CouponBatchQuery{TemplateID: strings.TrimSpace(r.URL.Query().Get("templateId")), Status: strings.TrimSpace(r.URL.Query().Get("status")), Source: strings.TrimSpace(r.URL.Query().Get("source")), BatchNo: strings.TrimSpace(r.URL.Query().Get("batchNo"))}
-		page, size, ok, msg := api.ParsePage(r.URL.Query().Get("page"), r.URL.Query().Get("pageSize"), maxCouponPageSize)
+		page, size, ok, msg := api.ParsePage(r.URL.Query().Get("page"), r.URL.Query().Get("pageSize"), dto.MaxPageSize)
 		if !ok {
 			api.Error(w, 400, "INVALID_ARGUMENT", msg)
 			return
@@ -129,8 +122,10 @@ func (c *AdminCouponController) UserCoupons(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if r.Method == http.MethodGet && len(p) == 1 {
-		q := dto.UserCouponQuery{UserID: strings.TrimSpace(r.URL.Query().Get("userId")), Status: strings.TrimSpace(r.URL.Query().Get("status")), BatchID: strings.TrimSpace(r.URL.Query().Get("batchId")), TemplateID: strings.TrimSpace(r.URL.Query().Get("templateId"))}
-		page, size, ok, msg := api.ParsePage(r.URL.Query().Get("page"), r.URL.Query().Get("pageSize"), maxCouponPageSize)
+		// id / couponTypeCode 是后加的：界面上「用户券 ID」「类型」两列的搜索框一直在，
+		// 参数也确实发出去了，只是服务端从来没读。同类漏读见 templates 列表那条注释。
+		q := dto.UserCouponQuery{ID: strings.TrimSpace(r.URL.Query().Get("id")), CouponTypeCode: strings.TrimSpace(r.URL.Query().Get("couponTypeCode")), UserID: strings.TrimSpace(r.URL.Query().Get("userId")), Status: strings.TrimSpace(r.URL.Query().Get("status")), BatchID: strings.TrimSpace(r.URL.Query().Get("batchId")), TemplateID: strings.TrimSpace(r.URL.Query().Get("templateId"))}
+		page, size, ok, msg := api.ParsePage(r.URL.Query().Get("page"), r.URL.Query().Get("pageSize"), dto.MaxPageSize)
 		if !ok {
 			api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msg)
 			return

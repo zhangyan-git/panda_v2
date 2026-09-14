@@ -108,18 +108,20 @@ func (s *CouponService) templateRepo() (repository.CouponTemplateRepository, err
 	}
 	return r, nil
 }
-func (s *CouponService) ListTemplates(ctx context.Context, page, size int) ([]*model.CouponTemplate, int64, error) {
+func (s *CouponService) ListTemplates(ctx context.Context, q dto.CouponTemplateQuery) ([]*model.CouponTemplate, int64, error) {
 	r, e := s.templateRepo()
 	if e != nil {
 		return nil, 0, e
 	}
-	if page < 1 {
-		page = 1
+	if q.Page < 1 {
+		q.Page = 1
 	}
-	if size < 1 || size > 100 {
-		size = 20
+	// 兜底：HTTP 层已由 api.ParsePage 按 dto.MaxPageSize 挡过一道，这里是防止别的
+	// 调用方（测试、将来的 gRPC）绕过 controller 直接传越界值。
+	if q.PageSize < 1 || q.PageSize > dto.MaxPageSize {
+		q.PageSize = 20
 	}
-	return r.ListTemplates(ctx, page, size)
+	return r.ListTemplates(ctx, q)
 }
 func (s *CouponService) GetTemplate(ctx context.Context, id string) (*model.CouponTemplate, error) {
 	r, e := s.templateRepo()
