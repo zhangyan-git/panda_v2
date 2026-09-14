@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
-	"time"
-
 	kgrpc "github.com/go-kratos/kratos/v2/transport/grpc"
 	"github.com/panda-dev/panda-v2/backend/platform/audit"
 	"github.com/panda-dev/panda-v2/backend/platform/auth"
@@ -25,6 +22,8 @@ import (
 	merchantv1 "github.com/panda-dev/panda-v2/contracts/proto/merchant/v1"
 	userv1 "github.com/panda-dev/panda-v2/contracts/proto/user/v1"
 	"github.com/panda-dev/panda-v2/migrations"
+	"log"
+	"time"
 )
 
 const (
@@ -84,7 +83,10 @@ func main() {
 	adminStore := handler.NewAdminStoreHandler(service.NewAdminStoreService(storeRepo, brandRepo, merchantRepo, repository.NewStoreAuditRepository(pool.Pool()), users))
 	access := service.NewMerchantAccessService(merchantRepo, brandRepo, storeRepo)
 
-	jwtService, err := auth.NewService([]byte(cfg.JWTSecret), cfg.JWTIssuer, 15*time.Minute, 7*24*time.Hour)
+	// access token 24 小时：管理端要求「登录一次管一天」，不再让操作到一半被踢回
+	// 登录页。代价是这枚 token 泄露后 24 小时内可直接使用，且它携带的权限声明在
+	// 过期前不会更新（改权限要等 token 换新）。三处 auth.NewService 的取值必须一致。
+	jwtService, err := auth.NewService([]byte(cfg.JWTSecret), cfg.JWTIssuer, 24*time.Hour, 7*24*time.Hour)
 	if err != nil {
 		log.Fatalf("merchant-service: init jwt: %v", err)
 	}

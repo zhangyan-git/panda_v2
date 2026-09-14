@@ -34,6 +34,7 @@ import {
   type BrandStatus,
 } from '../../services/brand';
 import { listMerchants } from '../../services/merchant';
+import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 import { deletionErrorMessage } from '../../services/requestError';
 import { uploadImage } from '../../services/upload';
 
@@ -66,8 +67,9 @@ const BrandsPage: React.FC = () => {
   };
 
   const merchantOptions = async () => {
-    const data = await listMerchants();
-    return data.map((m) => ({ label: m.name, value: m.id }));
+    // 所属商户下拉要全集：分页后只给第 1 页，后面的商户选不到且不报错。
+    const { items } = await listMerchants(FULL_PAGE_PARAMS);
+    return items.map((m) => ({ label: m.name, value: m.id }));
   };
 
   const columns: ProColumns<Brand>[] = [
@@ -199,9 +201,9 @@ const BrandsPage: React.FC = () => {
         columns={columns}
         scroll={{ x: 1300 }}
         search={false}
-        request={async () => {
-          const data = await listBrands();
-          return { data, success: true };
+        request={async (params) => {
+          const result = await listBrands(toPageParams(params));
+          return { data: result.items, total: result.total, success: true };
         }}
         toolBarRender={() => [
           access.canWriteBrands && (

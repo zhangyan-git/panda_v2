@@ -5,10 +5,11 @@ import (
 	"errors"
 	"io"
 
+	"net/http"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/service"
-	"net/http"
 
 	"github.com/gorilla/mux"
 )

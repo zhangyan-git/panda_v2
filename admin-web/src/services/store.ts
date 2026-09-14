@@ -1,5 +1,6 @@
 import { request } from '@umijs/max';
 import type { AuditStatus } from './brand';
+import type { PageQuery, PageResult } from './pagination';
 
 // ——— 类型 ———
 
@@ -65,14 +66,17 @@ export type StoreInput = {
 
 // ——— 接口 ———
 
-export async function listStores(params?: {
-  merchantId?: string;
-  brandId?: string;
-  name?: string;
-  status?: string;
-  auditStatus?: string;
-}) {
-  return request<Store[]>('/api/v1/admin/stores', { params });
+/** 门店列表（服务端分页）。 */
+export async function listStores(
+  params?: PageQuery & {
+    merchantId?: string;
+    brandId?: string;
+    name?: string;
+    status?: string;
+    auditStatus?: string;
+  },
+) {
+  return request<PageResult<Store>>('/api/v1/admin/stores', { params });
 }
 
 export async function createStore(data: StoreInput) {

@@ -41,18 +41,26 @@ func toMerchantResponse(m *model.Merchant) merchantResponse {
 
 // List godoc
 //
-//	@Summary     获取商户列表（name 模糊、status 等值过滤，均可选）
+//	@Summary     获取商户列表（服务端分页；name 模糊、status 等值过滤，均可选）
 //	@Tags        admin-merchants
 //	@Produce     json
 //	@Security    BearerAuth
-//	@Param       name   query string false "商户名称模糊过滤"
-//	@Param       status query string false "状态过滤 pending/active/suspended"
-//	@Success     200 {object} api.Response{data=[]merchantResponse}
+//	@Param       name     query string false "商户名称模糊过滤"
+//	@Param       status   query string false "状态过滤 pending/active/suspended"
+//	@Param       page     query int    false "页码，从 1 开始，默认 1"
+//	@Param       pageSize query int    false "每页条数，1..200，默认 20"
+//	@Success     200 {object} api.Response{data=api.PageResponse{items=[]merchantResponse}}
+//	@Failure     400 {object} api.Response
 //	@Router      /v1/admin/merchants [get]
 func (h *AdminMerchantHandler) List(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	status := r.URL.Query().Get("status")
-	merchants, err := h.svc.List(r.Context(), name, status)
+	page, pageSize, ok, msg := api.ParsePage(r.URL.Query().Get("page"), r.URL.Query().Get("pageSize"), api.MaxPageSize)
+	if !ok {
+		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, msg)
+		return
+	}
+	merchants, total, err := h.svc.List(r.Context(), name, status, page, pageSize)
 	if err != nil {
 		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "服务内部错误")
 		return
@@ -61,7 +69,7 @@ func (h *AdminMerchantHandler) List(w http.ResponseWriter, r *http.Request) {
 	for i, m := range merchants {
 		resp[i] = toMerchantResponse(m)
 	}
-	api.Success(w, resp)
+	api.Success(w, api.PageResponse{Items: resp, Total: total, Page: page, PageSize: pageSize})
 }
 
 // Get godoc

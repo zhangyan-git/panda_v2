@@ -1,4 +1,5 @@
 import { request } from '@umijs/max';
+import type { PageQuery, PageResult } from './pagination';
 
 // ——— 类型 ———
 
@@ -34,8 +35,9 @@ export type MerchantUser = {
 
 // ——— 商户 ———
 
-export async function listMerchants(params?: { name?: string; status?: string }) {
-  return request<Merchant[]>('/api/v1/admin/merchants', { params });
+/** 商户列表（服务端分页）。品牌/门店页的商户下拉要全集，见 FULL_PAGE_PARAMS。 */
+export async function listMerchants(params?: PageQuery & { name?: string; status?: string }) {
+  return request<PageResult<Merchant>>('/api/v1/admin/merchants', { params });
 }
 
 export async function createMerchant(data: {
@@ -73,8 +75,9 @@ export async function deleteMerchant(id: string) {
 
 // ——— 商户登录账号 ———
 
-export async function listMerchantUsers(merchantId: string) {
-  return request<MerchantUser[]>(`/api/v1/admin/merchants/${merchantId}/users`);
+/** 某商户的登录账号（服务端分页），商户抽屉里的二级表用。 */
+export async function listMerchantUsers(merchantId: string, params?: PageQuery) {
+  return request<PageResult<MerchantUser>>(`/api/v1/admin/merchants/${merchantId}/users`, { params });
 }
 
 export async function createMerchantUser(

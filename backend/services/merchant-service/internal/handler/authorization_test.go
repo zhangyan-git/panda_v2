@@ -35,6 +35,13 @@ func testJWT(t *testing.T) *auth.Service {
 
 func testToken(t *testing.T, svc *auth.Service, grant auth.Grant) string {
 	t.Helper()
+	// SignGrant refuses to mint a token that does not say which realm it is for.
+	// An absent realm means platform here for the same reason Parse resolves it
+	// that way: these fixtures describe administrators, and the ones that do not
+	// (a tenant, a mismatched subject) say so through fields this does not touch.
+	if grant.Realm == "" {
+		grant.Realm = auth.RealmPlatform
+	}
 	token, err := svc.SignAccessGrant(grant)
 	if err != nil {
 		t.Fatal(err)

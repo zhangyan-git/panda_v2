@@ -14,7 +14,10 @@ import (
 
 // MerchantRepository 商户主体数据访问接口
 type MerchantRepository interface {
-	FindAll(ctx context.Context, name, status string) ([]*model.Merchant, error)
+	// FindPage 返回一页商户；总数走 Count。两个方法共用 merchantWhere 拼条件，
+	// 保证「翻到第 2 页」和「告诉前端一共几页」用的是同一组筛选。
+	FindPage(ctx context.Context, name, status string, limit, offset int) ([]*model.Merchant, error)
+	Count(ctx context.Context, name, status string) (int64, error)
 	FindByID(ctx context.Context, id string) (*model.Merchant, error)
 	Create(ctx context.Context, m *model.Merchant) error
 	Update(ctx context.Context, m *model.Merchant) error
@@ -58,9 +61,12 @@ func NewMerchantRepository(pool *pgxpool.Pool, recorder audit.Recorder) Merchant
 // merchantColumns 统一 SELECT 列表，可空联系人列归一化为空字符串方便扫描
 const merchantColumns = `id, name, status, COALESCE(contact_name, ''), COALESCE(contact_phone, ''), COALESCE(contact_email, ''), created_at, updated_at`
 
-// FindAll name 模糊匹配、status 等值过滤，两者均可为空
-func (r *pgMerchantRepo) FindAll(ctx context.Context, name, status string) ([]*model.Merchant, error) {
-	q := `SELECT ` + merchantColumns + ` FROM merchants`
+// merchantWhere name 模糊匹配、status 等值过滤，两者均可为空。
+//
+// 抽出来给 FindPage 和 Count 共用：两处各写一遍的话，哪天给列表加了筛选条件却
+// 只改了其中一处，症状是「总数说有 30 条，翻到第 2 页却什么都没有」——不报错，
+// 只是分页器上的页码点不动。
+func merchantWhere(name, status string) (string, []any) {
 	conds := make([]string, 0, 2)
 	args := make([]any, 0, 2)
 	if name != "" {
@@ -71,11 +77,19 @@ func (r *pgMerchantRepo) FindAll(ctx context.Context, name, status string) ([]*m
 		args = append(args, status)
 		conds = append(conds, "status = $"+strconv.Itoa(len(args)))
 	}
-	if len(conds) > 0 {
-		q += ` WHERE ` + strings.Join(conds, " AND ")
+	if len(conds) == 0 {
+		return "", args
 	}
-	q += ` ORDER BY created_at DESC`
-	rows, err := r.pool.Query(ctx, q, args...)
+	return ` WHERE ` + strings.Join(conds, " AND "), args
+}
+
+// FindPage 排序带上 id 作决胜位：created_at 相同的商户（批量导入时很常见）
+// 单靠时间没有稳定次序，翻页会重复或漏行。
+func (r *pgMerchantRepo) FindPage(ctx context.Context, name, status string, limit, offset int) ([]*model.Merchant, error) {
+	where, args := merchantWhere(name, status)
+	q := `SELECT ` + merchantColumns + ` FROM merchants` + where + ` ORDER BY created_at DESC, id LIMIT $` +
+		strconv.Itoa(len(args)+1) + ` OFFSET $` + strconv.Itoa(len(args)+2)
+	rows, err := r.pool.Query(ctx, q, append(args, limit, offset)...)
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +103,13 @@ func (r *pgMerchantRepo) FindAll(ctx context.Context, name, status string) ([]*m
 		list = append(list, m)
 	}
 	return list, rows.Err()
+}
+
+func (r *pgMerchantRepo) Count(ctx context.Context, name, status string) (int64, error) {
+	where, args := merchantWhere(name, status)
+	var n int64
+	err := r.pool.QueryRow(ctx, `SELECT count(*) FROM merchants`+where, args...).Scan(&n)
+	return n, err
 }
 
 func (r *pgMerchantRepo) FindByID(ctx context.Context, id string) (*model.Merchant, error) {

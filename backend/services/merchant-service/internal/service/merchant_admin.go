@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/repository"
 )
@@ -35,8 +36,18 @@ func NewAdminMerchantService(merchants repository.MerchantRepository, accountPre
 	return &AdminMerchantService{merchants: merchants, accountPresence: accountPresence}
 }
 
-func (s *AdminMerchantService) List(ctx context.Context, name, status string) ([]*model.Merchant, error) {
-	return s.merchants.FindAll(ctx, name, status)
+// List 返回一页商户及其总数。页码到 OFFSET 的换算只在这里做一次，
+// 散到 handler 里各写一遍迟早会有人漏掉那个 -1。
+func (s *AdminMerchantService) List(ctx context.Context, name, status string, page, pageSize int) ([]*model.Merchant, int64, error) {
+	list, err := s.merchants.FindPage(ctx, name, status, pageSize, api.PageOffset(page, pageSize))
+	if err != nil {
+		return nil, 0, err
+	}
+	total, err := s.merchants.Count(ctx, name, status)
+	if err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
 }
 
 func (s *AdminMerchantService) GetByID(ctx context.Context, id string) (*model.Merchant, error) {

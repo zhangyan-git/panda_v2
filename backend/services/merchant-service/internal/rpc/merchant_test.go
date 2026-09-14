@@ -83,7 +83,7 @@ func TestMerchantServiceRequiresServiceToken(t *testing.T) {
 		fakeMerchants{merchant: &model.Merchant{ID: "m1", Name: "商户", Status: "active"}},
 		fakeAccess{merchantID: "m1"},
 	)
-	accessToken, err := jwtService.SignAccessGrant(auth.Grant{Subject: "admin", UserID: "admin"})
+	accessToken, err := jwtService.SignAccessGrant(auth.Grant{Realm: auth.RealmPlatform, Subject: "admin", UserID: "admin"})
 	if err != nil {
 		t.Fatal(err)
 	}

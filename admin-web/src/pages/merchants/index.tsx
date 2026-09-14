@@ -38,6 +38,7 @@ import {
 } from '../../services/merchant';
 import { listBrands } from '../../services/brand';
 import { listStores } from '../../services/store';
+import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 
 const STATUS_TAG: Record<MerchantStatus, { color: string; label: string }> = {
   pending: { color: 'gold', label: '待审核' },
@@ -245,9 +246,9 @@ const MerchantsPage: React.FC = () => {
         columns={columns}
         scroll={{ x: 1220 }}
         search={false}
-        request={async () => {
-          const data = await listMerchants();
-          return { data, success: true };
+        request={async (params) => {
+          const result = await listMerchants(toPageParams(params));
+          return { data: result.items, total: result.total, success: true };
         }}
         toolBarRender={() => [
           access.canWriteMerchants && (
@@ -327,10 +328,10 @@ const MerchantsPage: React.FC = () => {
           search={false}
           options={false}
           params={{ merchantId: accountTarget?.id }}
-          request={async () => {
+          request={async (params) => {
             if (!accountTarget) return { data: [], success: true };
-            const data = await listMerchantUsers(accountTarget.id);
-            return { data, success: true };
+            const result = await listMerchantUsers(accountTarget.id, toPageParams(params));
+            return { data: result.items, total: result.total, success: true };
           }}
           toolBarRender={() => [
             <Button
@@ -410,12 +411,20 @@ const MerchantsPage: React.FC = () => {
                 params={{ merchantId: accountTarget?.id, scopeType }}
                 request={async (params) => {
                   if (!params.merchantId) return [];
+                  // 数据范围下拉要全集：分页后只给第 1 页会少掉可选项，
+                  // 而且是静默的——用户只会发现「想选的品牌不在列表里」。
                   if (params.scopeType === 'brand') {
-                    const brands = await listBrands({ merchantId: params.merchantId });
-                    return brands.map((brand) => ({ label: brand.name, value: brand.id }));
+                    const brands = await listBrands({
+                      ...FULL_PAGE_PARAMS,
+                      merchantId: params.merchantId,
+                    });
+                    return brands.items.map((brand) => ({ label: brand.name, value: brand.id }));
                   }
-                  const stores = await listStores({ merchantId: params.merchantId });
-                  return stores.map((store) => ({ label: store.name, value: store.id }));
+                  const stores = await listStores({
+                    ...FULL_PAGE_PARAMS,
+                    merchantId: params.merchantId,
+                  });
+                  return stores.items.map((store) => ({ label: store.name, value: store.id }));
                 }}
               />
             ) : null
@@ -467,12 +476,20 @@ const MerchantsPage: React.FC = () => {
                 params={{ merchantId: accountTarget?.id, scopeType }}
                 request={async (params) => {
                   if (!params.merchantId) return [];
+                  // 数据范围下拉要全集：分页后只给第 1 页会少掉可选项，
+                  // 而且是静默的——用户只会发现「想选的品牌不在列表里」。
                   if (params.scopeType === 'brand') {
-                    const brands = await listBrands({ merchantId: params.merchantId });
-                    return brands.map((brand) => ({ label: brand.name, value: brand.id }));
+                    const brands = await listBrands({
+                      ...FULL_PAGE_PARAMS,
+                      merchantId: params.merchantId,
+                    });
+                    return brands.items.map((brand) => ({ label: brand.name, value: brand.id }));
                   }
-                  const stores = await listStores({ merchantId: params.merchantId });
-                  return stores.map((store) => ({ label: store.name, value: store.id }));
+                  const stores = await listStores({
+                    ...FULL_PAGE_PARAMS,
+                    merchantId: params.merchantId,
+                  });
+                  return stores.items.map((store) => ({ label: store.name, value: store.id }));
                 }}
               />
             ) : null

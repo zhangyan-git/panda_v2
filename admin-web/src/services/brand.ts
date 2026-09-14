@@ -1,4 +1,5 @@
 import { request } from '@umijs/max';
+import type { PageQuery, PageResult } from './pagination';
 
 // ——— 类型 ———
 
@@ -37,13 +38,16 @@ export type BrandInput = {
 
 // ——— 接口 ———
 
-export async function listBrands(params?: {
-  merchantId?: string;
-  name?: string;
-  status?: string;
-  auditStatus?: string;
-}) {
-  return request<Brand[]>('/api/v1/admin/brands', { params });
+/** 品牌列表（服务端分页）。门店页的品牌下拉要全集，见 FULL_PAGE_PARAMS。 */
+export async function listBrands(
+  params?: PageQuery & {
+    merchantId?: string;
+    name?: string;
+    status?: string;
+    auditStatus?: string;
+  },
+) {
+  return request<PageResult<Brand>>('/api/v1/admin/brands', { params });
 }
 
 export async function createBrand(data: BrandInput) {

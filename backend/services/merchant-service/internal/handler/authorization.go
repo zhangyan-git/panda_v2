@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"slices"
-	"strings"
 	"time"
 
-	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"github.com/panda-dev/panda-v2/backend/platform/auth"
+	"github.com/panda-dev/panda-v2/backend/platform/authz"
 	userv1 "github.com/panda-dev/panda-v2/contracts/proto/user/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -25,6 +23,9 @@ type adminAccessClient interface {
 
 // AdminAuthorizer resolves current admin access over the internal gRPC API.
 // It never caches grants or falls back to the token's authorization snapshot.
+// The middleware itself lives in platform/authz so every service enforces the
+// same rules; this type is the gRPC half — the AdminAccessService call and the
+// translation of its status codes into authz's sentinel errors.
 type AdminAuthorizer struct {
 	users   adminAccessClient
 	timeout time.Duration
@@ -38,55 +39,35 @@ func NewAdminAuthorizer(users adminAccessClient, timeout time.Duration) (*AdminA
 }
 
 func (a *AdminAuthorizer) middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		unavailable := func() {
-			api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "权限服务暂不可用")
-		}
-		identity, ok := auth.IdentityFromRequest(r)
-		if !ok || identity.UserID == "" || identity.Subject != identity.UserID {
-			api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, "unauthorized")
-			return
-		}
-		// auth.Middleware has already verified this exact Bearer access token.
-		token, ok := bearerToken(r.Header.Get("Authorization"))
-		if !ok || a == nil || a.users == nil {
-			unavailable()
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), a.timeout)
-		defer cancel()
-		// The token travels in metadata, never a request field: user-service
-		// re-verifies it, so a caller cannot assert someone else's identity.
-		resp, err := a.users.GetAdminAccess(auth.WithAccessToken(ctx, token), &userv1.GetAdminAccessRequest{})
-		if err != nil {
-			switch status.Code(err) {
-			case codes.Unauthenticated:
-				api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, "unauthorized")
-			case codes.PermissionDenied:
-				api.Error(w, http.StatusForbidden, api.CodeForbidden, "forbidden")
-			default:
-				unavailable()
-			}
-			return
-		}
-		if resp.GetUserId() != identity.UserID {
-			unavailable()
-			return
-		}
-		identity.Roles = resp.GetRoles()
-		identity.Permissions = resp.GetPermissions()
-		// super-admin is the "super_admin" role throughout this codebase.
-		identity.IsSuper = slices.Contains(identity.Roles, "super_admin")
-		next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), identity)))
-	})
+	if a == nil {
+		// A nil authorizer (a wiring bug, or a test passing nil) must fail
+		// closed instead of panicking on the field access below.
+		return authz.Middleware(nil, 0)(next)
+	}
+	return authz.Middleware(a.resolve, a.timeout)(next)
 }
 
-// bearerToken reads the already-verified credential off the request header. It
-// mirrors the platform parser so the forwarded value is the raw token.
-func bearerToken(header string) (string, bool) {
-	parts := strings.Fields(header)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
-		return "", false
+// resolve implements authz.Resolver.
+func (a *AdminAuthorizer) resolve(ctx context.Context, accessToken string) (authz.Grants, error) {
+	if a.users == nil {
+		return authz.Grants{}, errors.New("authorizer has no admin access client")
 	}
-	return parts[1], true
+	// The token travels in metadata, never a request field: user-service
+	// re-verifies it, so a caller cannot assert someone else's identity.
+	resp, err := a.users.GetAdminAccess(auth.WithAccessToken(ctx, accessToken), &userv1.GetAdminAccessRequest{})
+	if err != nil {
+		switch status.Code(err) {
+		case codes.Unauthenticated:
+			return authz.Grants{}, authz.ErrUnauthenticated
+		case codes.PermissionDenied:
+			return authz.Grants{}, authz.ErrForbidden
+		default:
+			return authz.Grants{}, err
+		}
+	}
+	return authz.Grants{
+		UserID:      resp.GetUserId(),
+		Roles:       resp.GetRoles(),
+		Permissions: resp.GetPermissions(),
+	}, nil
 }

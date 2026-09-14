@@ -25,6 +25,7 @@ import type { ActionType, ProColumns, ProFormInstance } from '@ant-design/pro-co
 import { auditStore, createStore, deleteStore, listStores, updateStore, updateStoreStatus, type Store, type StoreInput, type StoreStatus } from '../../services/store';
 import { listBrands } from '../../services/brand';
 import { listMerchants } from '../../services/merchant';
+import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 import { deletionErrorMessage } from '../../services/requestError';
 import { uploadImage } from '../../services/upload';
 
@@ -66,15 +67,17 @@ const StoresPage: React.FC = () => {
   };
 
   const merchantOptions = async () => {
-    const data = await listMerchants();
-    return data.map((m) => ({ label: m.name, value: m.id }));
+    // 所属商户下拉要全集：分页后只给第 1 页，后面的商户选不到且不报错。
+    const { items } = await listMerchants(FULL_PAGE_PARAMS);
+    return items.map((m) => ({ label: m.name, value: m.id }));
   };
 
   // 品牌级联：跟随已选商户刷新可选项
   const brandOptions = async (merchantId?: string) => {
     if (!merchantId) return [];
-    const data = await listBrands({ merchantId });
-    return data.map((b) => ({ label: b.name, value: b.id }));
+    // 同样要全集：单个商户也可能有 20 个以上品牌。
+    const { items } = await listBrands({ ...FULL_PAGE_PARAMS, merchantId });
+    return items.map((b) => ({ label: b.name, value: b.id }));
   };
 
   const columns: ProColumns<Store>[] = [
@@ -216,9 +219,9 @@ const StoresPage: React.FC = () => {
         columns={columns}
         scroll={{ x: 1500 }}
         search={false}
-        request={async () => {
-          const data = await listStores();
-          return { data, success: true };
+        request={async (params) => {
+          const result = await listStores(toPageParams(params));
+          return { data: result.items, total: result.total, success: true };
         }}
         toolBarRender={() => [
           access.canWriteStores && (
