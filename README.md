@@ -21,3 +21,13 @@ protoc --descriptor_set_out=/tmp/panda-v2-protos.pb --include_imports \\
 ```
 
 Development infrastructure is defined in `deploy/compose/dev`. No secrets belong in Git.
+
+## Deployment
+
+Container images are built from `deploy/docker` — see `deploy/docker/README.md`
+for the build commands and the two nginx settings the API depends on. The
+application services are behind a compose profile, so `docker compose up` still
+starts middleware only, while `docker compose --profile app up --build` starts
+everything.
+
+Backups and restore drills for the production database are in `deploy/prod`.

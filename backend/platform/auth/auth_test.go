@@ -53,7 +53,7 @@ func validTestClaims(tokenType TokenType) Claims {
 
 func TestServiceSignAndParse(t *testing.T) {
 	service := newTestService(t)
-	token, err := service.SignAccess("subject-1", "user-1", "account-1", "tenant-1", []string{"admin"})
+	token, err := service.SignAccessGrant(Grant{Realm: RealmMerchant, Subject: "subject-1", UserID: "user-1", AccountID: "account-1", Tenant: "tenant-1", Roles: []string{"admin"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestParseRejectsInvalidTokenType(t *testing.T) {
 
 func TestParseTypeRejectsOtherTokenType(t *testing.T) {
 	service := newTestService(t)
-	token, err := service.SignRefresh("subject-1", "user-1", "account-1", "tenant-1", nil)
+	token, err := service.SignRefreshGrant(Grant{Realm: RealmMerchant, Subject: "subject-1", UserID: "user-1", AccountID: "account-1", Tenant: "tenant-1"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,13 +3,78 @@ on: [push, pull_request]
 jobs:
   backend:
     runs-on: ubuntu-latest
-    defaults: {run: {working-directory: backend}}
+    strategy:
+      # Report every module's result rather than stopping at the first failure.
+      fail-fast: false
+      matrix:
+        # A nested go.mod is a separate module: `go test ./...` inside backend
+        # skips it entirely. Without an entry here these services are never
+        # built or tested at all, which is how they drifted out of CI before.
+        module:
+          - backend
+          - backend/services/user-service
+          - backend/services/merchant-service
+          - backend/services/coupon-service
+          - backend/services/coffee-machine-service
+          - backend/services/gateway-service
+          # The migration sets are their own module too, and they are what every
+          # other module's schema assumes: a syntax error here surfaces as a
+          # failed deploy, not a failed build, unless it is checked here.
+          - migrations
+    defaults:
+      run:
+        # Block style on purpose: `${{ ... }}` inside a flow mapping makes the
+        # outer braces ambiguous to a strict YAML parser.
+        working-directory: ${{ matrix.module }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: {go-version: '1.25'}
-      - run: go test ./...
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt reported unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
       - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  # Generated protobuf bindings are committed so that a checkout builds without
+  # buf or protoc installed. This job is what keeps them honest: it regenerates
+  # and fails if the result differs from what is committed.
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.25'}
+      - uses: bufbuild/buf-setup-action@v1
+        with: {version: '1.72.0'}
+      # Pin the plugins to the versions that produced the committed bindings; a
+      # newer generator would rewrite them and fail this job for no good reason.
+      - run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+      - run: buf generate
+        working-directory: contracts
+      - name: Fail on drift
+        run: |
+          # --porcelain rather than `git diff`: a newly added proto produces an
+          # untracked binding, which a plain diff would not report.
+          if [ -n "$(git status --porcelain -- contracts)" ]; then
+            git status --porcelain -- contracts
+            echo "Generated bindings are stale. Run 'cd contracts && buf generate' and commit the result."
+            exit 1
+          fi
+      - name: Build and test the contracts module
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+        working-directory: contracts
 
   frontend:
     runs-on: ubuntu-latest

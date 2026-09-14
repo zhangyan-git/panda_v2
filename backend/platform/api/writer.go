@@ -2,8 +2,8 @@ package api
 
 import "net/http"
 
-func WriteOK(w http.ResponseWriter, status int, data any) { Success(w, status, data) }
-func WriteError(w http.ResponseWriter, status int, code int, message string) {
-	Error(w, status, code, message)
+func WriteOK(w http.ResponseWriter, data any) { Success(w, data) }
+func WriteError(w http.ResponseWriter, status int, code string, msg string) {
+	Error(w, status, code, msg)
 }
-func WriteNoContent(w http.ResponseWriter) { Write(w, http.StatusNoContent, 0, "", nil) }
+func WriteNoContent(w http.ResponseWriter) { NoContent(w) }

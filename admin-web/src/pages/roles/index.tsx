@@ -1,0 +1,393 @@
+import {
+  DeleteOutlined,
+  EditOutlined,
+  MenuOutlined,
+  PlusOutlined,
+  SafetyCertificateOutlined,
+} from '@ant-design/icons';
+import {
+  ModalForm,
+  PageContainer,
+  ProFormText,
+  ProFormTextArea,
+  ProTable,
+} from '@ant-design/pro-components';
+import { useAccess } from '@umijs/max';
+import { Button, Checkbox, message, Modal, Popconfirm, Space, Tag, Tree } from 'antd';
+import { useRef, useState } from 'react';
+import type { ActionType, ProColumns } from '@ant-design/pro-components';
+import type { DataNode } from 'antd/es/tree';
+import {
+  assignPermissionsToRole,
+  createRole,
+  deleteRole,
+  listPermissions,
+  listRolePermissions,
+  listRoles,
+  updateRole,
+  type Permission,
+  type Role,
+} from '../../services/iam';
+import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
+import { requestErrorMessage, roleSaveErrorMessage } from '../../services/requestError';
+import { renderMenuIcon } from '../../menuIcons';
+import { mergeGroupSelection } from './permSelection';
+import {
+  assignMenusToRole,
+  listMenuTree,
+  listRoleMenus,
+  type MenuNode,
+} from '../../services/menu';
+
+const RolesPage: React.FC = () => {
+  const access = useAccess();
+  const actionRef = useRef<ActionType>();
+  const [editing, setEditing] = useState<Role | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const reservedCode = editing?.code === 'super_admin' || editing?.code === '超级管理员';
+
+  // 分配权限 modal 状态
+  const [permModal, setPermModal] = useState(false);
+  const [permTarget, setPermTarget] = useState<Role | null>(null);
+  const [allPerms, setAllPerms] = useState<Permission[]>([]);
+  const [checkedPerms, setCheckedPerms] = useState<string[]>([]);
+  const [permSaving, setPermSaving] = useState(false);
+
+  const openPermModal = async (role: Role) => {
+    try {
+      // 回显当前角色已绑定的权限；保存时整体覆盖
+      // 权限候选要全集：分页后只给勾选面板第 1 页，会把没加载到的分组整个漏掉。
+      const [perms, bound] = await Promise.all([
+        listPermissions(FULL_PAGE_PARAMS),
+        listRolePermissions(role.id),
+      ]);
+      setPermTarget(role);
+      setAllPerms(perms.items);
+      setCheckedPerms(bound.map((p) => p.id));
+      setPermModal(true);
+    } catch (error) {
+      message.error(requestErrorMessage(error, '加载权限失败，请稍后重试'));
+    }
+  };
+
+  // 分配菜单 modal 状态
+  const [menuModal, setMenuModal] = useState(false);
+  const [menuTarget, setMenuTarget] = useState<Role | null>(null);
+  const [menuTree, setMenuTree] = useState<MenuNode[]>([]);
+  const [checkedMenus, setCheckedMenus] = useState<string[]>([]);
+  const [menuSaving, setMenuSaving] = useState(false);
+
+  const openMenuModal = async (role: Role) => {
+    try {
+      const [tree, checked] = await Promise.all([listMenuTree(), listRoleMenus(role.id)]);
+      setMenuTarget(role);
+      setMenuTree(tree);
+      setCheckedMenus(checked);
+      setMenuModal(true);
+    } catch (error) {
+      message.error(requestErrorMessage(error, '加载菜单失败，请稍后重试'));
+    }
+  };
+
+  const toTreeData = (nodes: MenuNode[]): DataNode[] =>
+    nodes.map((n) => ({
+      key: n.id,
+      title: (
+        <Space size={4}>
+          {renderMenuIcon(n.icon)}
+          <span>{n.name}</span>
+          {!n.path && <Tag style={{ marginInlineStart: 4 }}>目录</Tag>}
+        </Space>
+      ),
+      children: n.children?.length ? toTreeData(n.children) : undefined,
+    }));
+
+  const columns: ProColumns<Role>[] = [
+    { title: '角色代码', dataIndex: 'code', copyable: true, width: 160 },
+    { title: '角色名称', dataIndex: 'name', width: 200, ellipsis: true },
+    { title: '说明', dataIndex: 'description', ellipsis: true },
+    {
+      title: '创建时间',
+      dataIndex: 'createdAt',
+      valueType: 'dateTime',
+      search: false,
+      width: 180,
+    },
+    {
+      title: '操作',
+      valueType: 'option',
+      // 四个按钮（两个带图标）实测要 352px。给少了不会换行——Space 默认 nowrap，
+      // 多出来的宽度直接顶破单元格，而这一列又钉在右边，看起来就是按钮跑到表格外面。
+      width: 360,
+      fixed: 'right',
+      render: (_, row) => (
+        <Space>
+          {access.canWriteBindings && (
+            <Button
+              type="link"
+              size="small"
+              icon={<SafetyCertificateOutlined />}
+              onClick={() => openPermModal(row)}
+            >
+              分配权限
+            </Button>
+          )}
+          {access.canWriteBindings && (
+            <Button
+              type="link"
+              size="small"
+              icon={<MenuOutlined />}
+              onClick={() => openMenuModal(row)}
+            >
+              分配菜单
+            </Button>
+          )}
+          {access.canWriteRoles && (
+            <Button
+              type="link"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => {
+                setEditing(row);
+                setModalOpen(true);
+              }}
+            >
+              编辑
+            </Button>
+          )}
+          {access.canDeleteRoles && (
+            <Popconfirm
+              title="确认删除该角色？"
+              onConfirm={async () => {
+                await deleteRole(row.id);
+                message.success('已删除');
+                actionRef.current?.reload();
+              }}
+            >
+              <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                删除
+              </Button>
+            </Popconfirm>
+          )}
+        </Space>
+      ),
+    },
+  ];
+
+  // 按 group 分组显示权限
+  const permGroups = allPerms.reduce<Record<string, Permission[]>>((acc, p) => {
+    const g = p.group || '其他';
+    (acc[g] ??= []).push(p);
+    return acc;
+  }, {});
+
+  const allPermIds = allPerms.map((p) => p.id);
+  // 弹窗只展示 allPerms 中的权限；角色若残留已删除权限的绑定，不计入「已选/总数」，
+  // 但仍留在 checkedPerms 里，保存时不会被误删。
+  const checkedAllCount = allPermIds.filter((id) => checkedPerms.includes(id)).length;
+  const togglePerms = (ids: string[], checked: boolean) => {
+    setCheckedPerms((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => {
+        if (checked) {
+          next.add(id);
+        } else {
+          next.delete(id);
+        }
+      });
+      return [...next];
+    });
+  };
+
+  return (
+    <PageContainer title="角色管理">
+      <ProTable<Role>
+        actionRef={actionRef}
+        rowKey="id"
+        columns={columns}
+        scroll={{ x: 1180 }}
+        request={async (params) => {
+          const result = await listRoles(toPageParams(params));
+          return { data: result.items, total: result.total, success: true };
+        }}
+        search={{ labelWidth: 'auto' }}
+        toolBarRender={() => [
+          access.canWriteRoles && (
+            <Button
+              key="add"
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                setEditing(null);
+                setModalOpen(true);
+              }}
+            >
+              新建角色
+            </Button>
+          ),
+        ]}
+      />
+
+      {/* 新建 / 编辑角色 */}
+      <ModalForm<{ code: string; name: string; description?: string }>
+        key={editing?.id ?? 'create'}
+        title={editing ? '编辑角色' : '新建角色'}
+        open={modalOpen}
+        onOpenChange={setModalOpen}
+        modalProps={{ destroyOnClose: true }}
+        initialValues={
+          editing
+            ? {
+                code: editing.code,
+                name: editing.name,
+                description: editing.description,
+              }
+            : undefined
+        }
+        onFinish={async (values) => {
+          try {
+            if (editing) {
+              await updateRole(editing.id, values);
+              message.success('已更新');
+            } else {
+              await createRole(values);
+              message.success('已创建');
+            }
+            actionRef.current?.reload();
+            return true;
+          } catch (error) {
+            message.error(roleSaveErrorMessage(error));
+            return false;
+          }
+        }}
+      >
+        <ProFormText
+          name="code"
+          label="角色代码"
+          placeholder="如 operator"
+          disabled={reservedCode}
+          extra={reservedCode ? '系统保留角色的授权代码不可修改，名称和说明仍可编辑' : undefined}
+          rules={[{ required: true, message: '请输入角色代码' }]}
+        />
+        <ProFormText
+          name="name"
+          label="角色名称"
+          placeholder="如 运营人员"
+          rules={[{ required: true, message: '请输入角色名称' }]}
+        />
+        <ProFormTextArea name="description" label="说明" fieldProps={{ rows: 2 }} />
+      </ModalForm>
+
+      {/* 分配菜单 */}
+      <Modal
+        title={`为「${menuTarget?.name || menuTarget?.code}」分配菜单`}
+        open={menuModal}
+        onCancel={() => setMenuModal(false)}
+        confirmLoading={menuSaving}
+        // 不返回 Promise：失败时自行提示并保持弹窗打开，避免 antd 把已保存状态当成功关闭。
+        onOk={() => {
+          if (!menuTarget) return;
+          setMenuSaving(true);
+          assignMenusToRole(menuTarget.id, checkedMenus)
+            .then(() => {
+              message.success('菜单已更新');
+              setMenuModal(false);
+            })
+            .catch((error) => {
+              message.error(requestErrorMessage(error, '菜单保存失败，请稍后重试'));
+            })
+            .finally(() => setMenuSaving(false));
+        }}
+        width={480}
+      >
+        <Tree
+          checkable
+          defaultExpandAll
+          treeData={toTreeData(menuTree)}
+          checkedKeys={checkedMenus}
+          onCheck={(keys) => setCheckedMenus(keys as string[])}
+          style={{ maxHeight: 400, overflow: 'auto' }}
+        />
+      </Modal>
+
+      {/* 分配权限 */}
+      <Modal
+        title={`为「${permTarget?.name || permTarget?.code}」分配权限`}
+        open={permModal}
+        onCancel={() => setPermModal(false)}
+        confirmLoading={permSaving}
+        // 不返回 Promise：保存失败时保留勾选状态与弹窗，用户可以改完再试。
+        onOk={() => {
+          if (!permTarget) return;
+          setPermSaving(true);
+          assignPermissionsToRole(permTarget.id, checkedPerms)
+            .then(() => {
+              message.success('权限已更新');
+              setPermModal(false);
+            })
+            .catch((error) => {
+              message.error(requestErrorMessage(error, '权限保存失败，请稍后重试'));
+            })
+            .finally(() => setPermSaving(false));
+        }}
+        width={600}
+      >
+        <div style={{ marginBottom: 12 }}>
+          <Checkbox
+            indeterminate={checkedAllCount > 0 && checkedAllCount < allPermIds.length}
+            checked={allPermIds.length > 0 && checkedAllCount === allPermIds.length}
+            onChange={(e) => togglePerms(allPermIds, e.target.checked)}
+          >
+            全选（已选 {checkedAllCount}/{allPermIds.length}）
+          </Checkbox>
+        </div>
+        {Object.entries(permGroups).map(([group, perms]) => {
+          const groupIds = perms.map((p) => p.id);
+          const checkedInGroup = groupIds.filter((id) => checkedPerms.includes(id)).length;
+          return (
+            <div key={group} style={{ marginBottom: 16 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: 8,
+                }}
+              >
+                <Tag color="blue" style={{ marginInlineEnd: 0 }}>
+                  {group}
+                </Tag>
+                <Checkbox
+                  indeterminate={checkedInGroup > 0 && checkedInGroup < groupIds.length}
+                  checked={groupIds.length > 0 && checkedInGroup === groupIds.length}
+                  onChange={(e) => togglePerms(groupIds, e.target.checked)}
+                >
+                  全选
+                </Checkbox>
+              </div>
+              {/* 分组是独立的 Checkbox.Group，onChange 只回传本组的值，必须合并而不是替换。 */}
+              <Checkbox.Group
+                value={groupIds.filter((id) => checkedPerms.includes(id))}
+                onChange={(vals) =>
+                  setCheckedPerms(mergeGroupSelection(checkedPerms, groupIds, vals as string[]))
+                }
+                style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}
+              >
+                {perms.map((p) => (
+                  <Checkbox key={p.id} value={p.id} style={{ marginInlineStart: 0 }}>
+                    <span style={{ fontSize: 13 }}>{p.name}</span>
+                    <code style={{ fontSize: 11, color: 'oklch(0.5 0 0)', marginLeft: 4 }}>
+                      {p.code}
+                    </code>
+                  </Checkbox>
+                ))}
+              </Checkbox.Group>
+            </div>
+          );
+        })}
+      </Modal>
+    </PageContainer>
+  );
+};
+
+export default RolesPage;

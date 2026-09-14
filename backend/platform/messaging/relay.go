@@ -17,6 +17,11 @@ type RelayConfig struct {
 	PollInterval time.Duration
 	RetryDelay   time.Duration
 	OnError      func(error)
+	// OnPublished and OnFailed report a single event's outcome, as opposed to
+	// OnError which reports the batch-level error the relay loop retries on.
+	// Both are optional and must not block: the relay calls them inline.
+	OnPublished func(LeasedEnvelope)
+	OnFailed    func(LeasedEnvelope, error)
 }
 
 func (c RelayConfig) withDefaults() RelayConfig {
@@ -86,6 +91,9 @@ func (r *Relay) RunOnce(ctx context.Context) error {
 	var errs []error
 	for _, event := range events {
 		if err := r.publisher.Publish(ctx, event.Envelope); err != nil {
+			if r.config.OnFailed != nil {
+				r.config.OnFailed(event, err)
+			}
 			next := time.Now().Add(r.config.RetryDelay)
 			if markErr := r.outbox.MarkFailure(ctx, event.EventID, event.LeaseToken, err, next); markErr != nil {
 				recoveryErr := r.releaseLease(ctx, event)
@@ -98,6 +106,12 @@ func (r *Relay) RunOnce(ctx context.Context) error {
 		if err := r.outbox.MarkSuccess(ctx, event.EventID, event.LeaseToken); err != nil {
 			recoveryErr := r.releaseLease(ctx, event)
 			errs = append(errs, fmt.Errorf("event %q mark success: %w; lease recovery: %v", event.EventID, err, recoveryErr))
+			continue
+		}
+		// 只有 MarkSuccess 也成了才算投递完成：bookkeeping 失败时事件会被重新
+		// 投递，这时候把它计成「已发布」会把重复投递藏起来。
+		if r.config.OnPublished != nil {
+			r.config.OnPublished(event)
 		}
 	}
 	return errors.Join(errs...)

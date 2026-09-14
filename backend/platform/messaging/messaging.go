@@ -76,6 +76,19 @@ func (c inboxConsumer) Consume(ctx context.Context, handler Handler) error {
 	})
 }
 
+// Delivers reports whether a publisher really delivers. Noop accepts every
+// publish and reports success, so an outbox relay wired to it would mark each
+// event published while dropping it — leaving a clean outbox and no messages.
+// Callers that drain an outbox must ask this first; accumulating undeliverable
+// events is strictly better than discarding them.
+func Delivers(publisher Publisher) bool {
+	if publisher == nil {
+		return false
+	}
+	_, unavailable := publisher.(Noop)
+	return !unavailable
+}
+
 type Noop struct{}
 
 func (Noop) Publish(context.Context, Envelope) error { return nil }

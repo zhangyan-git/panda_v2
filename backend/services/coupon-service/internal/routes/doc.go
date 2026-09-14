@@ -1,4 +1,3 @@
-// Package routes is reserved for the coupon service routes layer.
-//
-// This package is intentionally unimplemented; no APIs or business behavior are defined yet.
 package routes
+
+// Package routes 预留路由注册；当前版本不提供 API。

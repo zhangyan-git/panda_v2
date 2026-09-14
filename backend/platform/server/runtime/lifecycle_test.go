@@ -49,6 +49,26 @@ type fakeCache struct {
 func (f *fakeCache) Ping(context.Context) error { f.recorder.add("cache-ping"); return f.pingErr }
 func (f *fakeCache) Close() error               { f.recorder.add("cache-close"); return f.closeErr }
 
+// Publish 与 Subscribe 记一笔就够了：生命周期不驱动它们，这里只是把接口补齐。
+func (f *fakeCache) Publish(context.Context, string, []byte) error {
+	f.recorder.add("cache-publish")
+	return nil
+}
+func (f *fakeCache) Subscribe(context.Context, string) (cache.Subscription, error) {
+	f.recorder.add("cache-subscribe")
+	return &fakeSubscription{}, nil
+}
+
+type fakeSubscription struct{ messages chan []byte }
+
+func (s *fakeSubscription) Channel() <-chan []byte {
+	if s.messages == nil {
+		s.messages = make(chan []byte)
+	}
+	return s.messages
+}
+func (s *fakeSubscription) Close() error { return nil }
+
 type fakeRegistry struct {
 	recorder      *lifecycleRecorder
 	registerErr   error

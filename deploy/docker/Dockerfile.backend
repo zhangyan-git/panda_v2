@@ -1,0 +1,86 @@
+# One Dockerfile for all three Go services.
+#
+# Deliberately no `# syntax=` directive: it makes every build resolve and pull
+# an extra frontend image, which is a hard failure on a builder without registry
+# access, in exchange for features this file does not use. RUN --mount is part
+# of the built-in BuildKit frontend, so the pinned frontend buys nothing here.
+#
+# The build context is the REPOSITORY ROOT, not backend/. This is not a
+# preference: backend/services/*/go.mod reach their siblings with relative
+# replace directives (../../ for backend, ../../../contracts and ../../../migrations),
+# so anything less than the whole repository cannot resolve them.
+#
+#   docker build -f deploy/docker/Dockerfile.backend \
+#     --build-arg SERVICE=user-service \
+#     -t panda/user-service .
+#
+# SERVICE is the module directory name. CMD differs between services -- gateway
+# has its main package in cmd/gateway, the other two directly in cmd -- so it is
+# passed explicitly rather than guessed; getting it wrong fails the build loudly
+# with "main module does not contain package".
+
+# Both base images are ARGs so a builder that cannot reach the public registry
+# can point them at a mirror. They are declared BEFORE the first FROM on
+# purpose: an ARG declared inside a stage is not in scope for a later FROM, and
+# the build fails with "base name should not be blank" -- which reads like a
+# typo rather than a scoping rule.
+ARG GO_IMAGE=golang:1.25
+ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot
+
+FROM ${GO_IMAGE} AS builder
+
+ARG SERVICE
+ARG CMD=./cmd
+RUN test -n "${SERVICE}" || { echo "SERVICE build-arg is required" >&2; exit 1; }
+
+WORKDIR /src
+
+# Manifests before sources, so the dependency layer survives an edit to any .go
+# file. The sibling go.mod files have to be here too: the replace directives
+# point at them, and the module graph cannot be computed without them.
+COPY backend/go.mod backend/go.sum ./backend/
+COPY backend/services/${SERVICE}/go.mod backend/services/${SERVICE}/go.sum ./backend/services/${SERVICE}/
+COPY contracts/go.mod contracts/go.sum ./contracts/
+COPY migrations/go.mod migrations/go.sum ./migrations/
+
+# The module cache is mounted rather than baked into a layer: it is downloaded
+# during the build and should not be part of the image.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd backend/services/${SERVICE} && go mod download
+
+COPY backend/ ./backend/
+COPY contracts/ ./contracts/
+COPY migrations/ ./migrations/
+
+# CGO off so the result is a static binary. That is what lets it run on
+# distroless/static, which has no libc.
+#
+# -trimpath keeps the build directory out of stack traces and the binary's
+# embedded file paths, so an image built here and one built on a laptop produce
+# the same binary.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd backend/services/${SERVICE} && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app "${CMD}"
+
+# distroless/static carries ca-certificates and tzdata, which the services need
+# for outbound TLS (the OSS client) and for local-time log fields.
+FROM ${RUNTIME_IMAGE}
+
+# distroless/static:nonroot already runs as nonroot; repeated here so the
+# intent survives a change of base image.
+USER nonroot:nonroot
+
+# The migrations are embedded into the binary (migrations.Identity and friends
+# are embed.FS), so no .sql files are shipped -- DB_MIGRATE_ON_START works in
+# this image without a mounted directory.
+COPY --from=builder /out/app /app
+
+# Documentation only; the real addresses come from HTTP_ADDR and GRPC_ADDR.
+EXPOSE 8080 9090
+
+# No HEALTHCHECK: distroless has no shell, so CMD-SHELL cannot run. Probes are
+# the load balancer's job -- /livez and /readyz on the HTTP port, which is also
+# the only version that answers "is THIS replica able to serve", rather than
+# "did a process start".
+ENTRYPOINT ["/app"]

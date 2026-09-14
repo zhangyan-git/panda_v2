@@ -24,7 +24,17 @@ When `REGISTRY_ENDPOINT` is empty, the backend uses an in-process no-op registry
 
 ## Messaging
 
-`platform/messaging` provides `Publisher`, `Consumer`, and generic `Outbox`/`Inbox` interfaces. `NewRabbitMQ(RabbitConfigFromEnv())` reads `RABBITMQ_URL`, `RABBITMQ_EXCHANGE` (default `panda.events`), `RABBITMQ_EXCHANGE_TYPE` (default `topic`), `RABBITMQ_QUEUE`, `RABBITMQ_ROUTING_KEY`, `RABBITMQ_DLX`, `RABBITMQ_DLQ`, and `RABBITMQ_RETRY_LIMIT`. When `RABBITMQ_URL` is unset it returns a no-op adapter, allowing local services and tests to run without RabbitMQ. Consumers use manual acknowledgements: successful handlers are acked, failures are retried up to the configured limit and then rejected for broker dead-letter processing.
+`platform/messaging` provides `Publisher`, `Consumer`, and generic `Outbox`/`Inbox` interfaces. `NewRabbitMQ(RabbitConfigFromEnv())` reads `RABBITMQ_URL`, `RABBITMQ_EXCHANGE` (default `panda.events`), `RABBITMQ_EXCHANGE_TYPE` (default `topic`), `RABBITMQ_QUEUE`, `RABBITMQ_ROUTING_KEY`, `RABBITMQ_DLX` (default `panda.events.dlx`), `RABBITMQ_DLQ` (default `panda.events.dlq`), and `RABBITMQ_RETRY_LIMIT` (default 5; set `0` to disable retries). When `RABBITMQ_URL` is unset it returns a no-op adapter, allowing local services and tests to run without RabbitMQ. Consumers use manual acknowledgements: successful handlers are acked, failures are retried up to the configured limit and then rejected for broker dead-letter processing.
+
+Three properties make the adapter safe to leave running unattended:
+
+- **Messages are published persistent.** The exchange and queues are durable, but a message published without `DeliveryMode: Persistent` is not — a broker restart discards it, and the data volume cannot help. Both the first publish and each retry set it.
+- **A lost connection reconnects itself.** `NotifyClose` drives a supervisor that re-dials with exponential backoff (500ms up to 30s) and re-declares the topology. Publishing fails fast while a generation is down — the outbox relay retries the row — and the consumer resubscribes on the new connection instead of returning, which previously left messages accumulating in the queue with `/readyz` still reporting 200.
+- **Failed messages dead-letter instead of disappearing.** With the default retry limit, a poison message is retried and then routed to the DLX/DLQ, where it can be inspected and replayed.
+
+Queue arguments are part of a queue's identity: adding the dead-letter topology to a queue that already exists without it is rejected by the broker (406 PRECONDITION_FAILED). On an existing broker, delete the queue first or apply the arguments with a policy.
+
+Integration tests for the reconnect and persistence paths are gated on `TEST_RABBITMQ_URL` and skip when it is unset.
 
 `MemoryOutboxInbox` is a non-durable implementation intended only for tests and development. Production services can implement the interfaces using their own SQL transaction and outbox/inbox tables; no business tables are created by this package.
 
@@ -35,6 +45,8 @@ When `REGISTRY_ENDPOINT` is empty, the backend uses an in-process no-op registry
 ## PostgreSQL and Redis adapters
 
 Platform infrastructure exposes lifecycle-only adapters with explicit `Ping` and `Close` methods. `platform/database.NewFromEnv` reads `DATABASE_URL` and creates a pgx v5 pool; `platform/cache.NewFromEnv` reads `REDIS_ADDR`, `REDIS_PASSWORD`, and optional `REDIS_DB` (the programmatic constructor accepts the database number). When `DATABASE_URL` or `REDIS_ADDR` is empty, each constructor returns a no-op implementation, so services start without external dependencies. These constructors do not perform implicit network calls; call `Ping` during startup when the dependency is configured, and always call `Close` during shutdown.
+
+Each service instance caps its pool at `DB_POOL_MAX_CONNS` (default 10), falling back to `pool_max_conns` in the DSN if the variable is blank. The default is pinned rather than left to pgx's `max(4, NumCPU)` so the connection budget is arithmetic: `DB_POOL_MAX_CONNS × services × replicas` against Postgres' `max_connections`. An unparseable or non-positive value is an error rather than a silent fallback — a pool nobody chose only misbehaves under load, when it is hardest to attribute.
 
 ## Discovery
 

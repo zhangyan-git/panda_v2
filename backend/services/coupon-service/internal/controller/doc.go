@@ -1,4 +1,3 @@
-// Package controller is reserved for the coupon service controller layer.
-//
-// This package is intentionally unimplemented; no APIs or business behavior are defined yet.
 package controller
+
+// Package controller 预留 HTTP 控制器；当前版本只实现数据库访问层。

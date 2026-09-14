@@ -1,6 +1,33 @@
 syntax = "proto3";
+
 package panda.merchant.v1;
+
 option go_package = "github.com/panda-dev/panda-v2/contracts/proto/merchant/v1";
+
+// MerchantStatus is the lifecycle state of a merchant tenant.
+// The existing Merchant.status string remains the wire-compatible representation.
+enum MerchantStatus {
+  MERCHANT_STATUS_UNSPECIFIED = 0;
+  MERCHANT_STATUS_PENDING = 1;
+  MERCHANT_STATUS_ACTIVE = 2;
+  MERCHANT_STATUS_SUSPENDED = 3;
+}
+
+// ResourceStatus is the operational state of a brand or store.
+// Audit state is intentionally separate from operational availability.
+enum ResourceStatus {
+  RESOURCE_STATUS_UNSPECIFIED = 0;
+  RESOURCE_STATUS_ACTIVE = 1;
+  RESOURCE_STATUS_DISABLED = 2;
+}
+
+// AuditStatus describes whether a brand or store change has passed review.
+enum AuditStatus {
+  AUDIT_STATUS_UNSPECIFIED = 0;
+  AUDIT_STATUS_PENDING = 1;
+  AUDIT_STATUS_APPROVED = 2;
+  AUDIT_STATUS_REJECTED = 3;
+}
 
 message Merchant {
   string id = 1;
@@ -9,8 +36,27 @@ message Merchant {
   string contact_phone = 4;
   string business_license = 5;
   string address = 6;
+  // Deprecated in favor of status_code for new clients. Values are pending, active, or suspended.
   string status = 7;
+  // Additive enum form of status; readers must continue accepting status.
+  MerchantStatus status_code = 8;
 }
+
+message Brand {
+  string id = 1;
+  string merchant_id = 2;
+  string name = 3;
+  string logo = 4;
+  string banner = 5;
+  string description = 6;
+  string status = 7;
+  string audit_status = 8;
+  bool visible = 9;
+  // Additive enum forms; status and audit_status remain available for older readers.
+  ResourceStatus status_code = 10;
+  AuditStatus audit_status_code = 11;
+}
+
 message Store {
   string id = 1;
   string merchant_id = 2;
@@ -23,17 +69,26 @@ message Store {
   string district = 9;
   string address = 10;
   string business_hours = 11;
-  double longitude = 12;
-  double latitude = 13;
+  // Optional because the columns are: an uncollected coordinate is NULL, and a
+  // plain double would carry it as 0 — a real point in the Atlantic that a
+  // reader cannot tell from "nobody surveyed this store".
+  optional double longitude = 12;
+  optional double latitude = 13;
+  // Deprecated in favor of status_code for new clients. Values are active or disabled.
   string status = 14;
   bool visible = 15;
+  string audit_status = 16;
+  ResourceStatus status_code = 17;
+  AuditStatus audit_status_code = 18;
 }
+
 message MerchantAccount {
   string account_id = 1;
   string merchant_id = 2;
   string username = 3;
   string status = 4;
 }
+
 message ListMerchantsRequest {}
 message ListMerchantsResponse { repeated Merchant merchants = 1; }
 message GetMerchantRequest { string id = 1; }
@@ -49,6 +104,44 @@ message MerchantProfileResponse { Merchant merchant = 1; }
 message MerchantStoresRequest {}
 message MerchantStoresResponse { repeated Store stores = 1; }
 
+// GetBrandMerchantRequest resolves a brand to its owning merchant without exposing brand data.
+message GetBrandMerchantRequest { string brand_id = 1; }
+message GetBrandMerchantResponse { string merchant_id = 1; }
+
+// GetStoreMerchantRequest resolves a store to its owning merchant without exposing store data.
+message GetStoreMerchantRequest { string store_id = 1; }
+message GetStoreMerchantResponse { string merchant_id = 1; }
+
+// GetStore reads one store. It answers the question GetStoreMerchant cannot:
+// not just whose the store is, but whether it is usable right now.
+//
+// The caller is coffee-machine-service, which validates a device's deployment
+// point before writing it. A store_id there is a value reference into this
+// service, and a reference nobody checks is how a device ends up deployed to a
+// store that never existed or has since been disabled.
+message GetStoreRequest { string store_id = 1; }
+// A store_id that does not exist is reported as NOT_FOUND, not as an empty
+// Store: absent and empty are different answers, and a caller that has to treat
+// them alike would have to guess which one it got.
+message GetStoreResponse { Store store = 1; }
+
+// ResolveScopeNamesRequest asks for the display names of the brand and store
+// scopes a set of merchant accounts points at. The two kinds travel as separate
+// lists because they live in separate tables, and one call answers a whole page
+// of accounts rather than one call per account.
+message ResolveScopeNamesRequest {
+  repeated string brand_ids = 1;
+  repeated string store_ids = 2;
+}
+
+// ResolveScopeNamesResponse maps an id to its name. An id that no longer exists
+// is simply absent: a deleted scope must not fail an account listing, and the
+// caller renders the account without a scope name.
+message ResolveScopeNamesResponse {
+  map<string, string> brand_names = 1;
+  map<string, string> store_names = 2;
+}
+
 service MerchantService {
   rpc ListMerchants(ListMerchantsRequest) returns (ListMerchantsResponse);
   rpc GetMerchant(GetMerchantRequest) returns (GetMerchantResponse);
@@ -57,4 +150,10 @@ service MerchantService {
   rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
   rpc Profile(MerchantProfileRequest) returns (MerchantProfileResponse);
   rpc Stores(MerchantStoresRequest) returns (MerchantStoresResponse);
+  rpc GetBrandMerchant(GetBrandMerchantRequest) returns (GetBrandMerchantResponse);
+  rpc GetStoreMerchant(GetStoreMerchantRequest) returns (GetStoreMerchantResponse);
+  rpc GetStore(GetStoreRequest) returns (GetStoreResponse);
+  // ResolveScopeNames replaces the brand/store join user-service used to run
+  // against merchant tables that no longer live in its database.
+  rpc ResolveScopeNames(ResolveScopeNamesRequest) returns (ResolveScopeNamesResponse);
 }

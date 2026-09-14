@@ -1,313 +1,284 @@
+// Package repository 是设备域主数据的数据访问层。
 package repository
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
-	"strings"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/panda-dev/panda-v2/backend/services/coffee-machine-service/internal/model"
 )
 
-type rowQuerier interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
+// ErrDeviceNotFound 表示按 ID 查不到设备。
+var ErrDeviceNotFound = errors.New("device not found")
+
+// DeviceFilter 是设备列表的过滤条件。空串/空切片表示不过滤。
+//
+// StoreIDs 是切片而不是单个值：后台的筛选栏里门店是多选，而「选了三个门店」与
+// 「一个都没选」必须区分开——后者不过滤，前者是三条 OR。传进来的每个 id 都必须是
+// 合法 UUID，见下面 ListDevices 的说明。
+type DeviceFilter struct {
+	ManufacturerID string
+	StoreIDs       []string
+	Status         string
+	// Keyword 按设备序列号模糊匹配（后台那一栏叫「设备标识」）。设备表只有几百行，
+	// 上一个 pg_trgm 索引与它的维护成本换不来什么，所以就是一句 ILIKE。
+	Keyword  string
+	Page     int
+	PageSize int
 }
 
-type querier interface {
-	rowQuerier
-	Query(context.Context, string, ...any) (pgx.Rows, error)
+// DrinkFilter 是饮品列表的过滤条件。空串表示不过滤。
+//
+// DeviceID 是给饮品管理页用的：饮品行本身就挂在设备上，所以那一页天然想看「某台设备
+// 上的饮品」。同样要转成 text 再比，理由见 ListDevices。
+type DrinkFilter struct {
+	DeviceID       string
+	ManufacturerID string
+	Status         string
+	Page           int
+	PageSize       int
 }
 
-type PostgreSQL struct {
-	pool querier
-	exec func(context.Context, string, ...any) (pgconn.CommandTag, error)
+// MasterDataRepository 是设备域主数据的读路径。
+//
+// 本服务对出杯链路的全部义务就是被读——下单时校验设备状态（方案 5.8），所以读
+// 接口先落地。写入路径（后台的厂商/设备/饮品增改、余额调整）需要校验、审计与
+// 幂等，随写接口一起加，不在这里留半成品方法。
+type MasterDataRepository interface {
+	GetDevice(ctx context.Context, id string) (*model.Device, error)
+	ListDevices(ctx context.Context, filter DeviceFilter) ([]*model.Device, int64, error)
+	ListManufacturers(ctx context.Context) ([]*model.Manufacturer, error)
+	ListDrinks(ctx context.Context, filter DrinkFilter) ([]*model.Drink, int64, error)
+	// ListDeviceDrinks 返回一台设备上的全部饮品。饮品行自带 device_id，所以这就是一次
+	// 带设备条件的列表查询，不再是两张表的连接。
+	ListDeviceDrinks(ctx context.Context, deviceID string) ([]*model.Drink, error)
+	// ListDeviceBalanceEntries 返回一台设备的余额流水一页，最近的在前。
+	ListDeviceBalanceEntries(ctx context.Context, deviceID string, page, pageSize int) ([]*model.DeviceBalanceEntry, int64, error)
 }
 
-func NewPostgreSQL(pool *pgxpool.Pool) *PostgreSQL { return &PostgreSQL{pool: pool, exec: pool.Exec} }
+type postgresRepository struct{ pool *pgxpool.Pool }
 
-const (
-	manufacturerColumns = "id, name, contact_name, contact_phone, code, merchant_id, api_base_url, test_api_base_url, status, created_at, updated_at"
-	deviceColumns       = "id, manufacturer_id, name, serial_number, location, serial_unique, device_name, manufacturer_code, store_id, store_name, online, version, address, error, last_activity_at, display_config, payment_config, status, created_at, updated_at"
-	drinkColumns        = "id, name, description, origin_id, product_num, en_name, price, vip_price, pickup_code_price, image, sort, status, created_at, updated_at"
-	deviceDrinkColumns  = "device_id, drink_id, origin_id, enabled, created_at, updated_at"
-)
+// NewPostgresRepository 创建 PostgreSQL 数据访问实现。
+func NewPostgresRepository(pool *pgxpool.Pool) MasterDataRepository {
+	return &postgresRepository{pool: pool}
+}
 
-func notFound(err error) error {
+// deviceColumns 是 devices 的全列投影。读路径整体取全列而不是各接口各挑一截：
+// 列表与详情只差几个展示字段，两套列清单一旦分叉就会各自漂移。
+const deviceColumns = `id::text, serial_unique, device_name, manufacturer_id::text,
+	store_id::text, status, vendor_online, last_synced_at, last_fault_code,
+	last_fault_message, last_fault_at, last_active_at, version_number, android_version,
+	main_board_version, pickup_password, coffee_balance, show_vip,
+	enable_coupon_verification, warranty_end_at, qrcode_type,
+	regular_qrcode_payment_method, created_at, updated_at`
+
+func scanDevice(row interface{ Scan(...any) error }) (*model.Device, error) {
+	d := &model.Device{}
+	err := row.Scan(&d.ID, &d.SerialUnique, &d.DeviceName, &d.ManufacturerID,
+		&d.StoreID, &d.Status, &d.VendorOnline, &d.LastSyncedAt, &d.LastFaultCode,
+		&d.LastFaultMessage, &d.LastFaultAt, &d.LastActiveAt, &d.VersionNumber,
+		&d.AndroidVersion, &d.MainBoardVersion, &d.PickupPassword, &d.CoffeeBalance,
+		&d.ShowVip, &d.EnableCouponVerification, &d.WarrantyEndAt, &d.QrcodeType,
+		&d.RegularQrcodePaymentMethod, &d.CreatedAt, &d.UpdatedAt)
+	return d, err
+}
+
+func (r *postgresRepository) GetDevice(ctx context.Context, id string) (*model.Device, error) {
+	device, err := scanDevice(r.pool.QueryRow(ctx, `SELECT `+deviceColumns+` FROM devices WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return model.ErrNotFound
+		return nil, ErrDeviceNotFound
 	}
-	return persistenceError(err)
+	return device, err
 }
 
-func persistenceError(err error) error {
-	if errors.Is(err, pgx.ErrNoRows) {
-		return model.ErrNotFound
+func (r *postgresRepository) ListDevices(ctx context.Context, filter DeviceFilter) ([]*model.Device, int64, error) {
+	// uuid 列必须转成 text 再比：PostgreSQL 会把参数按列类型解析，空串在 uuid 列上
+	// 直接报 invalid input syntax，即便 OR 左边永远为真。
+	//
+	// 门店那一条多了 coalesce：pgx 把 nil 切片编码成 NULL，而 cardinality(NULL) 是
+	// NULL——`NULL = 0` 不为真，整条 AND 求值成 NULL，于是「没选门店」会把每一行都
+	// 筛掉，列表空得毫无线索。
+	const where = ` WHERE ($1 = '' OR manufacturer_id::text = $1)
+		AND (coalesce(cardinality($2::text[]), 0) = 0 OR store_id::text = ANY($2::text[]))
+		AND ($3 = '' OR status = $3)
+		AND ($4 = '' OR serial_unique ILIKE '%' || $4 || '%')`
+	var total int64
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM devices`+where,
+		filter.ManufacturerID, filter.StoreIDs, filter.Status, filter.Keyword).Scan(&total); err != nil {
+		return nil, 0, err
 	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		switch pgErr.Code {
-		case "23503": // foreign_key_violation
-			return model.ErrInvalid
-		case "23502", "23505", "23514", "23522": // not-null, unique, check, and domain violations
-			return model.ErrInvalid
+	rows, err := r.pool.Query(ctx, `SELECT `+deviceColumns+` FROM devices`+where+
+		` ORDER BY created_at DESC, id LIMIT $5 OFFSET $6`,
+		filter.ManufacturerID, filter.StoreIDs, filter.Status, filter.Keyword,
+		filter.PageSize, (filter.Page-1)*filter.PageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	devices := make([]*model.Device, 0, filter.PageSize)
+	for rows.Next() {
+		device, err := scanDevice(rows)
+		if err != nil {
+			return nil, 0, err
 		}
+		devices = append(devices, device)
 	}
-	return err
+	return devices, total, rows.Err()
 }
 
-func nullString(v sql.NullString) string {
-	if v.Valid {
-		return v.String
-	}
-	return ""
+// manufacturerColumns 单独抽出来是因为写路径也要按同样的顺序读回整行——创建接口回给
+// 前端的必须是库里那一行，不是服务层自己拼的。两处各写一份列清单就会漂移。
+const manufacturerColumns = `id::text, code, name, contact_name, contact_phone,
+	status, created_at, updated_at`
+
+func scanManufacturer(row interface{ Scan(...any) error }) (*model.Manufacturer, error) {
+	m := &model.Manufacturer{}
+	err := row.Scan(&m.ID, &m.Code, &m.Name, &m.ContactName, &m.ContactPhone,
+		&m.Status, &m.CreatedAt, &m.UpdatedAt)
+	return m, err
 }
 
-func nullTime(v sql.NullTime) time.Time {
-	if v.Valid {
-		return v.Time
-	}
-	return time.Time{}
-}
-
-func rawMessage(v []byte) json.RawMessage {
-	if v == nil {
-		return nil
-	}
-	return json.RawMessage(v)
-}
-
-func scanManufacturer(row pgx.Row) (model.Manufacturer, error) {
-	var v model.Manufacturer
-	var name, contactName, contactPhone, code, merchantID, apiBaseURL, testAPIBaseURL, status sql.NullString
-	var createdAt, updatedAt sql.NullTime
-	err := row.Scan(&v.ID, &name, &contactName, &contactPhone, &code, &merchantID, &apiBaseURL, &testAPIBaseURL, &status, &createdAt, &updatedAt)
-	v.Name, v.ContactName, v.ContactPhone = nullString(name), nullString(contactName), nullString(contactPhone)
-	v.Code, v.MerchantID = nullString(code), nullString(merchantID)
-	v.APIBaseURL, v.TestAPIBaseURL, v.Status = nullString(apiBaseURL), nullString(testAPIBaseURL), nullString(status)
-	v.CreatedAt, v.UpdatedAt = nullTime(createdAt), nullTime(updatedAt)
-	return v, err
-}
-func scanDevice(row pgx.Row) (model.Device, error) {
-	var v model.Device
-	var manufacturerID, name, serialNumber, location, serialUnique, deviceName, manufacturerCode, storeID, storeName sql.NullString
-	var version, address, deviceError, status sql.NullString
-	var lastActivityAt, createdAt, updatedAt sql.NullTime
-	var displayConfig, paymentConfig []byte
-	err := row.Scan(&v.ID, &manufacturerID, &name, &serialNumber, &location, &serialUnique, &deviceName, &manufacturerCode, &storeID, &storeName, &v.Online, &version, &address, &deviceError, &lastActivityAt, &displayConfig, &paymentConfig, &status, &createdAt, &updatedAt)
-	v.ManufacturerID, v.Name, v.SerialNumber = nullString(manufacturerID), nullString(name), nullString(serialNumber)
-	v.Location, v.SerialUnique, v.DeviceName = nullString(location), nullString(serialUnique), nullString(deviceName)
-	v.ManufacturerCode, v.StoreID, v.StoreName = nullString(manufacturerCode), nullString(storeID), nullString(storeName)
-	v.Version, v.Address, v.Error, v.Status = nullString(version), nullString(address), nullString(deviceError), nullString(status)
-	v.LastActivityAt, v.CreatedAt, v.UpdatedAt = nullTime(lastActivityAt), nullTime(createdAt), nullTime(updatedAt)
-	v.DisplayConfig, v.PaymentConfig = rawMessage(displayConfig), rawMessage(paymentConfig)
-	return v, err
-}
-func scanDrink(row pgx.Row) (model.Drink, error) {
-	var v model.Drink
-	var name, description, originID, productNum, enName, image, status sql.NullString
-	var createdAt, updatedAt sql.NullTime
-	err := row.Scan(&v.ID, &name, &description, &originID, &productNum, &enName, &v.Price, &v.VIPPrice, &v.PickupCodePrice, &image, &v.Sort, &status, &createdAt, &updatedAt)
-	v.Name, v.Description, v.OriginID = nullString(name), nullString(description), nullString(originID)
-	v.ProductNum, v.EnName, v.Image, v.Status = nullString(productNum), nullString(enName), nullString(image), nullString(status)
-	v.CreatedAt, v.UpdatedAt = nullTime(createdAt), nullTime(updatedAt)
-	return v, err
-}
-func scanDeviceDrink(row pgx.Row) (model.DeviceDrink, error) {
-	var v model.DeviceDrink
-	var drinkID, originID sql.NullString
-	var createdAt, updatedAt sql.NullTime
-	err := row.Scan(&v.DeviceID, &drinkID, &originID, &v.Enabled, &createdAt, &updatedAt)
-	v.DrinkID, v.OriginID = nullString(drinkID), nullString(originID)
-	v.CreatedAt, v.UpdatedAt = nullTime(createdAt), nullTime(updatedAt)
-	return v, err
-}
-
-func (r *PostgreSQL) CreateManufacturer(ctx context.Context, v model.Manufacturer) (model.Manufacturer, error) {
-	if v.ID == "" {
-		v.ID = uuid.NewString()
-	}
-	q := `INSERT INTO manufacturers (id,name,contact_name,contact_phone,code,merchant_id,api_base_url,test_api_base_url,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,COALESCE(NULLIF($9,''),'active')) RETURNING ` + manufacturerColumns
-	x, err := scanManufacturer(r.pool.QueryRow(ctx, q, v.ID, v.Name, v.ContactName, v.ContactPhone, v.Code, v.MerchantID, v.APIBaseURL, v.TestAPIBaseURL, v.Status))
-	return x, persistenceError(err)
-}
-func (r *PostgreSQL) GetManufacturer(ctx context.Context, id string) (model.Manufacturer, error) {
-	x, err := scanManufacturer(r.pool.QueryRow(ctx, `SELECT `+manufacturerColumns+` FROM manufacturers WHERE id=$1`, id))
-	return x, notFound(err)
-}
-func (r *PostgreSQL) ListManufacturers(ctx context.Context) ([]model.Manufacturer, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+manufacturerColumns+` FROM manufacturers ORDER BY created_at DESC`)
+func (r *postgresRepository) ListManufacturers(ctx context.Context) ([]*model.Manufacturer, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+manufacturerColumns+` FROM manufacturers ORDER BY code, id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []model.Manufacturer{}
+	manufacturers := make([]*model.Manufacturer, 0, 16)
 	for rows.Next() {
-		x, e := scanManufacturer(rows)
-		if e != nil {
-			return nil, e
+		m, err := scanManufacturer(rows)
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, x)
+		manufacturers = append(manufacturers, m)
 	}
-	return out, rows.Err()
+	return manufacturers, rows.Err()
 }
-func (r *PostgreSQL) UpdateManufacturer(ctx context.Context, id string, v model.Manufacturer) (model.Manufacturer, error) {
-	q := `UPDATE manufacturers SET name=$2,contact_name=$3,contact_phone=$4,code=$5,merchant_id=$6,api_base_url=$7,test_api_base_url=$8,updated_at=NOW() WHERE id=$1 RETURNING ` + manufacturerColumns
-	x, err := scanManufacturer(r.pool.QueryRow(ctx, q, id, v.Name, v.ContactName, v.ContactPhone, v.Code, v.MerchantID, v.APIBaseURL, v.TestAPIBaseURL))
-	return x, persistenceError(err)
+
+const drinkColumns = `id::text, device_id::text, manufacturer_id::text, origin_id, product_num,
+	product_name, en_name, drink_type, product_img, product_desc, price, vip_price,
+	pickup_code_price, status, sort, created_at, updated_at`
+
+func scanDrink(row interface{ Scan(...any) error }) (*model.Drink, error) {
+	d := &model.Drink{}
+	err := row.Scan(&d.ID, &d.DeviceID, &d.ManufacturerID, &d.OriginID, &d.ProductNum,
+		&d.ProductName, &d.EnName, &d.DrinkType, &d.ProductImg, &d.ProductDesc, &d.Price,
+		&d.VipPrice, &d.PickupCodePrice, &d.Status, &d.Sort, &d.CreatedAt, &d.UpdatedAt)
+	return d, err
 }
-func (r *PostgreSQL) DeleteManufacturer(ctx context.Context, id string) error {
-	tag, err := r.exec(ctx, `DELETE FROM manufacturers WHERE id=$1`, id)
+
+func (r *postgresRepository) ListDrinks(ctx context.Context, filter DrinkFilter) ([]*model.Drink, int64, error) {
+	const where = ` WHERE ($1 = '' OR device_id::text = $1)
+		AND ($2 = '' OR manufacturer_id::text = $2) AND ($3 = '' OR status = $3)`
+	var total int64
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM drinks`+where,
+		filter.DeviceID, filter.ManufacturerID, filter.Status).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT `+drinkColumns+` FROM drinks`+where+
+		` ORDER BY sort, created_at DESC, id LIMIT $4 OFFSET $5`,
+		filter.DeviceID, filter.ManufacturerID, filter.Status,
+		filter.PageSize, (filter.Page-1)*filter.PageSize)
 	if err != nil {
-		return persistenceError(err)
+		return nil, 0, err
 	}
-	if tag.RowsAffected() == 0 {
-		return model.ErrNotFound
+	defer rows.Close()
+	drinks := make([]*model.Drink, 0, filter.PageSize)
+	for rows.Next() {
+		drink, err := scanDrink(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		drinks = append(drinks, drink)
 	}
-	return nil
+	return drinks, total, rows.Err()
 }
 
-func (r *PostgreSQL) CreateDevice(ctx context.Context, v model.Device) (model.Device, error) {
-	if v.ID == "" {
-		v.ID = uuid.NewString()
+// ListDeviceDrinks 返回一台设备上的全部饮品。
+// 不做分页：一台设备的饮品数量由设备本身决定，量级是几十。
+//
+// 排序用 sort 而不是 created_at：这是后台那一屏的展示次序，值越小越靠前，调完顺序
+// 就该立刻在界面上按新顺序站好。id 是决胜位，同 sort 的行要有稳定次序。
+func (r *postgresRepository) ListDeviceDrinks(ctx context.Context, deviceID string) ([]*model.Drink, error) {
+	// 先确认设备在不在。少了这一句，一个打错的 id 会得到和「这台设备还没配饮品」
+	// 完全一样的空数组，而这两件事在详情页上该说的话不同。这条查询走的是一次索引
+	// 命中，与后面的列表比不上一趟往返的成本。
+	var exists bool
+	if err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1)`, deviceID).Scan(&exists); err != nil {
+		return nil, err
 	}
-	q := `INSERT INTO devices (id,manufacturer_id,name,serial_number,location,serial_unique,device_name,manufacturer_code,store_id,store_name,online,version,address,error,last_activity_at,display_config,payment_config,status) VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,COALESCE(NULLIF($18,''),'active')) RETURNING ` + deviceColumns
-	x, err := scanDevice(r.pool.QueryRow(ctx, q, v.ID, v.ManufacturerID, v.Name, v.SerialNumber, v.Location, v.SerialUnique, v.DeviceName, v.ManufacturerCode, v.StoreID, v.StoreName, v.Online, v.Version, v.Address, v.Error, v.LastActivityAt, v.DisplayConfig, v.PaymentConfig, v.Status))
-	return x, persistenceError(err)
-}
-func (r *PostgreSQL) UpsertDeviceBySerialUnique(ctx context.Context, v model.Device) (model.Device, error) {
-	if v.ID == "" {
-		v.ID = uuid.NewString()
+	if !exists {
+		return nil, ErrDeviceNotFound
 	}
-	q := `INSERT INTO devices (id,manufacturer_id,name,serial_number,location,serial_unique,device_name,manufacturer_code,store_id,store_name,online,version,address,error,last_activity_at,display_config,payment_config,status) VALUES ($1,$2,$3,NULLIF($4,''),$5,NULLIF($6,''),$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,COALESCE(NULLIF($18,''),'active')) ON CONFLICT (serial_unique) WHERE serial_unique IS NOT NULL DO UPDATE SET manufacturer_id=EXCLUDED.manufacturer_id,name=EXCLUDED.name,serial_number=EXCLUDED.serial_number,location=EXCLUDED.location,device_name=EXCLUDED.device_name,manufacturer_code=EXCLUDED.manufacturer_code,store_id=EXCLUDED.store_id,store_name=EXCLUDED.store_name,online=EXCLUDED.online,version=EXCLUDED.version,address=EXCLUDED.address,error=EXCLUDED.error,last_activity_at=EXCLUDED.last_activity_at,display_config=EXCLUDED.display_config,payment_config=EXCLUDED.payment_config,status=EXCLUDED.status,updated_at=NOW() RETURNING ` + deviceColumns
-	x, err := scanDevice(r.pool.QueryRow(ctx, q, v.ID, v.ManufacturerID, v.Name, v.SerialNumber, v.Location, v.SerialUnique, v.DeviceName, v.ManufacturerCode, v.StoreID, v.StoreName, v.Online, v.Version, v.Address, v.Error, v.LastActivityAt, v.DisplayConfig, v.PaymentConfig, v.Status))
-	return x, persistenceError(err)
-}
-
-func (r *PostgreSQL) GetDevice(ctx context.Context, id string) (model.Device, error) {
-	x, err := scanDevice(r.pool.QueryRow(ctx, `SELECT `+deviceColumns+` FROM devices WHERE id=$1`, id))
-	return x, notFound(err)
-}
-func (r *PostgreSQL) ListDevices(ctx context.Context) ([]model.Device, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+deviceColumns+` FROM devices ORDER BY created_at DESC`)
+	rows, err := r.pool.Query(ctx, `SELECT `+drinkColumns+`
+		FROM drinks WHERE device_id = $1 ORDER BY sort, id`, deviceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []model.Device{}
+	drinks := make([]*model.Drink, 0, 16)
 	for rows.Next() {
-		x, e := scanDevice(rows)
-		if e != nil {
-			return nil, e
+		drink, err := scanDrink(rows)
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, x)
+		drinks = append(drinks, drink)
 	}
-	return out, rows.Err()
-}
-func (r *PostgreSQL) UpdateDevice(ctx context.Context, id string, v model.Device) (model.Device, error) {
-	q := `UPDATE devices SET manufacturer_id=COALESCE(NULLIF(trim($2),''),manufacturer_id),name=$3,serial_number=NULLIF($4,''),location=$5,serial_unique=$6,device_name=$7,manufacturer_code=$8,store_id=$9,store_name=$10,online=$11,version=$12,address=$13,error=$14,last_activity_at=$15,display_config=$16,payment_config=$17,status=COALESCE(NULLIF($18,''),status),updated_at=NOW() WHERE id=$1 RETURNING ` + deviceColumns
-	x, err := scanDevice(r.pool.QueryRow(ctx, q, id, v.ManufacturerID, v.Name, v.SerialNumber, v.Location, v.SerialUnique, v.DeviceName, v.ManufacturerCode, v.StoreID, v.StoreName, v.Online, v.Version, v.Address, v.Error, v.LastActivityAt, v.DisplayConfig, v.PaymentConfig, v.Status))
-	return x, persistenceError(err)
-}
-func (r *PostgreSQL) DeleteDevice(ctx context.Context, id string) error {
-	tag, err := r.exec(ctx, `DELETE FROM devices WHERE id=$1`, id)
-	if err != nil {
-		return persistenceError(err)
-	}
-	if tag.RowsAffected() == 0 {
-		return model.ErrNotFound
-	}
-	return nil
+	return drinks, rows.Err()
 }
 
-func (r *PostgreSQL) CreateDrink(ctx context.Context, v model.Drink) (model.Drink, error) {
-	if v.ID == "" {
-		v.ID = uuid.NewString()
-	}
-	q := `INSERT INTO drinks (id,name,description,origin_id,product_num,en_name,price,vip_price,pickup_code_price,image,sort,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,COALESCE(NULLIF($12,''),'active')) RETURNING ` + drinkColumns
-	x, err := scanDrink(r.pool.QueryRow(ctx, q, v.ID, v.Name, v.Description, v.OriginID, v.ProductNum, v.EnName, v.Price, v.VIPPrice, v.PickupCodePrice, v.Image, v.Sort, v.Status))
-	return x, persistenceError(err)
-}
-func (r *PostgreSQL) UpsertDrinkByOriginID(ctx context.Context, v model.Drink) (model.Drink, error) {
-	if v.ID == "" {
-		v.ID = uuid.NewString()
-	}
-	q := `INSERT INTO drinks (id,name,description,origin_id,product_num,en_name,price,vip_price,pickup_code_price,image,sort,status) VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10,$11,COALESCE(NULLIF($12,''),'active')) ON CONFLICT (origin_id) WHERE origin_id IS NOT NULL DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,product_num=EXCLUDED.product_num,en_name=EXCLUDED.en_name,price=EXCLUDED.price,image=EXCLUDED.image,sort=EXCLUDED.sort,status=EXCLUDED.status,updated_at=NOW() RETURNING ` + drinkColumns
-	x, err := scanDrink(r.pool.QueryRow(ctx, q, v.ID, v.Name, v.Description, v.OriginID, v.ProductNum, v.EnName, v.Price, v.VIPPrice, v.PickupCodePrice, v.Image, v.Sort, v.Status))
-	return x, persistenceError(err)
+const balanceEntryColumns = `id::text, device_id::text, type, amount, balance_after,
+	reverses_entry_id::text, reference_type, reference_id::text, request_id, remark,
+	operator_id::text, operator_name, created_at`
+
+func scanBalanceEntry(row interface{ Scan(...any) error }) (*model.DeviceBalanceEntry, error) {
+	e := &model.DeviceBalanceEntry{}
+	err := row.Scan(&e.ID, &e.DeviceID, &e.Type, &e.Amount, &e.BalanceAfter,
+		&e.ReversesEntryID, &e.ReferenceType, &e.ReferenceID, &e.RequestID, &e.Remark,
+		&e.OperatorID, &e.OperatorName, &e.CreatedAt)
+	return e, err
 }
 
-func (r *PostgreSQL) GetDrink(ctx context.Context, id string) (model.Drink, error) {
-	x, err := scanDrink(r.pool.QueryRow(ctx, `SELECT `+drinkColumns+` FROM drinks WHERE id=$1`, id))
-	return x, notFound(err)
-}
-func (r *PostgreSQL) ListDrinks(ctx context.Context) ([]model.Drink, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+drinkColumns+` FROM drinks ORDER BY created_at DESC`)
+// ListDeviceBalanceEntries 返回一台设备的余额流水一页，最近的在前。
+//
+// 分页而不是一次给全：这张表只增不改不删，一台高频使用的设备攒下的流水没有上界，而
+// 这一屏要回答的是「最近这些钱是怎么来的」。排序走 device_balance_ledger_device_idx
+// (device_id, created_at)：倒序扫这条索引即可，不必新增索引。
+//
+// id 是排序决胜位：同一次批量操作里的若干条流水时间戳可能完全相同（NOW() 在一个事务
+// 里是同一个值），单靠时间排序没有稳定次序，翻页会重复或漏行。
+func (r *postgresRepository) ListDeviceBalanceEntries(ctx context.Context, deviceID string, page, pageSize int) ([]*model.DeviceBalanceEntry, int64, error) {
+	// 与 ListDeviceDrinks 同样的理由：一个打错的 id 要和「这台设备还没动过余额」分得开，
+	// 前者重试无用，后者是正常状态。
+	var exists bool
+	if err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1)`, deviceID).Scan(&exists); err != nil {
+		return nil, 0, err
+	}
+	if !exists {
+		return nil, 0, ErrDeviceNotFound
+	}
+	var total int64
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM device_balance_ledger WHERE device_id = $1`, deviceID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT `+balanceEntryColumns+`
+		FROM device_balance_ledger WHERE device_id = $1
+		ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`,
+		deviceID, pageSize, (page-1)*pageSize)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-	out := []model.Drink{}
+	entries := make([]*model.DeviceBalanceEntry, 0, pageSize)
 	for rows.Next() {
-		x, e := scanDrink(rows)
-		if e != nil {
-			return nil, e
+		entry, err := scanBalanceEntry(rows)
+		if err != nil {
+			return nil, 0, err
 		}
-		out = append(out, x)
+		entries = append(entries, entry)
 	}
-	return out, rows.Err()
+	return entries, total, rows.Err()
 }
-func (r *PostgreSQL) UpdateDrink(ctx context.Context, id string, v model.Drink) (model.Drink, error) {
-	q := `UPDATE drinks SET name=$2,description=$3,origin_id=$4,product_num=$5,en_name=$6,price=$7,vip_price=$8,pickup_code_price=$9,image=$10,sort=$11,status=COALESCE(NULLIF($12,''),status),updated_at=NOW() WHERE id=$1 RETURNING ` + drinkColumns
-	x, err := scanDrink(r.pool.QueryRow(ctx, q, id, v.Name, v.Description, v.OriginID, v.ProductNum, v.EnName, v.Price, v.VIPPrice, v.PickupCodePrice, v.Image, v.Sort, v.Status))
-	return x, notFound(err)
-}
-func (r *PostgreSQL) DeleteDrink(ctx context.Context, id string) error {
-	tag, err := r.exec(ctx, `DELETE FROM drinks WHERE id=$1`, id)
-	if err != nil {
-		return persistenceError(err)
-	}
-	if tag.RowsAffected() == 0 {
-		return model.ErrNotFound
-	}
-	return nil
-}
-
-func (r *PostgreSQL) SetDeviceDrink(ctx context.Context, v model.DeviceDrink) (model.DeviceDrink, error) {
-	q := `INSERT INTO device_drinks (device_id,drink_id,origin_id,enabled) VALUES ($1,NULLIF($2,''),NULLIF($3,''),$4) ON CONFLICT (device_id,relation_key) DO UPDATE SET drink_id=EXCLUDED.drink_id,origin_id=EXCLUDED.origin_id,enabled=EXCLUDED.enabled,updated_at=NOW() RETURNING ` + deviceDrinkColumns
-	x, err := scanDeviceDrink(r.pool.QueryRow(ctx, q, v.DeviceID, strings.TrimSpace(v.DrinkID), strings.TrimSpace(v.OriginID), v.Enabled))
-	return x, persistenceError(err)
-}
-func (r *PostgreSQL) ListDeviceDrinks(ctx context.Context, id string) ([]model.DeviceDrink, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+deviceDrinkColumns+` FROM device_drinks WHERE device_id=$1 ORDER BY drink_id`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []model.DeviceDrink{}
-	for rows.Next() {
-		x, e := scanDeviceDrink(rows)
-		if e != nil {
-			return nil, e
-		}
-		out = append(out, x)
-	}
-	return out, rows.Err()
-}
-func (r *PostgreSQL) DeleteDeviceDrink(ctx context.Context, deviceID, drinkID string) error {
-	tag, err := r.exec(ctx, `DELETE FROM device_drinks WHERE device_id=$1 AND (drink_id=$2 OR origin_id=$2)`, deviceID, drinkID)
-	if err != nil {
-		return persistenceError(err)
-	}
-	if tag.RowsAffected() == 0 {
-		return model.ErrNotFound
-	}
-	return nil
-}
-
-var _ model.Repository = (*PostgreSQL)(nil)

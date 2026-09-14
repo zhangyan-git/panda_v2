@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"path"
 	"strings"
 	"sync"
@@ -304,11 +305,14 @@ func (e *Etcd) Unregister(ctx context.Context, instance Instance) error {
 		<-done
 	}
 
-	transaction := e.kvClient().Txn(ctx).If(clientv3.Compare(clientv3.Value(key), "=", string(value)))
+	// 两个条件必须一次传给 If。clientv3 的 Txn.If 不是链式累加的构造器：
+	// 它把参数直接赋给 txn.compare，第二次调用会 panic("cannot call If twice!")，
+	// 而且是在 Commit 之前就炸——也就是每次持有租约的优雅下线都会崩。
+	compares := []clientv3.Cmp{clientv3.Compare(clientv3.Value(key), "=", string(value))}
 	if leaseID != 0 && leaseKey == key {
-		transaction = transaction.If(clientv3.Compare(clientv3.LeaseValue(key), "=", leaseID))
+		compares = append(compares, clientv3.Compare(clientv3.LeaseValue(key), "=", leaseID))
 	}
-	response, err := transaction.Then(clientv3.OpDelete(key)).Commit()
+	response, err := e.kvClient().Txn(ctx).If(compares...).Then(clientv3.OpDelete(key)).Commit()
 	if err != nil {
 		return fmt.Errorf("unregister instance: %w", err)
 	}
@@ -340,6 +344,35 @@ func (e *Etcd) Close() error {
 		_, _ = e.client.Revoke(context.Background(), leaseID)
 	}
 	return e.client.Close()
+}
+
+// NewInstance builds the registration record for a service listening on endpoint,
+// deriving an ID that is safe to use as an etcd key segment.
+//
+// The ID comes from the endpoint's host, not its full URL. Kratos returns
+// endpoints shaped like "grpc://127.0.0.1:19081", and an ID built from the whole
+// string contains "//", which validatePathSegment rejects — so registration
+// fails and the process refuses to start. That defect is invisible until a real
+// registry is configured, because the no-op registry never validates, which is
+// how it survived until etcd was switched on.
+//
+// Address keeps the full URL, matching what Kratos' own registry stores: the
+// endpoint string carries the scheme its resolver expects.
+func NewInstance(service string, endpoint *url.URL, version, environment string) (Instance, error) {
+	if endpoint == nil || endpoint.Host == "" {
+		return Instance{}, fmt.Errorf("registry instance for %q needs an endpoint with a host", service)
+	}
+	instance := Instance{
+		Service:     service,
+		ID:          service + "-" + endpoint.Host,
+		Address:     endpoint.String(),
+		Version:     version,
+		Environment: environment,
+	}
+	if err := validateInstance(instance); err != nil {
+		return Instance{}, err
+	}
+	return instance, nil
 }
 
 func validateService(service string) error {

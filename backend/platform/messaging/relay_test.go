@@ -143,3 +143,63 @@ func TestRelayRunOnceReturnsClaimError(t *testing.T) {
 		t.Fatalf("RunOnce error = %v, want claim error", err)
 	}
 }
+
+// 每条事件都要给出一个明确的结局，而且只给一个：投递成功且账也记上了才算
+// 发布，其余两种走向（broker 拒了、账没记上）都必须落在 OnFailed 里。
+// 计数一旦对不上，运维看到的「已发布」就会包含假消息。
+func TestRelayRunOnceReportsPerEventOutcomes(t *testing.T) {
+	publishErr := errors.New("broker unavailable")
+	outbox := &relayOutboxFake{events: []LeasedEnvelope{
+		{Envelope: Envelope{EventID: "published"}, LeaseToken: "t1"},
+		{Envelope: Envelope{EventID: "rejected"}, LeaseToken: "t2"},
+	}}
+	publisher := &relayPublisherFake{errs: map[string]error{"rejected": publishErr}}
+	var published, failed []string
+	relay, err := NewRelay(outbox, publisher, RelayConfig{
+		BatchSize: 2,
+		OnPublished: func(event LeasedEnvelope) {
+			published = append(published, event.EventID)
+		},
+		OnFailed: func(event LeasedEnvelope, err error) {
+			if !errors.Is(err, publishErr) {
+				t.Errorf("OnFailed error = %v, want the publish error", err)
+			}
+			failed = append(failed, event.EventID)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := relay.RunOnce(context.Background()); !errors.Is(err, publishErr) {
+		t.Fatalf("RunOnce error = %v, want the publish error", err)
+	}
+	if strings.Join(published, ",") != "published" {
+		t.Fatalf("OnPublished = %v, want only the event the broker accepted", published)
+	}
+	if strings.Join(failed, ",") != "rejected" {
+		t.Fatalf("OnFailed = %v, want only the event the broker rejected", failed)
+	}
+}
+
+// 账记不上时事件会被重新投递，所以那一刻把它算成「已发布」是错的：
+// 指标上会多出一条实际会被再投一次的记录。
+func TestRelayRunOnceDoesNotReportPublishedWhenBookkeepingFails(t *testing.T) {
+	outbox := &relayOutboxFake{
+		successErr: errors.New("database unavailable"),
+		events:     []LeasedEnvelope{{Envelope: Envelope{EventID: "one"}, LeaseToken: "t1"}},
+	}
+	reported := 0
+	relay, err := NewRelay(outbox, &relayPublisherFake{}, RelayConfig{
+		BatchSize:   1,
+		OnPublished: func(LeasedEnvelope) { reported++ },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := relay.RunOnce(context.Background()); err == nil {
+		t.Fatal("RunOnce error = nil, want the bookkeeping error")
+	}
+	if reported != 0 {
+		t.Fatalf("OnPublished fired %d times, want 0 while MarkSuccess fails", reported)
+	}
+}

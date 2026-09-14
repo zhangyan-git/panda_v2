@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    // 与 packages/api 的差别只有这两处，都是因为本包有 JSX：这个包只被宿主应用的
+    // 打包器消费（main → src/index.ts 的裸 TS/TSX），不经过 Node，所以用 bundler
+    // 解析——相对导入不带 .js 后缀，jsx 走 react 的自动运行时。
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}
