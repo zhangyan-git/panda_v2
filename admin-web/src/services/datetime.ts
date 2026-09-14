@@ -21,3 +21,21 @@ export function toRFC3339(value?: unknown): string | undefined {
       : new Date(String(value));
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
+
+/**
+ * RFC3339 → 'YYYY-MM-DD HH:mm'（浏览器本地时区），只给人看。
+ *
+ * 表格里交给 ProTable 的 valueType: 'dateTime' 就行，这是给**表格之外**的地方用的
+ * （卡片底部那行小字）。不引 dayjs：这个仓库没直接依赖它，而为了格式化一个时间戳
+ * 去 import 一个 antd 的传递依赖，装得上装不上全看提升结果。秒不显示——这几处看的
+ * 都是「上次大概什么时候」，多两位只让那行小字更难扫。
+ */
+export function formatDateTime(value?: string | null): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
+    date.getHours(),
+  )}:${pad(date.getMinutes())}`;
+}

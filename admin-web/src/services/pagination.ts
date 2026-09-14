@@ -38,5 +38,10 @@ export function toPageParams<T extends { current?: number }>(
  * 这些地方要的是整个集合，不是第一页：分页之后它们只拿到第 1 页，静默少数据
  * 且不报错。上限 200 与后端 api.MaxPageSize 对齐，且这些集合本身远小于 200
  * （权限 35、角色 2、菜单 17，品牌/门店各个位数）。
+ *
+ * ⚠️ 目标接口必须**真的**接受 200：被服务端拒掉时形态很隐蔽——调用方多半写成
+ * `catch {}`（字典取不到就退回显示原始 id），于是没有报错，只是页面上安静地铺
+ * 一串 uuid。2026-09 优惠券模块就是被自己那档更紧的 100 卡住的
+ * （coupon-service `internal/dto/page.go` 现在与平台同值，并有测试钉住）。
  */
 export const FULL_PAGE_PARAMS: PageQuery = { page: 1, pageSize: 200 };

@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { deletionErrorMessage, requestErrorMessage, roleSaveErrorMessage } from './requestError';
+import {
+  deletionErrorMessage,
+  requestErrorCode,
+  requestErrorMessage,
+  roleSaveErrorMessage,
+} from './requestError';
+
+describe('requestErrorCode', () => {
+  it('takes the code out of the envelope', () => {
+    expect(requestErrorCode({ response: { data: { errorCode: 'FORTUNE_CARD_CONFIRMATION_REQUIRED' } } }))
+      .toBe('FORTUNE_CARD_CONFIRMATION_REQUIRED');
+  });
+
+  it.each([
+    // 空码是老后端/网关自己回的 404 那种，不能当成「命中了这个码」。
+    '',
+    undefined,
+    null,
+    new Error('Network Error'),
+    { response: { data: { errorMessage: '只有话没有码' } } },
+  ])('returns undefined for %j', (error) => {
+    expect(requestErrorCode(error)).toBeUndefined();
+  });
+});
 
 describe('requestErrorMessage', () => {
   it('prefers the backend message', () => {
