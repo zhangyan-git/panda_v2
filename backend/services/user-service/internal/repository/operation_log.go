@@ -27,6 +27,9 @@ type OperationLogFilter struct {
 	Operator string
 	// Keyword 匹配目标名称或操作描述（子串）。
 	Keyword string
+	// TargetType / TargetID 精确匹配目标对象，空串表示不限。两者是「与」。
+	TargetType string
+	TargetID   string
 	// StartTime / EndTime 按 occurred_at 过滤，闭区间。
 	StartTime *time.Time
 	EndTime   *time.Time
@@ -117,6 +120,12 @@ const operationLogColumns = `l.id,
 //
 // LIKE 模式里的通配符已在 Go 侧转义（escapeLikePattern），这里声明 ESCAPE '\'
 // 与之一致；漏了它，搜索框里打一个 % 会命中全部日志。
+//
+// $10（target_id）走 NULLIF(...)::uuid 而不是 target_id::text = $10：后者把列转了型，
+// idx_admin_operation_logs_target 上的 target_id 一段就用不上了，每一次「看这台设备的
+// 操作记录」都变成一次全表扫描——而那个索引本来就是为这个查询建的。空串经 NULLIF
+// 变成 NULL，而 uuid 与 NULL 比较求值为 NULL、不为真，所以恒真那半边（$10 是空串时
+// 短路为真）照样兜得住「不限目标」。
 const operationLogsWhere = `
 	WHERE ($1 = '' OR l.module = $1)
 	  AND ($2 = '' OR l.action = $2)
@@ -124,10 +133,12 @@ const operationLogsWhere = `
 	  AND ($4 = '' OR l.admin_username ILIKE $4 ESCAPE '\' OR l.admin_name ILIKE $5 ESCAPE '\')
 	  AND ($6 = '' OR l.target_name ILIKE $6 ESCAPE '\' OR l.operation ILIKE $6 ESCAPE '\')
 	  AND ($7::timestamptz IS NULL OR l.occurred_at >= $7::timestamptz)
-	  AND ($8::timestamptz IS NULL OR l.occurred_at <= $8::timestamptz)`
+	  AND ($8::timestamptz IS NULL OR l.occurred_at <= $8::timestamptz)
+	  AND ($9 = '' OR l.target_type = $9)
+	  AND ($10 = '' OR l.target_id = NULLIF($10, '')::uuid)`
 
 // operationLogsArgs 按 operationLogsWhere 的占位符顺序排列参数，$4/$5 是同一个
-// 操作人前缀（用户名和姓名各匹配一次），$6 是关键词子串。
+// 操作人前缀（用户名和姓名各匹配一次），$6 是关键词子串，$9/$10 是目标类型与目标 id。
 //
 // 空筛选传空串而不是 '%'：那个 '%' 会绕过上面「操作人为空则恒真」的短路，让一个
 // 空搜索框把整张表的人名都匹配上。
@@ -144,6 +155,7 @@ func operationLogsArgs(f OperationLogFilter) []any {
 		strings.TrimSpace(f.Module), strings.TrimSpace(f.Action), f.Result,
 		operatorPattern, operatorPattern, keywordPattern,
 		f.StartTime, f.EndTime,
+		strings.TrimSpace(f.TargetType), strings.TrimSpace(f.TargetID),
 	}
 }
 
@@ -154,7 +166,7 @@ func (r *pgOperationLogRepo) FindPage(ctx context.Context, f OperationLogFilter,
 	q := `SELECT ` + operationLogColumns + `
 		FROM admin_operation_logs l` + operationLogsWhere + `
 		ORDER BY l.occurred_at DESC, l.id DESC
-		LIMIT $9 OFFSET $10`
+		LIMIT $11 OFFSET $12`
 	rows, err := r.pool.Query(ctx, q, append(operationLogsArgs(f), limit, offset)...)
 	if err != nil {
 		return nil, err

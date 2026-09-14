@@ -18,15 +18,18 @@ import (
 
 type operationLogRepoStub struct {
 	repository.AdminOperationLogRepository
-	logs   []*model.AdminOperationLog
-	total  int64
-	facets *repository.OperationLogFacets
-	err    error
+	logs []*model.AdminOperationLog
+	// lastFilter 记下 handler 搬运过来的筛选条件，用来验「查询串里的参数真的到了仓库」。
+	lastFilter repository.OperationLogFilter
+	total      int64
+	facets     *repository.OperationLogFacets
+	err        error
 }
 
 func (s *operationLogRepoStub) FindPage(
-	context.Context, repository.OperationLogFilter, int, int,
+	_ context.Context, filter repository.OperationLogFilter, _, _ int,
 ) ([]*model.AdminOperationLog, error) {
+	s.lastFilter = filter
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -112,6 +115,22 @@ func TestOperationLogListReturnsSnapshotAndPaging(t *testing.T) {
 	}
 }
 
+// 设备详情页的「操作日志」那一屏就是这两个参数的用户：它只发 targetType=device 与
+// 这台设备的 id。参数名写错（比如写成 target_id）不会报错，只会安静地不过滤——
+// 界面上会是「这台设备的操作记录」里混着别的设备的操作，比空表更难发现。
+func TestOperationLogListPlumbsTargetFilter(t *testing.T) {
+	const targetID = "2f8a1f1e-0f4a-4a5e-9c3b-1d2e3f4a5b6c"
+	stub := &operationLogRepoStub{}
+	rec, resp := doOperationLogRequest(t, newOperationLogHandler(stub),
+		"/v1/admin/operation-logs?targetType=device&targetId="+targetID)
+	if rec.Code != http.StatusOK || !resp.Success {
+		t.Fatalf("status = %d, resp = %+v, want 200", rec.Code, resp)
+	}
+	if stub.lastFilter.TargetType != "device" || stub.lastFilter.TargetID != targetID {
+		t.Fatalf("筛选条件 = %+v，want device / %s", stub.lastFilter, targetID)
+	}
+}
+
 // 没有快照时下发 null，而不是空对象：空对象在界面上会渲染成一个空表格，
 // 看起来像「快照丢了」；null 才能让前端显示「无」。
 func TestOperationLogListKeepsMissingSnapshotAsNull(t *testing.T) {
@@ -133,6 +152,8 @@ func TestOperationLogListBadFiltersReturn400(t *testing.T) {
 		{"结果取值不在枚举内", "?result=ok", service.ErrOperationLogResultInvalid.Error()},
 		{"时间不是 RFC3339", "?startTime=2026-09-13", service.ErrOperationLogTimeInvalid.Error()},
 		{"起止颠倒", "?startTime=2026-09-13T12:00:00Z&endTime=2026-09-13T11:00:00Z", service.ErrOperationLogTimeRangeInvalid.Error()},
+		// 设备详情页的日志 tab 全靠这两个参数；打错的 id 必须是 400，不能是一张空表。
+		{"目标 id 不是 UUID", "?targetId=devic-1", service.ErrOperationLogTargetIDInvalid.Error()},
 		{
 			"筛选值超长",
 			"?keyword=" + strings.Repeat("a", 65),

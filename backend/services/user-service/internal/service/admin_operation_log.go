@@ -7,6 +7,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
+
 	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/repository"
@@ -26,6 +28,12 @@ var (
 	ErrOperationLogTimeRangeInvalid = errors.New("开始时间不能晚于结束时间")
 	// ErrOperationLogFilterTooLong 筛选值过长。
 	ErrOperationLogFilterTooLong = errors.New("筛选条件过长")
+	// ErrOperationLogTargetIDInvalid targetId 不是 UUID。
+	//
+	// 校验它而不是把畸形值直接发给库：target_id 是 uuid 列，'devic-1' 这类值在参数
+	// 解析阶段就会报 22P02（一个 500），而按 `::text` 比又什么都匹配不到——返回一个
+	// 空列表，看起来和「这台设备没有任何操作记录」一模一样。
+	ErrOperationLogTargetIDInvalid = errors.New("targetId 必须是 UUID")
 )
 
 // 单个筛选项的长度上限。这些值全都会被拼成匹配模式发到库里，而合法的取值（模块名、
@@ -43,6 +51,14 @@ type OperationLogQuery struct {
 	Result   string
 	Operator string
 	Keyword  string
+	// TargetType / TargetID 把日志收敛到某一个目标对象上，取值由各服务的审计调用点
+	// 决定（device / merchant / role…）。设备详情页的「操作日志」那一屏就靠这两个参数
+	// 只看这台设备：关键词筛选做不到这件事——目标名有重名的，而且它匹配的是子串，
+	// 「设备 1」会连「设备 12」一起带出来。
+	//
+	// 两个参数是「与」：只给 TargetType 就是「这类对象上的全部操作」。
+	TargetType string
+	TargetID   string
 	// StartTime / EndTime RFC3339，空串表示不限；闭区间。
 	StartTime string
 	EndTime   string
@@ -90,10 +106,12 @@ func (s *AdminOperationLogService) Facets(ctx context.Context) (*repository.Oper
 
 func buildOperationLogFilter(q OperationLogQuery) (repository.OperationLogFilter, error) {
 	filter := repository.OperationLogFilter{
-		Module:   strings.TrimSpace(q.Module),
-		Action:   strings.TrimSpace(q.Action),
-		Operator: strings.TrimSpace(q.Operator),
-		Keyword:  strings.TrimSpace(q.Keyword),
+		Module:     strings.TrimSpace(q.Module),
+		Action:     strings.TrimSpace(q.Action),
+		Operator:   strings.TrimSpace(q.Operator),
+		Keyword:    strings.TrimSpace(q.Keyword),
+		TargetType: strings.TrimSpace(q.TargetType),
+		TargetID:   strings.TrimSpace(q.TargetID),
 	}
 	// 结果列的取值来自模型的常量而不是库里的 CHECK：这张表没有 CHECK 约束，
 	// 所以校验只能在这里做。
@@ -104,9 +122,16 @@ func buildOperationLogFilter(q OperationLogQuery) (repository.OperationLogFilter
 	default:
 		return repository.OperationLogFilter{}, ErrOperationLogResultInvalid
 	}
-	for _, value := range []string{filter.Module, filter.Action, filter.Operator, filter.Keyword} {
+	for _, value := range []string{filter.Module, filter.Action, filter.Operator, filter.Keyword, filter.TargetType} {
 		if utf8.RuneCountInString(value) > maxOperationLogFilterRunes {
 			return repository.OperationLogFilter{}, ErrOperationLogFilterTooLong
+		}
+	}
+	// targetId 只校验格式，不校验「这个 id 存不存在」：本表是审计证据，日志可能指向
+	// 一个已经被删掉的对象，而那种情况下这些日志恰恰最该查得到。
+	if filter.TargetID != "" {
+		if _, err := uuid.Parse(filter.TargetID); err != nil {
+			return repository.OperationLogFilter{}, ErrOperationLogTargetIDInvalid
 		}
 	}
 

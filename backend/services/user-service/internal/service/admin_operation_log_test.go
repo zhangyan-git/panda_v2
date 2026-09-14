@@ -72,6 +72,15 @@ func TestBuildOperationLogFilterRejectsBadInput(t *testing.T) {
 			OperationLogQuery{Operator: strings.Repeat("a", maxOperationLogFilterRunes+1)},
 			ErrOperationLogFilterTooLong,
 		},
+		{
+			"目标类型超长",
+			OperationLogQuery{TargetType: strings.Repeat("a", maxOperationLogFilterRunes+1)},
+			ErrOperationLogFilterTooLong,
+		},
+		// target_id 是 uuid 列，畸形值不能直接下传：它要么在参数解析阶段炸成 500，
+		// 要么（按 ::text 比时）静默匹配不到任何一行——设备详情页看到的就是一张空表，
+		// 和「这台设备确实没有操作记录」长得一模一样。
+		{"目标 id 不是 UUID", OperationLogQuery{TargetID: "devic-1"}, ErrOperationLogTargetIDInvalid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,13 +95,15 @@ func TestBuildOperationLogFilterNormalizesInput(t *testing.T) {
 	start := time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)
 	got, err := buildOperationLogFilter(OperationLogQuery{
-		Module:    "  miniapp_users ",
-		Action:    "update_status",
-		Result:    model.OperationResultFailure,
-		Operator:  " admin ",
-		Keyword:   " 咖啡 ",
-		StartTime: start.Format(time.RFC3339),
-		EndTime:   end.Format(time.RFC3339),
+		Module:     "  miniapp_users ",
+		Action:     "update_status",
+		Result:     model.OperationResultFailure,
+		Operator:   " admin ",
+		Keyword:    " 咖啡 ",
+		TargetType: " device ",
+		TargetID:   " 2f8a1f1e-0f4a-4a5e-9c3b-1d2e3f4a5b6c ",
+		StartTime:  start.Format(time.RFC3339),
+		EndTime:    end.Format(time.RFC3339),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -101,6 +112,11 @@ func TestBuildOperationLogFilterNormalizesInput(t *testing.T) {
 	// 「 admin」匹配不到任何用户名，而界面看起来只是搜不到人。
 	if got.Module != "miniapp_users" || got.Operator != "admin" || got.Keyword != "咖啡" {
 		t.Fatalf("filter not trimmed: %+v", got)
+	}
+	// 目标 id 也要 trim 再校验：查询串里带上前导空格时，不 trim 会让 uuid.Parse 失败、
+	// 整个请求变成一个 400，而调用方只是多打了一个空格。
+	if got.TargetType != "device" || got.TargetID != "2f8a1f1e-0f4a-4a5e-9c3b-1d2e3f4a5b6c" {
+		t.Fatalf("目标筛选没归一：%+v", got)
 	}
 	if got.StartTime == nil || !got.StartTime.Equal(start) {
 		t.Fatalf("StartTime = %v, want %v", got.StartTime, start)
@@ -119,8 +135,21 @@ func TestBuildOperationLogFilterEmptyQueryMeansUnfiltered(t *testing.T) {
 	if got.StartTime != nil || got.EndTime != nil {
 		t.Fatalf("空时间应为 nil（不限），得到 %+v", got)
 	}
-	if got.Module != "" || got.Action != "" || got.Result != "" || got.Operator != "" || got.Keyword != "" {
+	if got.Module != "" || got.Action != "" || got.Result != "" || got.Operator != "" ||
+		got.Keyword != "" || got.TargetType != "" || got.TargetID != "" {
 		t.Fatalf("空查询应保持零值，得到 %+v", got)
+	}
+}
+
+// TestBuildOperationLogFilterTargetPairsWithModule 钉住「只给 targetType」也是合法的：
+// 后台日志页可以按目标类型筛（看所有设备的操作），只有 targetId 才会碰 uuid 校验。
+func TestBuildOperationLogFilterTargetTypeAlone(t *testing.T) {
+	got, err := buildOperationLogFilter(OperationLogQuery{TargetType: "device"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.TargetType != "device" || got.TargetID != "" {
+		t.Fatalf("filter = %+v, want 只筛 device 类型", got)
 	}
 }
 

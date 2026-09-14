@@ -54,6 +54,15 @@ export type OperationLogQuery = PageQuery & {
   operator?: string;
   /** 目标名称或操作描述的子串 */
   keyword?: string;
+  /**
+   * 目标类型精确筛选，如 device；与 targetId 是「与」（只给它就是「这类对象的全部操作」）。
+   *
+   * 设备详情页的「操作日志」那一屏靠这两个参数只看这一台设备：keyword 做不到这件事——
+   * 目标名会重名，而且它匹配的是子串，「设备 1」会把「设备 12」一起带出来。
+   */
+  targetType?: string;
+  /** 目标对象 id（UUID）。后端会校验格式，非 UUID 回 400 而不是一张空表。 */
+  targetId?: string;
   /** 起始时间（含），RFC3339 */
   startTime?: string;
   /** 结束时间（含），RFC3339 */

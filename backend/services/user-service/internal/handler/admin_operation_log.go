@@ -76,23 +76,26 @@ func toAdminOperationLogResponse(l *model.AdminOperationLog) adminOperationLogRe
 func operationLogQueryFrom(r *http.Request) service.OperationLogQuery {
 	q := r.URL.Query()
 	return service.OperationLogQuery{
-		Module:    q.Get("module"),
-		Action:    q.Get("action"),
-		Result:    q.Get("result"),
-		Operator:  q.Get("operator"),
-		Keyword:   q.Get("keyword"),
-		StartTime: q.Get("startTime"),
-		EndTime:   q.Get("endTime"),
+		Module:     q.Get("module"),
+		Action:     q.Get("action"),
+		Result:     q.Get("result"),
+		Operator:   q.Get("operator"),
+		Keyword:    q.Get("keyword"),
+		TargetType: q.Get("targetType"),
+		TargetID:   q.Get("targetId"),
+		StartTime:  q.Get("startTime"),
+		EndTime:    q.Get("endTime"),
 	}
 }
 
-// writeOperationLogQueryError 回筛选条件相关的 400。四个错误值对应四种写错的参数，
+// writeOperationLogQueryError 回筛选条件相关的 400。每个错误值对应一种写错的参数，
 // 各自的提示不同，合并成一个「参数错误」等于让调用方去猜是哪一项。
 func writeOperationLogQueryError(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, service.ErrOperationLogResultInvalid),
 		errors.Is(err, service.ErrOperationLogTimeInvalid),
 		errors.Is(err, service.ErrOperationLogTimeRangeInvalid),
+		errors.Is(err, service.ErrOperationLogTargetIDInvalid),
 		errors.Is(err, service.ErrOperationLogFilterTooLong):
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, err.Error())
 		return true
@@ -108,15 +111,17 @@ func writeOperationLogQueryError(w http.ResponseWriter, err error) bool {
 //	@Tags        admin-operation-logs
 //	@Produce     json
 //	@Security    BearerAuth
-//	@Param       page      query int    false "页码，从 1 开始，默认 1"
-//	@Param       pageSize  query int    false "每页条数，1..200，默认 20"
-//	@Param       module    query string false "模块精确筛选，取值见 /facets"
-//	@Param       action    query string false "动作精确筛选，取值见 /facets"
-//	@Param       result    query string false "结果筛选：success/failure"
-//	@Param       operator  query string false "操作人用户名或姓名的前缀"
-//	@Param       keyword   query string false "关键词：目标名称或操作描述的子串"
-//	@Param       startTime query string false "起始时间（含），RFC3339"
-//	@Param       endTime   query string false "结束时间（含），RFC3339"
+//	@Param       page       query int    false "页码，从 1 开始，默认 1"
+//	@Param       pageSize   query int    false "每页条数，1..200，默认 20"
+//	@Param       module     query string false "模块精确筛选，取值见 /facets"
+//	@Param       action     query string false "动作精确筛选，取值见 /facets"
+//	@Param       result     query string false "结果筛选：success/failure"
+//	@Param       operator   query string false "操作人用户名或姓名的前缀"
+//	@Param       keyword    query string false "关键词：目标名称或操作描述的子串"
+//	@Param       targetType query string false "目标类型精确筛选，如 device / merchant / role"
+//	@Param       targetId   query string false "目标对象 id（UUID）。设备详情页用它只看这一台设备的日志"
+//	@Param       startTime  query string false "起始时间（含），RFC3339"
+//	@Param       endTime    query string false "结束时间（含），RFC3339"
 //	@Success     200 {object} api.Response{data=api.PageResponse{items=[]adminOperationLogResponse}}
 //	@Failure     400 {object} api.Response
 //	@Router      /v1/admin/operation-logs [get]
