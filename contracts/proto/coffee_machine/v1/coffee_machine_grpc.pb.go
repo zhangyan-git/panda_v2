@@ -19,20 +19,24 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	CoffeeMachineService_ListManufacturers_FullMethodName  = "/coffee_machine.v1.CoffeeMachineService/ListManufacturers"
-	CoffeeMachineService_ListDevices_FullMethodName        = "/coffee_machine.v1.CoffeeMachineService/ListDevices"
-	CoffeeMachineService_ListDrinks_FullMethodName         = "/coffee_machine.v1.CoffeeMachineService/ListDrinks"
-	CoffeeMachineService_UpsertDeviceDrink_FullMethodName  = "/coffee_machine.v1.CoffeeMachineService/UpsertDeviceDrink"
-	CoffeeMachineService_ListDeviceDrinks_FullMethodName   = "/coffee_machine.v1.CoffeeMachineService/ListDeviceDrinks"
-	CoffeeMachineService_DeleteManufacturer_FullMethodName = "/coffee_machine.v1.CoffeeMachineService/DeleteManufacturer"
-	CoffeeMachineService_DeleteDevice_FullMethodName       = "/coffee_machine.v1.CoffeeMachineService/DeleteDevice"
-	CoffeeMachineService_DeleteDrink_FullMethodName        = "/coffee_machine.v1.CoffeeMachineService/DeleteDrink"
+	CoffeeMachineService_GetDevice_FullMethodName          = "/panda.coffee_machine.v1.CoffeeMachineService/GetDevice"
+	CoffeeMachineService_ListManufacturers_FullMethodName  = "/panda.coffee_machine.v1.CoffeeMachineService/ListManufacturers"
+	CoffeeMachineService_ListDevices_FullMethodName        = "/panda.coffee_machine.v1.CoffeeMachineService/ListDevices"
+	CoffeeMachineService_ListDrinks_FullMethodName         = "/panda.coffee_machine.v1.CoffeeMachineService/ListDrinks"
+	CoffeeMachineService_UpsertDeviceDrink_FullMethodName  = "/panda.coffee_machine.v1.CoffeeMachineService/UpsertDeviceDrink"
+	CoffeeMachineService_ListDeviceDrinks_FullMethodName   = "/panda.coffee_machine.v1.CoffeeMachineService/ListDeviceDrinks"
+	CoffeeMachineService_DeleteManufacturer_FullMethodName = "/panda.coffee_machine.v1.CoffeeMachineService/DeleteManufacturer"
+	CoffeeMachineService_DeleteDevice_FullMethodName       = "/panda.coffee_machine.v1.CoffeeMachineService/DeleteDevice"
+	CoffeeMachineService_DeleteDrink_FullMethodName        = "/panda.coffee_machine.v1.CoffeeMachineService/DeleteDrink"
 )
 
 // CoffeeMachineServiceClient is the client API for CoffeeMachineService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type CoffeeMachineServiceClient interface {
+	// GetDevice 是本服务对出杯链路的唯一义务：下单时校验设备状态（方案 5.8）。
+	// 调用方是 order-service 与 inventory，两者都只要读。
+	GetDevice(ctx context.Context, in *DeviceID, opts ...grpc.CallOption) (*Device, error)
 	ListManufacturers(ctx context.Context, in *ListManufacturersRequest, opts ...grpc.CallOption) (*ListManufacturersResponse, error)
 	ListDevices(ctx context.Context, in *ListDevicesRequest, opts ...grpc.CallOption) (*ListDevicesResponse, error)
 	ListDrinks(ctx context.Context, in *ListDrinksRequest, opts ...grpc.CallOption) (*ListDrinksResponse, error)
@@ -49,6 +53,16 @@ type coffeeMachineServiceClient struct {
 
 func NewCoffeeMachineServiceClient(cc grpc.ClientConnInterface) CoffeeMachineServiceClient {
 	return &coffeeMachineServiceClient{cc}
+}
+
+func (c *coffeeMachineServiceClient) GetDevice(ctx context.Context, in *DeviceID, opts ...grpc.CallOption) (*Device, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Device)
+	err := c.cc.Invoke(ctx, CoffeeMachineService_GetDevice_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *coffeeMachineServiceClient) ListManufacturers(ctx context.Context, in *ListManufacturersRequest, opts ...grpc.CallOption) (*ListManufacturersResponse, error) {
@@ -135,6 +149,9 @@ func (c *coffeeMachineServiceClient) DeleteDrink(ctx context.Context, in *DrinkI
 // All implementations must embed UnimplementedCoffeeMachineServiceServer
 // for forward compatibility.
 type CoffeeMachineServiceServer interface {
+	// GetDevice 是本服务对出杯链路的唯一义务：下单时校验设备状态（方案 5.8）。
+	// 调用方是 order-service 与 inventory，两者都只要读。
+	GetDevice(context.Context, *DeviceID) (*Device, error)
 	ListManufacturers(context.Context, *ListManufacturersRequest) (*ListManufacturersResponse, error)
 	ListDevices(context.Context, *ListDevicesRequest) (*ListDevicesResponse, error)
 	ListDrinks(context.Context, *ListDrinksRequest) (*ListDrinksResponse, error)
@@ -153,6 +170,9 @@ type CoffeeMachineServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedCoffeeMachineServiceServer struct{}
 
+func (UnimplementedCoffeeMachineServiceServer) GetDevice(context.Context, *DeviceID) (*Device, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDevice not implemented")
+}
 func (UnimplementedCoffeeMachineServiceServer) ListManufacturers(context.Context, *ListManufacturersRequest) (*ListManufacturersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListManufacturers not implemented")
 }
@@ -196,6 +216,24 @@ func RegisterCoffeeMachineServiceServer(s grpc.ServiceRegistrar, srv CoffeeMachi
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&CoffeeMachineService_ServiceDesc, srv)
+}
+
+func _CoffeeMachineService_GetDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeviceID)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CoffeeMachineServiceServer).GetDevice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CoffeeMachineService_GetDevice_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CoffeeMachineServiceServer).GetDevice(ctx, req.(*DeviceID))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _CoffeeMachineService_ListManufacturers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -346,9 +384,13 @@ func _CoffeeMachineService_DeleteDrink_Handler(srv interface{}, ctx context.Cont
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var CoffeeMachineService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "coffee_machine.v1.CoffeeMachineService",
+	ServiceName: "panda.coffee_machine.v1.CoffeeMachineService",
 	HandlerType: (*CoffeeMachineServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetDevice",
+			Handler:    _CoffeeMachineService_GetDevice_Handler,
+		},
 		{
 			MethodName: "ListManufacturers",
 			Handler:    _CoffeeMachineService_ListManufacturers_Handler,

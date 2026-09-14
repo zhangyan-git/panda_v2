@@ -1,13 +1,19 @@
 // Package migrations embeds the SQL migration sets this repository ships.
 //
 // The SQL lives outside every Go module tree, so it is embedded here and handed
-// to platform/database/migrate as an fs.FS. Three sets exist:
+// to platform/database/migrate as an fs.FS. Five sets exist:
 //
 //   - Legacy: the pre-split single-database chain (001…009). It is kept
 //     byte-for-byte as it was applied, so a database that predates the split can
 //     still be described exactly as it was built.
 //   - Identity: user-service's database.
 //   - Merchant: merchant-service's database.
+//   - Coupon: coupon-service's database.
+//   - CoffeeMachine: coffee-machine-service's database.
+//
+// Identity, Merchant, Coupon, and CoffeeMachine each encode the state their
+// service owns. No migration set creates a foreign key into another service's
+// database.
 //
 // Identity and Merchant each encode the state the legacy chain converges to for
 // their own domain — no cross-database foreign key, no table that moved to the
@@ -38,6 +44,12 @@ var identityFiles embed.FS
 //go:embed merchant/*.sql
 var merchantFiles embed.FS
 
+//go:embed coupon/*.sql
+var couponFiles embed.FS
+
+//go:embed coffee_machine/*.sql
+var coffeeMachineFiles embed.FS
+
 // Legacy is the pre-split single-database migration chain.
 var Legacy fs.FS = sub(legacyFiles, ".")
 
@@ -46,6 +58,12 @@ var Identity fs.FS = sub(identityFiles, "identity")
 
 // Merchant is merchant-service's migration set.
 var Merchant fs.FS = sub(merchantFiles, "merchant")
+
+// Coupon is coupon-service's migration set.
+var Coupon fs.FS = sub(couponFiles, "coupon")
+
+// CoffeeMachine is coffee-machine-service's migration set.
+var CoffeeMachine fs.FS = sub(coffeeMachineFiles, "coffee_machine")
 
 // Versions lists a set's migration file names in the order the runner applies
 // them: top-level *.sql, sorted by name. It mirrors platform/database/migrate's

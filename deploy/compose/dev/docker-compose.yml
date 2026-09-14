@@ -8,7 +8,8 @@ services:
     ports: ["5432:5432"]
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      # Runs once, on a fresh volume only: creates the merchant database.
+      # Runs once, on a fresh volume only: creates the per-service databases
+      # other than POSTGRES_DB itself.
       - ./initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -174,6 +175,12 @@ services:
       USER_DATABASE_URL: postgres://${POSTGRES_USER:-panda}:${POSTGRES_PASSWORD:-replace-me}@postgres:5432/panda_identity?sslmode=disable
       MERCHANT_GRPC_ADDR: merchant-service:9090
       REDIS_ADDR: redis:6379
+      # .env 里的 RABBITMQ_URL 指向 localhost（给手工起的服务用），容器里到不了，
+      # 而「配了但连不上」是启动失败、不是退化成 Noop。这个服务是审计事件的消费方，
+      # 队列名必须稳定，否则每次重启都声明一个随机队列名，重启期间的事件就没人取了。
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-user}:${RABBITMQ_PASSWORD:-replace-me}@rabbitmq:5672/
+      RABBITMQ_QUEUE: admin.operation.logged
+      RABBITMQ_ROUTING_KEY: admin.operation.logged
       REGISTRY_ENDPOINT: http://etcd:2379
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       # Migrations are embedded in the binary; see the Dockerfile. Off by

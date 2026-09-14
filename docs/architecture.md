@@ -11,9 +11,11 @@
 | `backend/` | 平台库（config、server、client、messaging、cache、ratelimit、upload、observability…） | — |
 | `backend/services/user-service` | 身份域：账号、角色、权限、菜单、审计 | `panda_identity` |
 | `backend/services/merchant-service` | 商户域：商户、品牌、门店、审核记录 | `panda_merchant` |
+| `backend/services/coupon-service` | 券域：券类型、模板、批次、用户券 | `panda_coupon` |
+| `backend/services/coffee-machine-service` | 设备域：厂商与接入凭据、咖啡机设备与支付方式、饮品与供应关系、设备事件与余额流水 | `panda_coffee_machine` |
 | `backend/services/gateway-service` | 全站唯一入口，单二进制单路由表 | 无 |
 | `contracts/` | proto 定义与已提交的生成代码 | — |
-| `migrations/` | 三套迁移：`Legacy`（单库时代 001–008，冻结）、`Identity`、`Merchant` | — |
+| `migrations/` | 五套迁移：`Legacy`（单库时代 001–009，冻结）、`Identity`、`Merchant`、`Coupon`、`CoffeeMachine` | — |
 
 嵌套的 `go.mod` 是**独立模块**：在 `backend/` 里跑 `go test ./...` 不会碰到三个
 服务模块。CI（`.github/workflows/check.yml`）对每个模块各跑一遍
@@ -29,6 +31,42 @@
 `panda_merchant`（merchant-service）
 : `merchants` `brands` `stores` `brand_audit_records` `store_audit_records`
   `message_outbox` `message_inbox`
+
+`panda_coupon`（coupon-service）
+: `coupon_types` `coupon_templates` `coupon_template_scopes` `coupon_batches`
+  `user_coupons` `user_coupon_scopes` `coupon_redemptions` `coupon_state_transitions`
+  `coupon_inventory_ledger` `coupon_idempotency_keys` `message_outbox` `message_inbox`
+
+券域的商户 / 品牌 / 门店 / 用户 / 员工 / 订单 ID 也只存值不建外键：它们分属商户库与
+身份库，`REFERENCES` 跨过去就是拆库没做完。**这套表的不变式落在唯一索引和触发器上，
+不靠调用方自觉**：一张券同时只能有一条 `succeeded` 的核销（`coupon_redemptions_one_live_success`
+部分唯一索引），核销本身按 `request_id` 唯一；一张表表达不了的重试语义走
+`coupon_idempotency_keys` 的 `(scope, idempotency_key)` 唯一键并把第一次的 `response`
+存下来，重放回放旧响应而不是重算。库存变动只经 `coupon_inventory_ledger`
+（`reserve` / `issue` / `release` / `expire` / `adjust`，`quantity <> 0`），
+`coupon_batches` 上的三个计数列用 check 约束卡住 `issued + reserved <= total`。
+`coupon_types.code` 是稳定的业务标识，改它会被 `coupon_types_code_immutable` 触发器拦下。
+
+`panda_coffee_machine`（coffee-machine-service）
+: `manufacturers` `manufacturer_credentials` `devices` `device_payment_methods`
+  `drinks` `device_drinks` `device_events` `device_balance_ledger`
+  `message_outbox` `message_inbox`
+
+`panda_coffee_machine` 是这几套里唯一**自带资金写入口**的：`devices.coffee_balance`
+与 `device_balance_ledger` 记的是咖啡余额，所以那张流水表只允许追加（触发器拦 UPDATE /
+DELETE），冲正走反向记录而不是原地改数，幂等靠 `request_id` 上的部分唯一索引。设备通过
+`store_id` 关联部署点位、饮品通过 `manufacturer_id` 关联厂商，两者都只存值不建外键——
+`store_id` 指向的 `stores` 在商户库，`REFERENCES` 跨过去就是拆库没做完。设备侧
+**不持有 `merchant_id`**，商户归属从点位一侧推。
+
+这条边界不只是表归属，还有一条对外契约：**厂商接入凭据与令牌由 coffee-machine-service
+唯一持有并签发**。出杯由 fulfillment-service 直连厂商执行（§5.11），但厂商账号、`access_token`
+与刷新过程都收敛在本服务——`manufacturer_credentials` 是唯一权威副本，fulfillment 调用前
+向本服务取一组只读材料：`access_token` / `token_expires_at` / `api_base_url` / `signing_secret`。
+两个适配器各自脱敏、各自记 Provider 调用流水，只有凭据不分散：同一份密钥配两处，就会出现
+两边刷新时机不一致、互相把对方刚刷出来的令牌刷废。刷新那一行加行锁、留提前刷新窗口、
+失败**保留旧令牌**而不是清空。**签名密钥也在交付之列**——出杯回调的验签在 fulfillment
+侧做，漏了它回调一律验不过。
 
 两条边界值得单独说明：
 
@@ -59,6 +97,10 @@
 | user-service → merchant-service `ResolveScopeNames` | 把 scope 上的 id 换成名字 |
 
 其余 proto（coupon、order、payment…）目前是占位服务，没有实现，不构成契约。
+
+coffee-machine-service 是例外里的一半：它已实现 `GetDevice`（只读，供下单时校验设备
+状态，§5.8 L454），但调用方 order-service 尚未落地，所以它也不进上表——契约要等到
+真有调用方那一天才成立。写入、同步与出杯那几条链路同样还没实现。
 
 `platform/client.Dial` 决定用静态地址还是服务发现：注册中心真的实现了
 `Resolver`+`Watcher` 就走 discovery，否则退回静态地址。**这不是「发现失败就退回静态
@@ -170,6 +212,63 @@
 `packages/ui` 里用它生成级联选项，后端回填工具是 Go、读不了 npm 包，所以由
 `pnpm --filter @panda-v2/ui regions:export <file>` 导出一份 JSON 当入参——**不提交这份
 副本**，它从提交那刻就开始漂移。数据只覆盖 31 个省级，**不含港澳台**。
+
+## 小程序用户与它的后台入口
+
+C 端顾客共 4 张表，都在 `panda_identity`：`users`（账号主体，手机号可空且唯一）、
+`user_wechat_identities`（开放平台里的一个用户会有多个应用的 openid，所以拆表而不是
+在 `users` 上加两列）、`user_sessions`（**只存 refresh token 的哈希**——这张表泄露时，
+明文 token 等于可以直接冒用登录态）、`user_login_events`（登录安全事件，刻意不对
+`users` 建外键，理由与 `admin_operation_logs` 相同：账号注销后失败记录仍要可查）。
+
+**后台权限码与平台管理员分开**：`admin:miniapp-users:view` / `:manage`，不复用
+`admin:users:*`。能管平台管理员不等于该看到每一个小程序顾客的手机号，复用一个码等于把
+两批人的可见范围绑死。这也是**新造权限码**的少数正当场合之一（对照「图片上传」那条：
+那里不新造码是因为既有码本来就蕴含同样的授权，这里不是）。
+
+- 禁用走 `PATCH /v1/admin/miniapp-users/{id}/status`，在**同一个事务**里改
+  `users.status`、撤销该用户全部有效会话（`revoked_at=NOW()`，`revoke_reason='disabled'`）、
+  往 outbox 落一条审计事件（由本服务的消费者写进 `admin_operation_logs`）。撤销语句是
+  照抄的，没调 `RevokeUserSessions`——后者用连接池、会把自己的事务提交在管理事务之外。
+- **启用不撤销任何会话**（他手里本来就没有活的会话），响应里的 `revokedSessions` 为 0；
+  禁用时这个计数就是界面提示「踢下线 N 个登录态」的来源。
+- `deleted` 是用户自己注销留下的终态，后台改不了，改就是 409：后台没有「复活」入口。
+- 审计载荷里的手机号是**脱敏**的（`139******06`）：审计事件经 outbox 递到 RabbitMQ，
+  完整的手机号到那里等于多存了一份 PII。
+- 列表里 `status=deleted` 是合法的筛选值、却是非法的设置值，所以筛选与设置的校验各用
+  一个错误值——共用一个的话，筛选写错会提示「只能为 active 或 disabled」，而 `deleted`
+  明明能筛出结果。
+
+## 操作日志的读取方
+
+审计事件从产生到能看，走完整条链路：
+**业务事务内写 `message_outbox`** → relay 投递到 RabbitMQ → user-service 的消费者落
+`admin_operation_logs` → 后台页面查 `GET /v1/admin/operation-logs`。
+
+这条链路以前只有前半截：表在写、有消费者、有幂等键，但**没有任何读取方**，日志实际
+存在却看不见。加读取方时有两个位置选择：
+
+- **查询留在 user-service**，不新起一个「日志服务」。`admin_operation_logs` 属于身份
+  库，审计消费者（也就是这张表唯一的写入方）本来就住在这里，查询另起上游等于让一个
+  库有两个所有者。仓储是**一个实例服两个入口**：消费者写、后台页面读。
+- **写入侧一个字没改**。列表接口是纯只读的，没有 UPDATE / DELETE，也不会有「清空
+  日志」——权限码因此只有 `admin:operation-logs:view`，**刻意不造 `manage`**。有
+  `manage` 就意味着存在后台能改审计记录的状态，而这张表的完整性正是它的全部价值。
+  留存多久是 DBA 按留存策略处理的事，不由页面决定。
+
+**`occurred_at` 是落库时间，不是操作发生的时刻——这是这条链路的一个真实缺口。**
+`audit.Entry` 和 `messaging.Envelope` 都不带时间戳，列取的是消费者 INSERT 时的
+`NOW()`。直连链路下两者差约一秒，看起来没问题；但 relay 积压后补投的那一批会整体晚于
+实际操作时间（实测补投时看到过 04:10:50 的行对应 ~04:04:28 的操作）。**排查时如果发现
+「日志时间和操作时间对不上」，先看中间有没有积压，不要怀疑时钟。** 要修得给
+`audit.Entry` 加时间戳并一路透传到 INSERT——那会同时改动所有审计调用点，属于另一件事，
+这轮没做。
+
+列表的筛选项（模块/动作/结果/操作人/时间范围）与分页共用同一份 WHERE 与参数构造，
+`FindPage` 与 `Count` 不允许各持一份分支——两者错开的症状只在翻到第二页之后出现。
+筛选项的候选值走单独的 `GET /v1/admin/operation-logs/facets`（`SELECT DISTINCT`），
+**不在前端写死一份**：模块名由各服务的审计调用点决定，写死的那份会在下一个模块上线时
+静默少一项，而「筛选里没有我要找的模块」看起来就是日志没记上，排查方向完全错了。
 
 ## 可观测性
 

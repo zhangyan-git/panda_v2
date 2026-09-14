@@ -32,7 +32,7 @@ func TestLegacySetIsFrozen(t *testing.T) {
 }
 
 func TestSetsAreUsable(t *testing.T) {
-	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "legacy": Legacy} {
+	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "legacy": Legacy} {
 		t.Run(name, func(t *testing.T) {
 			versions, err := Versions(set)
 			if err != nil {
@@ -64,10 +64,12 @@ func TestSetsAreUsable(t *testing.T) {
 // reference, because the other service's tables simply do not exist there.
 func TestSetsDoNotCrossTheDatabaseBoundary(t *testing.T) {
 	forbidden := map[string]*regexp.Regexp{
-		"identity": regexp.MustCompile(`REFERENCES\s+(merchants|brands|stores|brand_audit_records|store_audit_records)\s*\(`),
-		"merchant": regexp.MustCompile(`REFERENCES\s+(admin_\w+|merchant_users|casbin_rule)\s*\(`),
+		"identity":       regexp.MustCompile(`REFERENCES\s+(merchants|brands|stores|brand_audit_records|store_audit_records)\s*\(`),
+		"merchant":       regexp.MustCompile(`REFERENCES\s+(admin_\w+|merchant_users|casbin_rule)\s*\(`),
+		"coupon":         regexp.MustCompile(`REFERENCES\s+(merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule)\s*\(`),
+		"coffee_machine": regexp.MustCompile(`REFERENCES\s+(merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule|coupon_\w+|user_coupons|payment_methods)\s*\(`),
 	}
-	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant} {
+	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine} {
 		t.Run(name, func(t *testing.T) {
 			versions, err := Versions(set)
 			if err != nil {
@@ -86,9 +88,55 @@ func TestSetsDoNotCrossTheDatabaseBoundary(t *testing.T) {
 	}
 }
 
-// Both message sets must add the lease columns before indexing them: the ALTERs
-// exist to upgrade tables created by the earliest schema, which had no lease
-// columns at all, and an index on a column that does not exist yet fails.
+// Every database needs its own pair of message tables — the outbox is written in
+// the same transaction as the business row, so it cannot be a shared table. That
+// makes four copies of the same DDL, and four places to forget.
+//
+// The copies are compared on their CREATE TABLE column lists, in order. Comments,
+// formatting, and the ALTER block the identity and merchant sets carry (it exists
+// to upgrade tables built by the earliest schema) deliberately do not take part:
+// a fresh database writes the lease columns into CREATE TABLE, an existing one
+// adds them afterwards, and both are correct. What must not differ is the column
+// set itself — a relay reading a column that one database never got fails only
+// there, while every other set's tests stay green.
+var messageTableCopies = []struct {
+	set   fs.FS
+	file  string
+	label string
+}{
+	{Identity, "003_message_outbox_inbox.sql", "identity"},
+	{Merchant, "002_message_outbox_inbox.sql", "merchant"},
+	{Coupon, "001_coupon_core.sql", "coupon"},
+	{CoffeeMachine, "001_coffee_machine_core.sql", "coffee_machine"},
+}
+
+func TestMessageTablesStayInSyncAcrossSets(t *testing.T) {
+	for _, table := range []string{"message_outbox", "message_inbox"} {
+		t.Run(table, func(t *testing.T) {
+			var want []string
+			wantLabel := ""
+			for _, copy := range messageTableCopies {
+				got := tableColumns(readMigration(t, copy.set, copy.file), table)
+				if len(got) == 0 {
+					t.Fatalf("%s: %s not found in %s", copy.label, table, copy.file)
+				}
+				if want == nil {
+					want, wantLabel = got, copy.label
+					continue
+				}
+				if strings.Join(got, "|") != strings.Join(want, "|") {
+					t.Errorf("%s %s has drifted from %s:\n %v\n %v", copy.label, table, wantLabel, got, want)
+				}
+			}
+		})
+	}
+}
+
+// The lease columns must exist before the index on them: the ALTER block exists to
+// upgrade tables built by the earliest schema, which had no lease columns at all,
+// and creating an index on a column that does not exist yet fails outright. In the
+// two fresh-database sets the column is part of CREATE TABLE instead, so the test
+// asks where lease_until is first mentioned rather than looking for an ALTER.
 func TestMessageTablesAddLeaseColumnsBeforeIndexes(t *testing.T) {
 	identity := readMigration(t, Identity, "003_message_outbox_inbox.sql")
 	merchant := readMigration(t, Merchant, "002_message_outbox_inbox.sql")
@@ -96,13 +144,36 @@ func TestMessageTablesAddLeaseColumnsBeforeIndexes(t *testing.T) {
 	if stripComments(identity) != stripComments(merchant) {
 		t.Error("identity and merchant message migrations have drifted apart")
 	}
-	for label, migration := range map[string]string{"identity": identity, "merchant": merchant} {
-		alter := strings.Index(migration, "ALTER TABLE message_outbox ADD COLUMN IF NOT EXISTS lease_until")
-		index := strings.Index(migration, "CREATE INDEX IF NOT EXISTS message_outbox_lease_idx")
-		if alter < 0 || index < 0 || alter > index {
-			t.Errorf("%s: lease column migration must precede lease index creation", label)
+	for _, copy := range messageTableCopies {
+		migration := readMigration(t, copy.set, copy.file)
+		// The outbox block always precedes the inbox one, so the first mention of
+		// the column is the outbox's.
+		column := strings.Index(migration, "lease_until")
+		index := strings.Index(migration, "message_outbox_lease_idx")
+		if column < 0 || index < 0 || column > index {
+			t.Errorf("%s: lease_until must be introduced before message_outbox_lease_idx (column at %d, index at %d)", copy.label, column, index)
 		}
 	}
+}
+
+// tableColumns returns the column definitions of one CREATE TABLE, in order and
+// without the trailing commas. One column per line is the convention these four
+// copies already follow, so anything else here is a parse failure worth seeing.
+func tableColumns(migration, table string) []string {
+	statement := regexp.MustCompile(`(?s)CREATE TABLE (?:IF NOT EXISTS )?` + table + `\s*\((.*?)\n\);`)
+	match := statement.FindStringSubmatch(migration)
+	if match == nil {
+		return nil
+	}
+	var columns []string
+	for _, line := range strings.Split(match[1], "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "--") {
+			continue
+		}
+		columns = append(columns, strings.TrimSuffix(line, ","))
+	}
+	return columns
 }
 
 // stripComments drops whole-line SQL comments so two copies of the same

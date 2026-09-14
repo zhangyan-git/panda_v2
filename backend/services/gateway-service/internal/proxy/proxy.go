@@ -29,7 +29,13 @@ const (
 type Config struct {
 	MerchantServiceURL string
 	UserServiceURL     string
-	RequestTimeout     time.Duration
+	// CouponServiceURL 可留空：优惠券服务尚未上线时，/v1/admin/coupons 保持
+	// 404，与「没有这个上游」的语义一致。填了才注册该路由。
+	CouponServiceURL string
+	// CoffeeMachineServiceURL 同上：可留空，留空时 /v1/admin/coffee-machines 保持
+	// 404。设备域是后加的服务，不填不该让网关起不来。
+	CoffeeMachineServiceURL string
+	RequestTimeout          time.Duration
 	// UploadTimeout replaces RequestTimeout for the upload path only, so one slow
 	// route does not buy every other route a two-minute hang.
 	UploadTimeout time.Duration
@@ -58,6 +64,22 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("user service URL: %w", err)
 	}
+	// 只有配置了上游才构造，未配置时 coupons 走 default 分支的 404。
+	var coupon http.Handler
+	if strings.TrimSpace(cfg.CouponServiceURL) != "" {
+		coupon, err = newProxy(cfg.CouponServiceURL, cfg.HTTPClient)
+		if err != nil {
+			return nil, fmt.Errorf("coupon service URL: %w", err)
+		}
+	}
+	// 同上，设备域也是一个后加的服务。
+	var coffeeMachine http.Handler
+	if strings.TrimSpace(cfg.CoffeeMachineServiceURL) != "" {
+		coffeeMachine, err = newProxy(cfg.CoffeeMachineServiceURL, cfg.HTTPClient)
+		if err != nil {
+			return nil, fmt.Errorf("coffee machine service URL: %w", err)
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := normalizePath(r.URL.Path)
 		r.URL.Path = path
@@ -68,6 +90,12 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		timeout := cfg.RequestTimeout
 		switch {
 		case isNestedMerchantUsersPath(path),
+			// 小程序用户管理。单独一条，是因为 /v1/admin/users 的前缀匹配
+			// （下一行）管不到它——hasPathPrefix 按路径段比较，不按字符串前缀。
+			hasPathPrefix(path, "/v1/admin/miniapp-users"),
+			// 操作日志。身份库是这张表的归属方（审计消费者就住在 user-service），
+			// 所以查询也走它，不另起上游。
+			hasPathPrefix(path, "/v1/admin/operation-logs"),
 			hasPathPrefix(path, "/v1/admin/merchant-users"),
 			hasPathPrefix(path, "/v1/admin/roles"),
 			hasPathPrefix(path, "/v1/admin/permissions"),
@@ -76,7 +104,8 @@ func NewHandler(cfg Config) (http.Handler, error) {
 			hasPathPrefix(path, "/v1/admin/auth"),
 			hasPathPrefix(path, "/v1/admin/users"),
 			hasPathPrefix(path, "/v1/merchant/auth"),
-			hasPathPrefix(path, "/v1/merchant/users"):
+			hasPathPrefix(path, "/v1/merchant/users"),
+			hasPathPrefix(path, "/v1/miniapp"):
 			upstream = user
 		// The upload path goes to the same upstream as the rest of the admin API but
 		// gets its own, larger budget. Raising RequestTimeout instead would hold a
@@ -89,6 +118,12 @@ func NewHandler(cfg Config) (http.Handler, error) {
 			hasPathPrefix(path, "/v1/admin/brands"),
 			hasPathPrefix(path, "/v1/admin/stores"):
 			upstream = merchant
+		case coupon != nil && hasPathPrefix(path, "/v1/admin/coupons"):
+			upstream = coupon
+		// 设备域（厂商 / 咖啡机设备 / 饮品）。它和上面几条都没有共同前缀，落到
+		// default 就是 404，而 404 在页面上表现为「接口不存在」，看着像后端没部署。
+		case coffeeMachine != nil && hasPathPrefix(path, "/v1/admin/coffee-machines"):
+			upstream = coffeeMachine
 		default:
 			http.NotFound(w, r)
 			return

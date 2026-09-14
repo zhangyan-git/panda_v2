@@ -1,19 +1,95 @@
 syntax = "proto3";
-package coffee_machine.v1;
+package panda.coffee_machine.v1;
 option go_package = "github.com/panda-dev/panda-v2/contracts/proto/coffee_machine/v1";
-message Manufacturer { string id = 1; string name = 2; string contact_name = 3; string contact_phone = 4; }
-message Device { string id = 1; string manufacturer_id = 2; string name = 3; string serial_number = 4; string location = 5; string status = 6; }
-message Drink { string id = 1; string name = 2; string description = 3; int64 price = 4; string status = 5; }
-message DeviceDrink { string device_id = 1; string drink_id = 2; bool enabled = 3; }
+
+// 设备域的内部契约。消息字段与 panda_coffee_machine 库的表一一对应；金额一律是
+// 最小货币单位（分）的整数。
+//
+// 删掉的东西同样是有意的：主数据之外的 ID（legacy_id）不出现在这里，它只用于
+// 旧库迁移对账，不是接口。门店、商户、用户、订单、支付方式目录都不是本服务的，
+// 所以这些字段里出现的外部 ID 都只是值引用，本服务不校验对方是否存在。
+
+message Manufacturer {
+  string id = 1;
+  // 稳定业务标识，创建后不可修改；旧系统靠它关联设备、饮品与出杯分支。
+  string code = 2;
+  string name = 3;
+  string contact_name = 4;
+  string contact_phone = 5;
+  // active=启用，disabled=停用。
+  string status = 6;
+}
+
+message Device {
+  string id = 1;
+  string manufacturer_id = 2;
+  string serial_unique = 3;
+  string device_name = 4;
+  // 部署点位，属于 merchant-service。仅作值引用。
+  string store_id = 5;
+  // 本系统是否启用：active=启用，disabled=停用。
+  //
+  // 这一列与下面的 vendor_online 是两件事，不能压成一个 status：status 是
+  // 「我们让不让它用」，vendor_online 是「厂商说它此刻通不通」。下单校验（方案
+  // 5.8）两条都要看。
+  string status = 6;
+  // 厂商上报的在线状态。用 optional 是为了保住第三种情况：从未同步过不等于
+  // 离线，读到一个零值 false 的调用方分不清「我们知道它离线」和「我们不知道」。
+  optional bool vendor_online = 7;
+  // 最近一次厂商同步时间，用于判断上面那个在线状态有多旧。
+  optional int64 last_synced_at_unix = 8;
+  // 最近一次故障码与描述，空串表示没有故障记录。
+  string last_fault_code = 9;
+  string last_fault_message = 10;
+}
+
+message Drink {
+  string id = 1;
+  string manufacturer_id = 2;
+  // 厂商侧饮品 ID。空串表示后台手工新建、不参与同步判重的饮品。
+  string origin_id = 3;
+  string product_num = 4;
+  string product_name = 5;
+  // milk_coffee | black_coffee | other，空串表示未分类。
+  string drink_type = 6;
+  string product_desc = 7;
+  string product_img = 8;
+  // 三级价格，单位分。
+  int64 price = 9;
+  int64 vip_price = 10;
+  int64 pickup_code_price = 11;
+  // on_shelf=上架，off_shelf=下架。
+  string status = 12;
+}
+
+message DeviceDrink {
+  string device_id = 1;
+  string drink_id = 2;
+  bool enabled = 3;
+  int32 sort_order = 4;
+  // 每机覆盖价，单位分。optional 保住 NULL 与 0 的区别：0 是「这台机器上按 0 元
+  // 卖」，未设置才是「沿用饮品目录价」。
+  optional int64 price = 5;
+  optional int64 vip_price = 6;
+  optional int64 pickup_code_price = 7;
+}
 
 message ManufacturerID { string id = 1; }
 message DeviceID { string id = 1; }
 message DrinkID { string id = 1; }
 message ListManufacturersRequest {}
 message ListManufacturersResponse { repeated Manufacturer manufacturers = 1; }
-message ListDevicesRequest { string manufacturer_id = 1; string status = 2; }
+message ListDevicesRequest {
+  string manufacturer_id = 1;
+  string status = 2;
+  // 按部署点位过滤，属于 merchant-service 的 ID。
+  string store_id = 3;
+}
 message ListDevicesResponse { repeated Device devices = 1; }
-message ListDrinksRequest { string status = 1; }
+message ListDrinksRequest {
+  string manufacturer_id = 1;
+  string status = 2;
+}
 message ListDrinksResponse { repeated Drink drinks = 1; }
 message UpsertDeviceDrinkRequest { DeviceDrink relation = 1; }
 message ListDeviceDrinksRequest { string device_id = 1; }
@@ -21,6 +97,9 @@ message ListDeviceDrinksResponse { repeated DeviceDrink relations = 1; }
 message DeleteResponse { bool deleted = 1; }
 
 service CoffeeMachineService {
+  // GetDevice 是本服务对出杯链路的唯一义务：下单时校验设备状态（方案 5.8）。
+  // 调用方是 order-service 与 inventory，两者都只要读。
+  rpc GetDevice(DeviceID) returns (Device);
   rpc ListManufacturers(ListManufacturersRequest) returns (ListManufacturersResponse);
   rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
   rpc ListDrinks(ListDrinksRequest) returns (ListDrinksResponse);

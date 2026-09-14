@@ -114,9 +114,19 @@ func (t *throttle) wrap(next http.Handler) http.Handler {
 
 // isAuthPath 认出认证类接口。按后缀判断而不是完整路径：网关已经把 /api
 // 前缀剥掉了，但请求可能带尾斜杠，用后缀更经得起这些写法差异。
+//
+// /auth/sms 也算进来：它是登录这几条路径里唯一会让平台真的发出一条短信、
+// 而且是发给第三方手机号的接口，限流宽了就等于给人一台免费短信轰炸机。
+// 手机号维度的频控（同号 60 秒一条、错 5 次作废）在 user-service 里，
+// 这里挡的是另一半——同一来源换着手机号刷。
+//
+// 刻意不含 /auth/logout：退出登录不消耗外部资源，也没什么可刷的，而用户
+// 发现会话被盗时恰恰最需要它，不能让他卡在限流上。
 func isAuthPath(path string) bool {
 	path = strings.TrimSuffix(path, "/")
-	return strings.HasSuffix(path, "/auth/login") || strings.HasSuffix(path, "/auth/refresh")
+	return strings.HasSuffix(path, "/auth/login") ||
+		strings.HasSuffix(path, "/auth/refresh") ||
+		strings.HasSuffix(path, "/auth/sms")
 }
 
 // keyFor 把类别写进键里：两类接口各自计数，认证接口的严格额度不会被

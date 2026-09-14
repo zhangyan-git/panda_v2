@@ -14,6 +14,8 @@ jobs:
           - backend
           - backend/services/user-service
           - backend/services/merchant-service
+          - backend/services/coupon-service
+          - backend/services/coffee-machine-service
           - backend/services/gateway-service
           # The migration sets are their own module too, and they are what every
           # other module's schema assumes: a syntax error here surfaces as a

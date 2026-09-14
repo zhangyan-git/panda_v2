@@ -68,6 +68,14 @@ func TestCompatibilityRouteMatrix(t *testing.T) {
 			{"/v1/admin/merchants/users", "merchant.test"},
 			{"/v1/admin/merchants/123/456/users", "merchant.test"},
 			{"/v1/admin/merchants-extra/123/users", ""},
+			// 设备域的上游是可选配置。testConfig() 不填它，所以这一组锁的是「没配
+			// 就保持 404」——既有部署里没这个服务，不能因此把请求转到空地址上。
+			// 前缀按路径段比较：coffee-machines-extra 与 coffee-machines 不是同一个
+			// 前缀，配了上游也不该被它接走（配时的那一面在 proxy_test.go 里测）。
+			{"/v1/admin/coffee-machines/devices", ""},
+			{"/v1/admin/coffee-machines/devices/123/balance", ""},
+			{"/v1/admin/coffee-machines/manufacturers/123/status", ""},
+			{"/v1/admin/coffee-machines-extra/devices", ""},
 			{"/v1/unknown", ""},
 			{"/v1/admin", ""},
 			{"//v1/admin/users", ""},

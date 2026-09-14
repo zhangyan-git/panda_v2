@@ -1,7 +1,10 @@
 import {
   AppstoreOutlined,
+  CoffeeOutlined,
+  ContactsOutlined,
   DashboardOutlined,
   FileOutlined,
+  HistoryOutlined,
   MenuOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
@@ -24,12 +27,15 @@ export const MENU_ICONS: Record<string, ReactNode> = {
   SafetyCertificateOutlined: <SafetyCertificateOutlined />,
   TeamOutlined: <TeamOutlined />,
   UserOutlined: <UserOutlined />,
+  ContactsOutlined: <ContactsOutlined />,
+  HistoryOutlined: <HistoryOutlined />,
   MenuOutlined: <MenuOutlined />,
   AppstoreOutlined: <AppstoreOutlined />,
   FileOutlined: <FileOutlined />,
   ShopOutlined: <ShopOutlined />,
   TagOutlined: <TagOutlined />,
   EnvironmentOutlined: <EnvironmentOutlined />,
+  CoffeeOutlined: <CoffeeOutlined />,
 };
 
 export const MENU_ICON_NAMES = Object.keys(MENU_ICONS);

@@ -1,10 +1,47 @@
-import { history, type RequestConfig } from '@umijs/max';
+import { getRequestInstance, history, type RequestConfig } from '@umijs/max';
 import { renderMenuIcon } from './menuIcons';
 import { loadMyMenus, type MenuNode } from './services/menu';
 import { fetchCurrentUser, logout as logoutRequest } from './services/user';
 import type { CurrentUser } from './services/user';
+import { clearTokens, isAuthEndpoint, readTokens, refreshTokens } from './services/token';
 
 const LOGIN_PATH = '/login';
+
+/**
+ * 401 → 用 refresh token 换新 → 重放原请求，对调用方完全透明。
+ *
+ * 为什么放在 responseInterceptors 的失败回调里，而不是 errorConfig.errorHandler：
+ * umi 的 errorHandler 只是「通知」（生成的 request.ts 里调用完仍然 reject(error)），
+ * 它的返回值不会被用上，做不到「换了 token 接着把原请求跑完」。而 axios 响应拦截器
+ * 的 rejected 回调返回一个 Promise 时，整条链就换成这个 Promise 的结果。
+ */
+// 返回类型写 Promise<any> 是被 umi 的类型逼的：它把失败回调定成
+// `(error: Error) => Promise<Error>`（见 .umi/plugin-request/request.ts:118），
+// 表达不了「重放成功就 resolve」这件事。axios 运行时是支持的——失败回调返回一个
+// Promise 就用它的结果替换整条链——所以这里放宽类型，而不是削掉重放能力。
+async function retryAfterRefresh(error: any): Promise<any> {
+  const config = error?.config;
+  // 只有 401 表示「这枚 token 不认了」。403 是权限不足，刷新完还是 403。
+  if (error?.response?.status !== 401 || !config) return Promise.reject(error);
+  // 登录/刷新接口自己的 401（密码错、或 refresh token 也过期）不能再触发刷新，
+  // 否则刷新接口 401 时会自己调自己。
+  if (isAuthEndpoint(config.url)) return Promise.reject(error);
+  // 重放后的请求又 401 就不再刷新，避免「刷新 → 重放 → 401 → 刷新」转不完。
+  if (config.__pandaRetried) return Promise.reject(error);
+  config.__pandaRetried = true;
+
+  try {
+    await refreshTokens();
+  } catch {
+    // refresh token 也过期了：清干净回登录页，与 getInitialState 失败时的处理一致。
+    clearTokens();
+    if (history.location.pathname !== LOGIN_PATH) history.push(LOGIN_PATH);
+    return Promise.reject(error);
+  }
+  // 重放走同一个 axios 实例。不用手动改 Authorization：请求拦截器每次派发都会
+  // 从 localStorage 重新读一次，这时它已经是刷新后的那枚。
+  return getRequestInstance()(config);
+}
 
 /** 用姓名首字生成内联 SVG 头像，避免依赖外部 CDN */
 function initialsAvatar(name: string): string {
@@ -20,15 +57,12 @@ function initialsAvatar(name: string): string {
 export const request: RequestConfig = {
   requestInterceptors: [
     (config: any) => {
-      const raw = localStorage.getItem('panda.auth.tokens');
-      if (raw) {
-        try {
-          const { accessToken } = JSON.parse(raw) as { accessToken: string };
-          config.headers = {
-            ...(config.headers || {}),
-            Authorization: `Bearer ${accessToken}`,
-          };
-        } catch { /* ignore */ }
+      const tokens = readTokens();
+      if (tokens) {
+        config.headers = {
+          ...(config.headers || {}),
+          Authorization: `Bearer ${tokens.accessToken}`,
+        };
       }
       return config;
     },
@@ -48,6 +82,9 @@ export const request: RequestConfig = {
       }
       return response;
     },
+    // 元组形式 = axios 的 [onFulfilled, onRejected]。成功分支必须是恒等函数：
+    // 上面那个拦截器已经把信封拆过了，这里只是把失败分支挂上去。
+    [(response: any) => response, retryAfterRefresh],
   ],
 };
 
@@ -79,7 +116,7 @@ export const layout = ({
     const { location } = history;
     if (location.pathname === LOGIN_PATH) return;
     // 优先检查 initialState，其次检查 localStorage 是否有 token（登录后 setInitialState 可能还未同步）
-    if (!initialState?.currentUser && !localStorage.getItem('panda.auth.tokens')) {
+    if (!initialState?.currentUser && !readTokens()) {
       history.push(LOGIN_PATH);
     }
   },
@@ -88,7 +125,7 @@ export const layout = ({
     try {
       await logoutRequest();
     } finally {
-      localStorage.removeItem('panda.auth.tokens');
+      clearTokens();
       history.push(LOGIN_PATH);
     }
   },
@@ -101,8 +138,7 @@ export async function getInitialState(): Promise<{
   name?: string;
   avatar?: string | false;
 }> {
-  const raw = localStorage.getItem('panda.auth.tokens');
-  if (!raw) return {};
+  if (!readTokens()) return {};
   try {
     const currentUser = await fetchCurrentUser();
     const name = currentUser.name || currentUser.username;
@@ -116,7 +152,9 @@ export async function getInitialState(): Promise<{
       avatar: initialsAvatar(name),
     };
   } catch {
-    localStorage.removeItem('panda.auth.tokens');
+    // access token 过期且刷新失败时，拦截器已经清过一遍；这里兜的是
+    // loadMyMenus 之类的其他失败，一并当登录态不可用处理。
+    clearTokens();
     return {};
   }
 }

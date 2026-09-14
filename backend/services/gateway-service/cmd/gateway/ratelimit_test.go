@@ -19,6 +19,12 @@ func TestIsAuthPath(t *testing.T) {
 		{"/v1/admin/auth/logout", false},
 		{"/v1/admin/users", false},
 		{"/v1/admin/auth/login-extra", false},
+		// 小程序：发短信要走严格额度（真发短信、且发给第三方手机号），
+		// 退出登录不能——会话被盗时用户最需要它，卡在限流上就说不过去了。
+		{"/v1/miniapp/auth/sms", true},
+		{"/v1/miniapp/auth/sms/", true},
+		{"/v1/miniapp/auth/logout", false},
+		{"/v1/miniapp/users/me", false},
 	} {
 		if got := isAuthPath(tc.path); got != tc.want {
 			t.Errorf("isAuthPath(%q) = %v, want %v", tc.path, got, tc.want)

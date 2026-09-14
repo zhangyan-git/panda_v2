@@ -53,8 +53,12 @@ func main() {
 	h, err := proxy.NewHandler(proxy.Config{
 		MerchantServiceURL: requiredEnv("MERCHANT_SERVICE_URL"),
 		UserServiceURL:     requiredEnv("USER_SERVICE_URL"),
-		RequestTimeout:     timeout,
-		UploadTimeout:      uploadTimeout,
+		// 优惠券服务是后加的，留空时 /v1/admin/coupons 保持 404，不阻塞既有部署。
+		CouponServiceURL: os.Getenv("COUPON_SERVICE_URL"),
+		// 设备域同理。
+		CoffeeMachineServiceURL: os.Getenv("COFFEE_MACHINE_SERVICE_URL"),
+		RequestTimeout:          timeout,
+		UploadTimeout:           uploadTimeout,
 	})
 	if err != nil {
 		log.Fatalf("gateway-service: configure proxy: %v", err)

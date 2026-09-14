@@ -22,11 +22,15 @@ const (
 )
 
 type Manufacturer struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	ContactName   string                 `protobuf:"bytes,3,opt,name=contact_name,json=contactName,proto3" json:"contact_name,omitempty"`
-	ContactPhone  string                 `protobuf:"bytes,4,opt,name=contact_phone,json=contactPhone,proto3" json:"contact_phone,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// 稳定业务标识，创建后不可修改；旧系统靠它关联设备、饮品与出杯分支。
+	Code         string `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
+	Name         string `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	ContactName  string `protobuf:"bytes,4,opt,name=contact_name,json=contactName,proto3" json:"contact_name,omitempty"`
+	ContactPhone string `protobuf:"bytes,5,opt,name=contact_phone,json=contactPhone,proto3" json:"contact_phone,omitempty"`
+	// active=启用，disabled=停用。
+	Status        string `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -68,6 +72,13 @@ func (x *Manufacturer) GetId() string {
 	return ""
 }
 
+func (x *Manufacturer) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
 func (x *Manufacturer) GetName() string {
 	if x != nil {
 		return x.Name
@@ -89,16 +100,37 @@ func (x *Manufacturer) GetContactPhone() string {
 	return ""
 }
 
+func (x *Manufacturer) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
 type Device struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	ManufacturerId string                 `protobuf:"bytes,2,opt,name=manufacturer_id,json=manufacturerId,proto3" json:"manufacturer_id,omitempty"`
-	Name           string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
-	SerialNumber   string                 `protobuf:"bytes,4,opt,name=serial_number,json=serialNumber,proto3" json:"serial_number,omitempty"`
-	Location       string                 `protobuf:"bytes,5,opt,name=location,proto3" json:"location,omitempty"`
-	Status         string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	SerialUnique   string                 `protobuf:"bytes,3,opt,name=serial_unique,json=serialUnique,proto3" json:"serial_unique,omitempty"`
+	DeviceName     string                 `protobuf:"bytes,4,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
+	// 部署点位，属于 merchant-service。仅作值引用。
+	StoreId string `protobuf:"bytes,5,opt,name=store_id,json=storeId,proto3" json:"store_id,omitempty"`
+	// 本系统是否启用：active=启用，disabled=停用。
+	//
+	// 这一列与下面的 vendor_online 是两件事，不能压成一个 status：status 是
+	// 「我们让不让它用」，vendor_online 是「厂商说它此刻通不通」。下单校验（方案
+	// 5.8）两条都要看。
+	Status string `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
+	// 厂商上报的在线状态。用 optional 是为了保住第三种情况：从未同步过不等于
+	// 离线，读到一个零值 false 的调用方分不清「我们知道它离线」和「我们不知道」。
+	VendorOnline *bool `protobuf:"varint,7,opt,name=vendor_online,json=vendorOnline,proto3,oneof" json:"vendor_online,omitempty"`
+	// 最近一次厂商同步时间，用于判断上面那个在线状态有多旧。
+	LastSyncedAtUnix *int64 `protobuf:"varint,8,opt,name=last_synced_at_unix,json=lastSyncedAtUnix,proto3,oneof" json:"last_synced_at_unix,omitempty"`
+	// 最近一次故障码与描述，空串表示没有故障记录。
+	LastFaultCode    string `protobuf:"bytes,9,opt,name=last_fault_code,json=lastFaultCode,proto3" json:"last_fault_code,omitempty"`
+	LastFaultMessage string `protobuf:"bytes,10,opt,name=last_fault_message,json=lastFaultMessage,proto3" json:"last_fault_message,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Device) Reset() {
@@ -145,23 +177,23 @@ func (x *Device) GetManufacturerId() string {
 	return ""
 }
 
-func (x *Device) GetName() string {
+func (x *Device) GetSerialUnique() string {
 	if x != nil {
-		return x.Name
+		return x.SerialUnique
 	}
 	return ""
 }
 
-func (x *Device) GetSerialNumber() string {
+func (x *Device) GetDeviceName() string {
 	if x != nil {
-		return x.SerialNumber
+		return x.DeviceName
 	}
 	return ""
 }
 
-func (x *Device) GetLocation() string {
+func (x *Device) GetStoreId() string {
 	if x != nil {
-		return x.Location
+		return x.StoreId
 	}
 	return ""
 }
@@ -173,13 +205,52 @@ func (x *Device) GetStatus() string {
 	return ""
 }
 
+func (x *Device) GetVendorOnline() bool {
+	if x != nil && x.VendorOnline != nil {
+		return *x.VendorOnline
+	}
+	return false
+}
+
+func (x *Device) GetLastSyncedAtUnix() int64 {
+	if x != nil && x.LastSyncedAtUnix != nil {
+		return *x.LastSyncedAtUnix
+	}
+	return 0
+}
+
+func (x *Device) GetLastFaultCode() string {
+	if x != nil {
+		return x.LastFaultCode
+	}
+	return ""
+}
+
+func (x *Device) GetLastFaultMessage() string {
+	if x != nil {
+		return x.LastFaultMessage
+	}
+	return ""
+}
+
 type Drink struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
-	Price         int64                  `protobuf:"varint,4,opt,name=price,proto3" json:"price,omitempty"`
-	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	ManufacturerId string                 `protobuf:"bytes,2,opt,name=manufacturer_id,json=manufacturerId,proto3" json:"manufacturer_id,omitempty"`
+	// 厂商侧饮品 ID。空串表示后台手工新建、不参与同步判重的饮品。
+	OriginId    string `protobuf:"bytes,3,opt,name=origin_id,json=originId,proto3" json:"origin_id,omitempty"`
+	ProductNum  string `protobuf:"bytes,4,opt,name=product_num,json=productNum,proto3" json:"product_num,omitempty"`
+	ProductName string `protobuf:"bytes,5,opt,name=product_name,json=productName,proto3" json:"product_name,omitempty"`
+	// milk_coffee | black_coffee | other，空串表示未分类。
+	DrinkType   string `protobuf:"bytes,6,opt,name=drink_type,json=drinkType,proto3" json:"drink_type,omitempty"`
+	ProductDesc string `protobuf:"bytes,7,opt,name=product_desc,json=productDesc,proto3" json:"product_desc,omitempty"`
+	ProductImg  string `protobuf:"bytes,8,opt,name=product_img,json=productImg,proto3" json:"product_img,omitempty"`
+	// 三级价格，单位分。
+	Price           int64 `protobuf:"varint,9,opt,name=price,proto3" json:"price,omitempty"`
+	VipPrice        int64 `protobuf:"varint,10,opt,name=vip_price,json=vipPrice,proto3" json:"vip_price,omitempty"`
+	PickupCodePrice int64 `protobuf:"varint,11,opt,name=pickup_code_price,json=pickupCodePrice,proto3" json:"pickup_code_price,omitempty"`
+	// on_shelf=上架，off_shelf=下架。
+	Status        string `protobuf:"bytes,12,opt,name=status,proto3" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -221,16 +292,51 @@ func (x *Drink) GetId() string {
 	return ""
 }
 
-func (x *Drink) GetName() string {
+func (x *Drink) GetManufacturerId() string {
 	if x != nil {
-		return x.Name
+		return x.ManufacturerId
 	}
 	return ""
 }
 
-func (x *Drink) GetDescription() string {
+func (x *Drink) GetOriginId() string {
 	if x != nil {
-		return x.Description
+		return x.OriginId
+	}
+	return ""
+}
+
+func (x *Drink) GetProductNum() string {
+	if x != nil {
+		return x.ProductNum
+	}
+	return ""
+}
+
+func (x *Drink) GetProductName() string {
+	if x != nil {
+		return x.ProductName
+	}
+	return ""
+}
+
+func (x *Drink) GetDrinkType() string {
+	if x != nil {
+		return x.DrinkType
+	}
+	return ""
+}
+
+func (x *Drink) GetProductDesc() string {
+	if x != nil {
+		return x.ProductDesc
+	}
+	return ""
+}
+
+func (x *Drink) GetProductImg() string {
+	if x != nil {
+		return x.ProductImg
 	}
 	return ""
 }
@@ -238,6 +344,20 @@ func (x *Drink) GetDescription() string {
 func (x *Drink) GetPrice() int64 {
 	if x != nil {
 		return x.Price
+	}
+	return 0
+}
+
+func (x *Drink) GetVipPrice() int64 {
+	if x != nil {
+		return x.VipPrice
+	}
+	return 0
+}
+
+func (x *Drink) GetPickupCodePrice() int64 {
+	if x != nil {
+		return x.PickupCodePrice
 	}
 	return 0
 }
@@ -250,12 +370,18 @@ func (x *Drink) GetStatus() string {
 }
 
 type DeviceDrink struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DeviceId      string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	DrinkId       string                 `protobuf:"bytes,2,opt,name=drink_id,json=drinkId,proto3" json:"drink_id,omitempty"`
-	Enabled       bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	DeviceId  string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	DrinkId   string                 `protobuf:"bytes,2,opt,name=drink_id,json=drinkId,proto3" json:"drink_id,omitempty"`
+	Enabled   bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	SortOrder int32                  `protobuf:"varint,4,opt,name=sort_order,json=sortOrder,proto3" json:"sort_order,omitempty"`
+	// 每机覆盖价，单位分。optional 保住 NULL 与 0 的区别：0 是「这台机器上按 0 元
+	// 卖」，未设置才是「沿用饮品目录价」。
+	Price           *int64 `protobuf:"varint,5,opt,name=price,proto3,oneof" json:"price,omitempty"`
+	VipPrice        *int64 `protobuf:"varint,6,opt,name=vip_price,json=vipPrice,proto3,oneof" json:"vip_price,omitempty"`
+	PickupCodePrice *int64 `protobuf:"varint,7,opt,name=pickup_code_price,json=pickupCodePrice,proto3,oneof" json:"pickup_code_price,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *DeviceDrink) Reset() {
@@ -307,6 +433,34 @@ func (x *DeviceDrink) GetEnabled() bool {
 		return x.Enabled
 	}
 	return false
+}
+
+func (x *DeviceDrink) GetSortOrder() int32 {
+	if x != nil {
+		return x.SortOrder
+	}
+	return 0
+}
+
+func (x *DeviceDrink) GetPrice() int64 {
+	if x != nil && x.Price != nil {
+		return *x.Price
+	}
+	return 0
+}
+
+func (x *DeviceDrink) GetVipPrice() int64 {
+	if x != nil && x.VipPrice != nil {
+		return *x.VipPrice
+	}
+	return 0
+}
+
+func (x *DeviceDrink) GetPickupCodePrice() int64 {
+	if x != nil && x.PickupCodePrice != nil {
+		return *x.PickupCodePrice
+	}
+	return 0
 }
 
 type ManufacturerID struct {
@@ -525,8 +679,10 @@ type ListDevicesRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	ManufacturerId string                 `protobuf:"bytes,1,opt,name=manufacturer_id,json=manufacturerId,proto3" json:"manufacturer_id,omitempty"`
 	Status         string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// 按部署点位过滤，属于 merchant-service 的 ID。
+	StoreId       string `protobuf:"bytes,3,opt,name=store_id,json=storeId,proto3" json:"store_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListDevicesRequest) Reset() {
@@ -569,6 +725,13 @@ func (x *ListDevicesRequest) GetManufacturerId() string {
 func (x *ListDevicesRequest) GetStatus() string {
 	if x != nil {
 		return x.Status
+	}
+	return ""
+}
+
+func (x *ListDevicesRequest) GetStoreId() string {
+	if x != nil {
+		return x.StoreId
 	}
 	return ""
 }
@@ -618,10 +781,11 @@ func (x *ListDevicesResponse) GetDevices() []*Device {
 }
 
 type ListDrinksRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ManufacturerId string                 `protobuf:"bytes,1,opt,name=manufacturer_id,json=manufacturerId,proto3" json:"manufacturer_id,omitempty"`
+	Status         string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ListDrinksRequest) Reset() {
@@ -652,6 +816,13 @@ func (x *ListDrinksRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ListDrinksRequest.ProtoReflect.Descriptor instead.
 func (*ListDrinksRequest) Descriptor() ([]byte, []int) {
 	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ListDrinksRequest) GetManufacturerId() string {
+	if x != nil {
+		return x.ManufacturerId
+	}
+	return ""
 }
 
 func (x *ListDrinksRequest) GetStatus() string {
@@ -885,65 +1056,98 @@ var File_coffee_machine_v1_coffee_machine_proto protoreflect.FileDescriptor
 
 const file_coffee_machine_v1_coffee_machine_proto_rawDesc = "" +
 	"\n" +
-	"&coffee_machine/v1/coffee_machine.proto\x12\x11coffee_machine.v1\"z\n" +
+	"&coffee_machine/v1/coffee_machine.proto\x12\x17panda.coffee_machine.v1\"\xa6\x01\n" +
 	"\fManufacturer\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12!\n" +
-	"\fcontact_name\x18\x03 \x01(\tR\vcontactName\x12#\n" +
-	"\rcontact_phone\x18\x04 \x01(\tR\fcontactPhone\"\xae\x01\n" +
+	"\x04code\x18\x02 \x01(\tR\x04code\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12!\n" +
+	"\fcontact_name\x18\x04 \x01(\tR\vcontactName\x12#\n" +
+	"\rcontact_phone\x18\x05 \x01(\tR\fcontactPhone\x12\x16\n" +
+	"\x06status\x18\x06 \x01(\tR\x06status\"\x98\x03\n" +
 	"\x06Device\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
-	"\x0fmanufacturer_id\x18\x02 \x01(\tR\x0emanufacturerId\x12\x12\n" +
-	"\x04name\x18\x03 \x01(\tR\x04name\x12#\n" +
-	"\rserial_number\x18\x04 \x01(\tR\fserialNumber\x12\x1a\n" +
-	"\blocation\x18\x05 \x01(\tR\blocation\x12\x16\n" +
-	"\x06status\x18\x06 \x01(\tR\x06status\"{\n" +
+	"\x0fmanufacturer_id\x18\x02 \x01(\tR\x0emanufacturerId\x12#\n" +
+	"\rserial_unique\x18\x03 \x01(\tR\fserialUnique\x12\x1f\n" +
+	"\vdevice_name\x18\x04 \x01(\tR\n" +
+	"deviceName\x12\x19\n" +
+	"\bstore_id\x18\x05 \x01(\tR\astoreId\x12\x16\n" +
+	"\x06status\x18\x06 \x01(\tR\x06status\x12(\n" +
+	"\rvendor_online\x18\a \x01(\bH\x00R\fvendorOnline\x88\x01\x01\x122\n" +
+	"\x13last_synced_at_unix\x18\b \x01(\x03H\x01R\x10lastSyncedAtUnix\x88\x01\x01\x12&\n" +
+	"\x0flast_fault_code\x18\t \x01(\tR\rlastFaultCode\x12,\n" +
+	"\x12last_fault_message\x18\n" +
+	" \x01(\tR\x10lastFaultMessageB\x10\n" +
+	"\x0e_vendor_onlineB\x16\n" +
+	"\x14_last_synced_at_unix\"\xfb\x02\n" +
 	"\x05Drink\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
-	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x14\n" +
-	"\x05price\x18\x04 \x01(\x03R\x05price\x12\x16\n" +
-	"\x06status\x18\x05 \x01(\tR\x06status\"_\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
+	"\x0fmanufacturer_id\x18\x02 \x01(\tR\x0emanufacturerId\x12\x1b\n" +
+	"\torigin_id\x18\x03 \x01(\tR\boriginId\x12\x1f\n" +
+	"\vproduct_num\x18\x04 \x01(\tR\n" +
+	"productNum\x12!\n" +
+	"\fproduct_name\x18\x05 \x01(\tR\vproductName\x12\x1d\n" +
+	"\n" +
+	"drink_type\x18\x06 \x01(\tR\tdrinkType\x12!\n" +
+	"\fproduct_desc\x18\a \x01(\tR\vproductDesc\x12\x1f\n" +
+	"\vproduct_img\x18\b \x01(\tR\n" +
+	"productImg\x12\x14\n" +
+	"\x05price\x18\t \x01(\x03R\x05price\x12\x1b\n" +
+	"\tvip_price\x18\n" +
+	" \x01(\x03R\bvipPrice\x12*\n" +
+	"\x11pickup_code_price\x18\v \x01(\x03R\x0fpickupCodePrice\x12\x16\n" +
+	"\x06status\x18\f \x01(\tR\x06status\"\x9a\x02\n" +
 	"\vDeviceDrink\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x19\n" +
 	"\bdrink_id\x18\x02 \x01(\tR\adrinkId\x12\x18\n" +
-	"\aenabled\x18\x03 \x01(\bR\aenabled\" \n" +
+	"\aenabled\x18\x03 \x01(\bR\aenabled\x12\x1d\n" +
+	"\n" +
+	"sort_order\x18\x04 \x01(\x05R\tsortOrder\x12\x19\n" +
+	"\x05price\x18\x05 \x01(\x03H\x00R\x05price\x88\x01\x01\x12 \n" +
+	"\tvip_price\x18\x06 \x01(\x03H\x01R\bvipPrice\x88\x01\x01\x12/\n" +
+	"\x11pickup_code_price\x18\a \x01(\x03H\x02R\x0fpickupCodePrice\x88\x01\x01B\b\n" +
+	"\x06_priceB\f\n" +
+	"\n" +
+	"_vip_priceB\x14\n" +
+	"\x12_pickup_code_price\" \n" +
 	"\x0eManufacturerID\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x1a\n" +
 	"\bDeviceID\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x19\n" +
 	"\aDrinkID\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x1a\n" +
-	"\x18ListManufacturersRequest\"b\n" +
-	"\x19ListManufacturersResponse\x12E\n" +
-	"\rmanufacturers\x18\x01 \x03(\v2\x1f.coffee_machine.v1.ManufacturerR\rmanufacturers\"U\n" +
+	"\x18ListManufacturersRequest\"h\n" +
+	"\x19ListManufacturersResponse\x12K\n" +
+	"\rmanufacturers\x18\x01 \x03(\v2%.panda.coffee_machine.v1.ManufacturerR\rmanufacturers\"p\n" +
 	"\x12ListDevicesRequest\x12'\n" +
 	"\x0fmanufacturer_id\x18\x01 \x01(\tR\x0emanufacturerId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"J\n" +
-	"\x13ListDevicesResponse\x123\n" +
-	"\adevices\x18\x01 \x03(\v2\x19.coffee_machine.v1.DeviceR\adevices\"+\n" +
-	"\x11ListDrinksRequest\x12\x16\n" +
-	"\x06status\x18\x01 \x01(\tR\x06status\"F\n" +
-	"\x12ListDrinksResponse\x120\n" +
-	"\x06drinks\x18\x01 \x03(\v2\x18.coffee_machine.v1.DrinkR\x06drinks\"V\n" +
-	"\x18UpsertDeviceDrinkRequest\x12:\n" +
-	"\brelation\x18\x01 \x01(\v2\x1e.coffee_machine.v1.DeviceDrinkR\brelation\"6\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x19\n" +
+	"\bstore_id\x18\x03 \x01(\tR\astoreId\"P\n" +
+	"\x13ListDevicesResponse\x129\n" +
+	"\adevices\x18\x01 \x03(\v2\x1f.panda.coffee_machine.v1.DeviceR\adevices\"T\n" +
+	"\x11ListDrinksRequest\x12'\n" +
+	"\x0fmanufacturer_id\x18\x01 \x01(\tR\x0emanufacturerId\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"L\n" +
+	"\x12ListDrinksResponse\x126\n" +
+	"\x06drinks\x18\x01 \x03(\v2\x1e.panda.coffee_machine.v1.DrinkR\x06drinks\"\\\n" +
+	"\x18UpsertDeviceDrinkRequest\x12@\n" +
+	"\brelation\x18\x01 \x01(\v2$.panda.coffee_machine.v1.DeviceDrinkR\brelation\"6\n" +
 	"\x17ListDeviceDrinksRequest\x12\x1b\n" +
-	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\"X\n" +
-	"\x18ListDeviceDrinksResponse\x12<\n" +
-	"\trelations\x18\x01 \x03(\v2\x1e.coffee_machine.v1.DeviceDrinkR\trelations\"*\n" +
+	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\"^\n" +
+	"\x18ListDeviceDrinksResponse\x12B\n" +
+	"\trelations\x18\x01 \x03(\v2$.panda.coffee_machine.v1.DeviceDrinkR\trelations\"*\n" +
 	"\x0eDeleteResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\bR\adeleted2\x88\x06\n" +
-	"\x14CoffeeMachineService\x12n\n" +
-	"\x11ListManufacturers\x12+.coffee_machine.v1.ListManufacturersRequest\x1a,.coffee_machine.v1.ListManufacturersResponse\x12\\\n" +
-	"\vListDevices\x12%.coffee_machine.v1.ListDevicesRequest\x1a&.coffee_machine.v1.ListDevicesResponse\x12Y\n" +
+	"\adeleted\x18\x01 \x01(\bR\adeleted2\xb9\a\n" +
+	"\x14CoffeeMachineService\x12O\n" +
+	"\tGetDevice\x12!.panda.coffee_machine.v1.DeviceID\x1a\x1f.panda.coffee_machine.v1.Device\x12z\n" +
+	"\x11ListManufacturers\x121.panda.coffee_machine.v1.ListManufacturersRequest\x1a2.panda.coffee_machine.v1.ListManufacturersResponse\x12h\n" +
+	"\vListDevices\x12+.panda.coffee_machine.v1.ListDevicesRequest\x1a,.panda.coffee_machine.v1.ListDevicesResponse\x12e\n" +
 	"\n" +
-	"ListDrinks\x12$.coffee_machine.v1.ListDrinksRequest\x1a%.coffee_machine.v1.ListDrinksResponse\x12`\n" +
-	"\x11UpsertDeviceDrink\x12+.coffee_machine.v1.UpsertDeviceDrinkRequest\x1a\x1e.coffee_machine.v1.DeviceDrink\x12k\n" +
-	"\x10ListDeviceDrinks\x12*.coffee_machine.v1.ListDeviceDrinksRequest\x1a+.coffee_machine.v1.ListDeviceDrinksResponse\x12Z\n" +
-	"\x12DeleteManufacturer\x12!.coffee_machine.v1.ManufacturerID\x1a!.coffee_machine.v1.DeleteResponse\x12N\n" +
-	"\fDeleteDevice\x12\x1b.coffee_machine.v1.DeviceID\x1a!.coffee_machine.v1.DeleteResponse\x12L\n" +
-	"\vDeleteDrink\x12\x1a.coffee_machine.v1.DrinkID\x1a!.coffee_machine.v1.DeleteResponseBAZ?github.com/panda-dev/panda-v2/contracts/proto/coffee_machine/v1b\x06proto3"
+	"ListDrinks\x12*.panda.coffee_machine.v1.ListDrinksRequest\x1a+.panda.coffee_machine.v1.ListDrinksResponse\x12l\n" +
+	"\x11UpsertDeviceDrink\x121.panda.coffee_machine.v1.UpsertDeviceDrinkRequest\x1a$.panda.coffee_machine.v1.DeviceDrink\x12w\n" +
+	"\x10ListDeviceDrinks\x120.panda.coffee_machine.v1.ListDeviceDrinksRequest\x1a1.panda.coffee_machine.v1.ListDeviceDrinksResponse\x12f\n" +
+	"\x12DeleteManufacturer\x12'.panda.coffee_machine.v1.ManufacturerID\x1a'.panda.coffee_machine.v1.DeleteResponse\x12Z\n" +
+	"\fDeleteDevice\x12!.panda.coffee_machine.v1.DeviceID\x1a'.panda.coffee_machine.v1.DeleteResponse\x12X\n" +
+	"\vDeleteDrink\x12 .panda.coffee_machine.v1.DrinkID\x1a'.panda.coffee_machine.v1.DeleteResponseBAZ?github.com/panda-dev/panda-v2/contracts/proto/coffee_machine/v1b\x06proto3"
 
 var (
 	file_coffee_machine_v1_coffee_machine_proto_rawDescOnce sync.Once
@@ -959,48 +1163,50 @@ func file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP() []byte {
 
 var file_coffee_machine_v1_coffee_machine_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_coffee_machine_v1_coffee_machine_proto_goTypes = []any{
-	(*Manufacturer)(nil),              // 0: coffee_machine.v1.Manufacturer
-	(*Device)(nil),                    // 1: coffee_machine.v1.Device
-	(*Drink)(nil),                     // 2: coffee_machine.v1.Drink
-	(*DeviceDrink)(nil),               // 3: coffee_machine.v1.DeviceDrink
-	(*ManufacturerID)(nil),            // 4: coffee_machine.v1.ManufacturerID
-	(*DeviceID)(nil),                  // 5: coffee_machine.v1.DeviceID
-	(*DrinkID)(nil),                   // 6: coffee_machine.v1.DrinkID
-	(*ListManufacturersRequest)(nil),  // 7: coffee_machine.v1.ListManufacturersRequest
-	(*ListManufacturersResponse)(nil), // 8: coffee_machine.v1.ListManufacturersResponse
-	(*ListDevicesRequest)(nil),        // 9: coffee_machine.v1.ListDevicesRequest
-	(*ListDevicesResponse)(nil),       // 10: coffee_machine.v1.ListDevicesResponse
-	(*ListDrinksRequest)(nil),         // 11: coffee_machine.v1.ListDrinksRequest
-	(*ListDrinksResponse)(nil),        // 12: coffee_machine.v1.ListDrinksResponse
-	(*UpsertDeviceDrinkRequest)(nil),  // 13: coffee_machine.v1.UpsertDeviceDrinkRequest
-	(*ListDeviceDrinksRequest)(nil),   // 14: coffee_machine.v1.ListDeviceDrinksRequest
-	(*ListDeviceDrinksResponse)(nil),  // 15: coffee_machine.v1.ListDeviceDrinksResponse
-	(*DeleteResponse)(nil),            // 16: coffee_machine.v1.DeleteResponse
+	(*Manufacturer)(nil),              // 0: panda.coffee_machine.v1.Manufacturer
+	(*Device)(nil),                    // 1: panda.coffee_machine.v1.Device
+	(*Drink)(nil),                     // 2: panda.coffee_machine.v1.Drink
+	(*DeviceDrink)(nil),               // 3: panda.coffee_machine.v1.DeviceDrink
+	(*ManufacturerID)(nil),            // 4: panda.coffee_machine.v1.ManufacturerID
+	(*DeviceID)(nil),                  // 5: panda.coffee_machine.v1.DeviceID
+	(*DrinkID)(nil),                   // 6: panda.coffee_machine.v1.DrinkID
+	(*ListManufacturersRequest)(nil),  // 7: panda.coffee_machine.v1.ListManufacturersRequest
+	(*ListManufacturersResponse)(nil), // 8: panda.coffee_machine.v1.ListManufacturersResponse
+	(*ListDevicesRequest)(nil),        // 9: panda.coffee_machine.v1.ListDevicesRequest
+	(*ListDevicesResponse)(nil),       // 10: panda.coffee_machine.v1.ListDevicesResponse
+	(*ListDrinksRequest)(nil),         // 11: panda.coffee_machine.v1.ListDrinksRequest
+	(*ListDrinksResponse)(nil),        // 12: panda.coffee_machine.v1.ListDrinksResponse
+	(*UpsertDeviceDrinkRequest)(nil),  // 13: panda.coffee_machine.v1.UpsertDeviceDrinkRequest
+	(*ListDeviceDrinksRequest)(nil),   // 14: panda.coffee_machine.v1.ListDeviceDrinksRequest
+	(*ListDeviceDrinksResponse)(nil),  // 15: panda.coffee_machine.v1.ListDeviceDrinksResponse
+	(*DeleteResponse)(nil),            // 16: panda.coffee_machine.v1.DeleteResponse
 }
 var file_coffee_machine_v1_coffee_machine_proto_depIdxs = []int32{
-	0,  // 0: coffee_machine.v1.ListManufacturersResponse.manufacturers:type_name -> coffee_machine.v1.Manufacturer
-	1,  // 1: coffee_machine.v1.ListDevicesResponse.devices:type_name -> coffee_machine.v1.Device
-	2,  // 2: coffee_machine.v1.ListDrinksResponse.drinks:type_name -> coffee_machine.v1.Drink
-	3,  // 3: coffee_machine.v1.UpsertDeviceDrinkRequest.relation:type_name -> coffee_machine.v1.DeviceDrink
-	3,  // 4: coffee_machine.v1.ListDeviceDrinksResponse.relations:type_name -> coffee_machine.v1.DeviceDrink
-	7,  // 5: coffee_machine.v1.CoffeeMachineService.ListManufacturers:input_type -> coffee_machine.v1.ListManufacturersRequest
-	9,  // 6: coffee_machine.v1.CoffeeMachineService.ListDevices:input_type -> coffee_machine.v1.ListDevicesRequest
-	11, // 7: coffee_machine.v1.CoffeeMachineService.ListDrinks:input_type -> coffee_machine.v1.ListDrinksRequest
-	13, // 8: coffee_machine.v1.CoffeeMachineService.UpsertDeviceDrink:input_type -> coffee_machine.v1.UpsertDeviceDrinkRequest
-	14, // 9: coffee_machine.v1.CoffeeMachineService.ListDeviceDrinks:input_type -> coffee_machine.v1.ListDeviceDrinksRequest
-	4,  // 10: coffee_machine.v1.CoffeeMachineService.DeleteManufacturer:input_type -> coffee_machine.v1.ManufacturerID
-	5,  // 11: coffee_machine.v1.CoffeeMachineService.DeleteDevice:input_type -> coffee_machine.v1.DeviceID
-	6,  // 12: coffee_machine.v1.CoffeeMachineService.DeleteDrink:input_type -> coffee_machine.v1.DrinkID
-	8,  // 13: coffee_machine.v1.CoffeeMachineService.ListManufacturers:output_type -> coffee_machine.v1.ListManufacturersResponse
-	10, // 14: coffee_machine.v1.CoffeeMachineService.ListDevices:output_type -> coffee_machine.v1.ListDevicesResponse
-	12, // 15: coffee_machine.v1.CoffeeMachineService.ListDrinks:output_type -> coffee_machine.v1.ListDrinksResponse
-	3,  // 16: coffee_machine.v1.CoffeeMachineService.UpsertDeviceDrink:output_type -> coffee_machine.v1.DeviceDrink
-	15, // 17: coffee_machine.v1.CoffeeMachineService.ListDeviceDrinks:output_type -> coffee_machine.v1.ListDeviceDrinksResponse
-	16, // 18: coffee_machine.v1.CoffeeMachineService.DeleteManufacturer:output_type -> coffee_machine.v1.DeleteResponse
-	16, // 19: coffee_machine.v1.CoffeeMachineService.DeleteDevice:output_type -> coffee_machine.v1.DeleteResponse
-	16, // 20: coffee_machine.v1.CoffeeMachineService.DeleteDrink:output_type -> coffee_machine.v1.DeleteResponse
-	13, // [13:21] is the sub-list for method output_type
-	5,  // [5:13] is the sub-list for method input_type
+	0,  // 0: panda.coffee_machine.v1.ListManufacturersResponse.manufacturers:type_name -> panda.coffee_machine.v1.Manufacturer
+	1,  // 1: panda.coffee_machine.v1.ListDevicesResponse.devices:type_name -> panda.coffee_machine.v1.Device
+	2,  // 2: panda.coffee_machine.v1.ListDrinksResponse.drinks:type_name -> panda.coffee_machine.v1.Drink
+	3,  // 3: panda.coffee_machine.v1.UpsertDeviceDrinkRequest.relation:type_name -> panda.coffee_machine.v1.DeviceDrink
+	3,  // 4: panda.coffee_machine.v1.ListDeviceDrinksResponse.relations:type_name -> panda.coffee_machine.v1.DeviceDrink
+	5,  // 5: panda.coffee_machine.v1.CoffeeMachineService.GetDevice:input_type -> panda.coffee_machine.v1.DeviceID
+	7,  // 6: panda.coffee_machine.v1.CoffeeMachineService.ListManufacturers:input_type -> panda.coffee_machine.v1.ListManufacturersRequest
+	9,  // 7: panda.coffee_machine.v1.CoffeeMachineService.ListDevices:input_type -> panda.coffee_machine.v1.ListDevicesRequest
+	11, // 8: panda.coffee_machine.v1.CoffeeMachineService.ListDrinks:input_type -> panda.coffee_machine.v1.ListDrinksRequest
+	13, // 9: panda.coffee_machine.v1.CoffeeMachineService.UpsertDeviceDrink:input_type -> panda.coffee_machine.v1.UpsertDeviceDrinkRequest
+	14, // 10: panda.coffee_machine.v1.CoffeeMachineService.ListDeviceDrinks:input_type -> panda.coffee_machine.v1.ListDeviceDrinksRequest
+	4,  // 11: panda.coffee_machine.v1.CoffeeMachineService.DeleteManufacturer:input_type -> panda.coffee_machine.v1.ManufacturerID
+	5,  // 12: panda.coffee_machine.v1.CoffeeMachineService.DeleteDevice:input_type -> panda.coffee_machine.v1.DeviceID
+	6,  // 13: panda.coffee_machine.v1.CoffeeMachineService.DeleteDrink:input_type -> panda.coffee_machine.v1.DrinkID
+	1,  // 14: panda.coffee_machine.v1.CoffeeMachineService.GetDevice:output_type -> panda.coffee_machine.v1.Device
+	8,  // 15: panda.coffee_machine.v1.CoffeeMachineService.ListManufacturers:output_type -> panda.coffee_machine.v1.ListManufacturersResponse
+	10, // 16: panda.coffee_machine.v1.CoffeeMachineService.ListDevices:output_type -> panda.coffee_machine.v1.ListDevicesResponse
+	12, // 17: panda.coffee_machine.v1.CoffeeMachineService.ListDrinks:output_type -> panda.coffee_machine.v1.ListDrinksResponse
+	3,  // 18: panda.coffee_machine.v1.CoffeeMachineService.UpsertDeviceDrink:output_type -> panda.coffee_machine.v1.DeviceDrink
+	15, // 19: panda.coffee_machine.v1.CoffeeMachineService.ListDeviceDrinks:output_type -> panda.coffee_machine.v1.ListDeviceDrinksResponse
+	16, // 20: panda.coffee_machine.v1.CoffeeMachineService.DeleteManufacturer:output_type -> panda.coffee_machine.v1.DeleteResponse
+	16, // 21: panda.coffee_machine.v1.CoffeeMachineService.DeleteDevice:output_type -> panda.coffee_machine.v1.DeleteResponse
+	16, // 22: panda.coffee_machine.v1.CoffeeMachineService.DeleteDrink:output_type -> panda.coffee_machine.v1.DeleteResponse
+	14, // [14:23] is the sub-list for method output_type
+	5,  // [5:14] is the sub-list for method input_type
 	5,  // [5:5] is the sub-list for extension type_name
 	5,  // [5:5] is the sub-list for extension extendee
 	0,  // [0:5] is the sub-list for field type_name
@@ -1011,6 +1217,8 @@ func file_coffee_machine_v1_coffee_machine_proto_init() {
 	if File_coffee_machine_v1_coffee_machine_proto != nil {
 		return
 	}
+	file_coffee_machine_v1_coffee_machine_proto_msgTypes[1].OneofWrappers = []any{}
+	file_coffee_machine_v1_coffee_machine_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
