@@ -27,8 +27,14 @@ var (
 	ErrRegularQrcodePaymentBad    = errors.New("支付方式只能为 fengxuan_wanlian 或 youlian")
 
 	ErrDrinkNameRequired         = errors.New("饮品名称不能为空")
-	ErrDrinkManufacturerRequired = errors.New("饮品必须归属一个厂商")
-	ErrDrinkTypeInvalid          = errors.New("drinkType 只能为 milk_coffee、black_coffee 或 other")
+	// ErrDrinkDeviceRequired 是新建饮品时的必填：饮品行就是「某台设备上的一杯」，
+	// 没有设备的行卖不出去，只会在列表里显示成「未分配设备」。编辑时允许传空——
+	// 库里那几行遗留的无设备饮品得有个地方能挂上去，但**不能**从界面上造出新的。
+	ErrDrinkDeviceRequired = errors.New("饮品必须挂到一台设备上")
+	// ErrDrinkDeviceInvalid 挡的是格式错的 deviceId。device_id 是 uuid 列，一个
+	// "abc" 会让 PostgreSQL 在参数解析阶段报 22P02 并以 500 收场，而这明摆着是填错了。
+	ErrDrinkDeviceInvalid = errors.New("deviceId 必须是合法的设备 ID")
+	ErrDrinkTypeInvalid   = errors.New("drinkType 只能为 milk_coffee、black_coffee 或 other")
 	ErrPriceNegative             = errors.New("价格不能为负数")
 	// ErrDrinkPriceInvalid 对应数据库那条 CHECK (price > 0 OR (vip_price = 0 AND
 	// pickup_code_price = 0))：原价为 0 时只允许整款饮品三级价全为 0（免费的），
@@ -41,6 +47,17 @@ var (
 
 	ErrBalanceAmountZero        = errors.New("调整金额不能为 0")
 	ErrBalanceRequestIDRequired = errors.New("requestId 不能为空")
+
+	// ErrStoreNotFound 表示设备要挂的点位在商户服务里不存在。以前这个 id 是裸值引用，
+	// 填错了照样能存：设备会一直挂在一个不存在的地方，直到有人拿它去授权或派单才发现。
+	ErrStoreNotFound = errors.New("点位不存在")
+	// ErrStoreDisabled 表示点位存在但已停用。停用的点位不该再往上挂设备，理由和停用
+	// 的设备不该接单一样。
+	ErrStoreDisabled = errors.New("点位已停用，不能挂载设备")
+	// ErrStoreUnavailable 表示这次没能确认点位状态（商户服务不可用、超时或应答看不懂）。
+	// 它不是输入问题：确认不了就不写，也绝不退回「不校验」——校验只在问得到的时候才
+	// 生效，等于没有校验。控制器把它映射成 503 而不是 400。
+	ErrStoreUnavailable = errors.New("门店服务暂时不可用，无法确认点位")
 )
 
 // ValidationErrors 收齐所有「输入不合法」的哨兵错误。
@@ -52,10 +69,12 @@ var ValidationErrors = []error{
 	ErrManufacturerCodeRequired, ErrManufacturerNameRequired,
 	ErrDeviceSerialRequired, ErrDeviceManufacturerRequired,
 	ErrQrcodeTypeInvalid, ErrRegularQrcodePaymentNeeded, ErrRegularQrcodePaymentBad,
-	ErrDrinkNameRequired, ErrDrinkManufacturerRequired, ErrDrinkTypeInvalid,
+	ErrDrinkNameRequired,
+	ErrDrinkDeviceRequired, ErrDrinkDeviceInvalid, ErrDrinkTypeInvalid,
 	ErrPriceNegative, ErrDrinkPriceInvalid,
 	ErrManufacturerStatusInvalid, ErrDeviceStatusInvalid, ErrDrinkStatusInvalid,
 	ErrBalanceAmountZero, ErrBalanceRequestIDRequired,
+	ErrStoreNotFound, ErrStoreDisabled,
 }
 
 // IsValidationError 表示这个错误是「输入不合法」，该回 400。
@@ -79,16 +98,26 @@ var (
 	validDrinkTypes            = map[string]bool{"milk_coffee": true, "black_coffee": true, "other": true}
 )
 
+// StoreResolver 回答「这个点位现在能不能挂设备」。
+//
+// 端口定义在消费方：跨服务调用是 gRPC 还是别的，是 main 装配时才定的事，业务规则
+// 不该知道。返回 found 而不是靠一个哨兵错误表示「不存在」，是因为这个包的实现方
+// （internal/client）不能反过来 import 本包来共享哨兵。
+type StoreResolver interface {
+	Resolve(ctx context.Context, storeID string) (status string, found bool, err error)
+}
+
 // AdminService 提供设备域主数据的后台写操作。
 //
 // 校验只做到「能不能落库、落库之后语义对不对」，不做「该不该这么做」的审批判断：
 // 方案里设备域没有品牌/门店那种审核流程，后台改完即生效，改动留痕走审计。
 type AdminService struct {
-	admin repository.AdminRepository
+	admin  repository.AdminRepository
+	stores StoreResolver
 }
 
-func NewAdminService(admin repository.AdminRepository) *AdminService {
-	return &AdminService{admin: admin}
+func NewAdminService(admin repository.AdminRepository, stores StoreResolver) *AdminService {
+	return &AdminService{admin: admin, stores: stores}
 }
 
 // ============================================================
@@ -151,6 +180,9 @@ func (s *AdminService) CreateDevice(ctx context.Context, in dto.DeviceInput) (*m
 	if err != nil {
 		return nil, err
 	}
+	if err := s.checkStore(ctx, device.StoreID); err != nil {
+		return nil, err
+	}
 	// 创建时留空就是没有静态验证码（列是 NOT NULL DEFAULT ''，不是 NULL）；没填就
 	// 保持结构体的零值。
 	if password := trimPickupPassword(in.PickupPassword); password != nil {
@@ -162,6 +194,10 @@ func (s *AdminService) CreateDevice(ctx context.Context, in dto.DeviceInput) (*m
 func (s *AdminService) UpdateDevice(ctx context.Context, id string, in dto.DeviceInput) (*model.Device, error) {
 	device, err := s.buildDevice(id, in)
 	if err != nil {
+		return nil, err
+	}
+	// 编辑与新建的差别就在这一句：新建一定要校验，编辑只在换了点位时校验。
+	if err := s.checkStoreIfChanged(ctx, id, device.StoreID); err != nil {
 		return nil, err
 	}
 	device.UpdatedAt = time.Now()
@@ -217,6 +253,74 @@ func (s *AdminService) buildDevice(id string, in dto.DeviceInput) (*model.Device
 	}, nil
 }
 
+// checkStore 确认要挂的点位真实存在且没被停用。
+//
+// store_id 是跨库的值引用，本库没有外键能拦它，所以这个判断只能在这里做——而且只在
+// **写的时候**做一次：真到用的时候（派单、授权）再问一次是另一件事，那时设备已经
+// 在某个点位上，问出来的结果是「它现在能不能用」，不是「当初挂得对不对」。
+//
+// 摘掉点位（nil）不需要校验，它没有指向任何东西。新建走这里，没有条件；编辑要先问
+// 「这次动没动点位」，见 checkStoreIfChanged——那才是「挂在停用点位上的设备还能不能
+// 改别的字段」这条规则的所在地。
+func (s *AdminService) checkStore(ctx context.Context, storeID *string) error {
+	if storeID == nil {
+		return nil
+	}
+	// 形状先于存在性。商户库那一列是 uuid，把一个不是 uuid 的字符串递过去，Postgres
+	// 抛的是 22P02（语法错），不是「查无此行」；商户服务只把 pgx.ErrNoRows 映射成
+	// NotFound，于是它变成 Internal，到这儿就成了 503「门店服务暂时不可用」。填错
+	// 一个 id 却被告知对方服务挂了，重试永远不会好——而这本来就是个 400。
+	//
+	// 放在问商户服务之前，也是让它在 s.stores 缺席时照样能给对答案：能不能认出这是个
+	// id，不需要问任何人。
+	if _, err := uuid.Parse(*storeID); err != nil {
+		return ErrStoreNotFound
+	}
+	if s.stores == nil {
+		return errors.New("admin service: store resolver is not configured")
+	}
+	status, found, err := s.stores.Resolve(ctx, *storeID)
+	if err != nil {
+		return errors.Join(ErrStoreUnavailable, err)
+	}
+	if !found {
+		return ErrStoreNotFound
+	}
+	if status != "active" {
+		return ErrStoreDisabled
+	}
+	return nil
+}
+
+// checkStoreIfChanged 只在这次真的换了点位时才校验。
+//
+// 设备本来就挂在 X、这次保存也没改这一栏，就不该再问一遍 X 还能不能用：点位停用是
+// 门店的事，设备该不该跟着下线由人去决定，不该让一次「只想改提货码」的保存被另一个
+// 模块的状态拦住——而且报错会写着「点位已停用，不能挂载设备」，把操作人指到一个他
+// 根本没碰过的字段上。真正要拦的是「把设备挂到一个不存在或已停用的点位上」这个动作。
+//
+// 判据必须是库里那一行，不能是入参：入参里只有「这次要写成什么」，没有「原来是什么」，
+// 只看入参的话「没动」和「换成一个同样停用的点位」长得一模一样。
+//
+// 多出来的这次读不会让「没校验过的值」落库：跳过校验的那条路上，写回去的就是刚读上
+// 来的那个值，而它当初挂上去时是校验过的（新建和换点位都校验），归纳成立。
+func (s *AdminService) checkStoreIfChanged(ctx context.Context, deviceID string, storeID *string) error {
+	if storeID == nil {
+		// 摘掉点位没有指向任何东西，不必校验，这次读也省了。
+		return nil
+	}
+	current, err := s.admin.DeviceStoreID(ctx, deviceID)
+	if err != nil {
+		// 读不到当前值就无从比较。设备不存在会在这里变成 repository.ErrDeviceNotFound
+		// 交给上层回 404——比先报「点位不对」再发现设备根本没有更顺。
+		return err
+	}
+	if current != nil && *current == *storeID {
+		return nil
+	}
+	return s.checkStore(ctx, storeID)
+}
+
 func (s *AdminService) SetDeviceStatus(ctx context.Context, id, status string) error {
 	if status != "active" && status != "disabled" {
 		return ErrDeviceStatusInvalid
@@ -233,8 +337,9 @@ func (s *AdminService) CreateDrink(ctx context.Context, in dto.DrinkInput) (*mod
 	if name == "" {
 		return nil, ErrDrinkNameRequired
 	}
-	if strings.TrimSpace(in.ManufacturerID) == "" {
-		return nil, ErrDrinkManufacturerRequired
+	deviceID, err := normalizeDrinkDeviceID(in.DeviceID, true)
+	if err != nil {
+		return nil, err
 	}
 	drinkType, err := normalizeDrinkType(in.DrinkType)
 	if err != nil {
@@ -243,9 +348,19 @@ func (s *AdminService) CreateDrink(ctx context.Context, in dto.DrinkInput) (*mod
 	if err := checkPrices(in.Price, in.VipPrice, in.PickupCodePrice); err != nil {
 		return nil, err
 	}
+	// 厂商取自设备，不由调用方给：厂商挂在设备上，饮品跟着设备走。两边各填一次的话，
+	// 迟早会有一条饮品的厂商和它那台设备对不上，而那种行既卖不出去也查不出来。
+	//
+	// 放在上面几条之后：这是本次唯一的库读，入参本身就错的请求不该先付出一次查库，
+	// 也不该让「设备不存在」盖掉「饮品类型非法」——要改的是哪个字段，报错就该说哪个。
+	manufacturerID, err := s.admin.DeviceManufacturerID(ctx, *deviceID)
+	if err != nil {
+		return nil, err
+	}
 	d := &model.Drink{
 		ID:              uuid.NewString(),
-		ManufacturerID:  strings.TrimSpace(in.ManufacturerID),
+		DeviceID:        deviceID,
+		ManufacturerID:  manufacturerID,
 		OriginID:        strings.TrimSpace(in.OriginID),
 		ProductNum:      strings.TrimSpace(in.ProductNum),
 		ProductName:     name,
@@ -261,12 +376,19 @@ func (s *AdminService) CreateDrink(ctx context.Context, in dto.DrinkInput) (*mod
 	return s.admin.CreateDrink(ctx, d)
 }
 
-// UpdateDrink 改目录字段。入参里没有 manufacturerId / originId，理由见
+// UpdateDrink 改饮品这一行的可编辑列。入参里没有 manufacturerId / originId，理由见
 // repository.UpdateDrink：那是厂商同步的自然键，改了会让这一行再也匹配不上。
+//
+// 设备详情那一屏改价、改排序走的也是这个接口——饮品行自带 device_id，没有另一条
+// 「设备上的饮品」写路径了。deviceId 是整行覆盖语义：不传就是「不挂设备」。
 func (s *AdminService) UpdateDrink(ctx context.Context, id string, in dto.DrinkUpdateInput) (*model.Drink, error) {
 	name := strings.TrimSpace(in.ProductName)
 	if name == "" {
 		return nil, ErrDrinkNameRequired
+	}
+	deviceID, err := normalizeDrinkDeviceID(in.DeviceID, false)
+	if err != nil {
+		return nil, err
 	}
 	drinkType, err := normalizeDrinkType(in.DrinkType)
 	if err != nil {
@@ -277,6 +399,7 @@ func (s *AdminService) UpdateDrink(ctx context.Context, id string, in dto.DrinkU
 	}
 	d := &model.Drink{
 		ID:              id,
+		DeviceID:        deviceID,
 		ProductNum:      strings.TrimSpace(in.ProductNum),
 		ProductName:     name,
 		EnName:          strings.TrimSpace(in.EnName),
@@ -300,6 +423,34 @@ func (s *AdminService) SetDrinkStatus(ctx context.Context, id, status string) er
 		return ErrDrinkStatusInvalid
 	}
 	return s.admin.SetDrinkStatus(ctx, id, status)
+}
+
+// normalizeDrinkDeviceID 归一化饮品行上的设备 ID：去空白、空串当没填、非空必须是
+// 合法 UUID，并回规范写法（大小写、无花括号那几种写法都收敛成同一个值）。
+//
+// required 为真时「没填」是错误（新建），为假时表示「摘下来」（编辑整行覆盖）。
+// 归一之后交给事务里的外键去判设备在不在：那一条能顺手把并发删除挡在同一个事务里，
+// 而在这里先查一次会多一趟往返，还挡不住查完与写入之间的那一瞬。
+func normalizeDrinkDeviceID(raw *string, required bool) (*string, error) {
+	if raw == nil {
+		if required {
+			return nil, ErrDrinkDeviceRequired
+		}
+		return nil, nil
+	}
+	value := strings.TrimSpace(*raw)
+	if value == "" {
+		if required {
+			return nil, ErrDrinkDeviceRequired
+		}
+		return nil, nil
+	}
+	parsed, err := uuid.Parse(value)
+	if err != nil {
+		return nil, ErrDrinkDeviceInvalid
+	}
+	normalized := parsed.String()
+	return &normalized, nil
 }
 
 // normalizeDrinkType 把「没填」和「填空串」都归一成 nil：drink_type 可空，而

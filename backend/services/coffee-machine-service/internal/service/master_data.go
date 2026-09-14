@@ -9,12 +9,18 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/coffee-machine-service/internal/repository"
 )
 
-// 列表接口的分页边界。MaxPageSize 比 api.MaxPageSize（200）紧一档，与优惠券侧
-// 一致：收紧要改调用方，放宽不用，所以先取紧的。它对外可见，是因为控制器要把它
-// 传给 api.ParsePage 当作拒收上限——上限值只在这一处定义。
+// 列表接口的分页边界，取值与 platform/api.MaxPageSize 一致。
+//
+// 这里曾经是 100，理由是「没有一个要全集的下拉」。这个前提后来不成立了：设备详情页
+// 的饮品 tab 要按设备名显示与筛选，饮品管理页要把 device_id 翻成设备名，两处都先用
+// 前端「要全集」的统一参数（admin-web/src/services/pagination.ts 的 FULL_PAGE_PARAMS，
+// pageSize=200）拉一份设备全集 —— 在 100 的接口上直接 400，而调用点把失败吞掉退回显示
+// 原始 id，于是页面上安静地铺一串 uuid，正是 2026-09 优惠券侧踩过的那一跤。
+//
+// 它对外可见，是因为控制器要把它传给 api.ParsePage 当作拒收上限——上限值只在这一处定义。
 const (
 	defaultPageSize = 20
-	MaxPageSize     = 100
+	MaxPageSize     = 200
 )
 
 // MasterDataService 提供设备域主数据的读操作。
@@ -35,8 +41,9 @@ func (s *MasterDataService) ListDevices(ctx context.Context, q dto.DeviceQuery) 
 	q.Page, q.PageSize = normalizePage(q.Page, q.PageSize)
 	return s.master.ListDevices(ctx, repository.DeviceFilter{
 		ManufacturerID: q.ManufacturerID,
-		StoreID:        q.StoreID,
+		StoreIDs:       q.StoreIDs,
 		Status:         q.Status,
+		Keyword:        q.Keyword,
 		Page:           q.Page,
 		PageSize:       q.PageSize,
 	})
@@ -49,6 +56,7 @@ func (s *MasterDataService) ListManufacturers(ctx context.Context) ([]*model.Man
 func (s *MasterDataService) ListDrinks(ctx context.Context, q dto.DrinkQuery) ([]*model.Drink, int64, error) {
 	q.Page, q.PageSize = normalizePage(q.Page, q.PageSize)
 	return s.master.ListDrinks(ctx, repository.DrinkFilter{
+		DeviceID:       q.DeviceID,
 		ManufacturerID: q.ManufacturerID,
 		Status:         q.Status,
 		Page:           q.Page,
@@ -56,8 +64,17 @@ func (s *MasterDataService) ListDrinks(ctx context.Context, q dto.DrinkQuery) ([
 	})
 }
 
-func (s *MasterDataService) ListDeviceDrinks(ctx context.Context, deviceID string) ([]*model.DeviceDrink, error) {
+func (s *MasterDataService) ListDeviceDrinks(ctx context.Context, deviceID string) ([]*model.Drink, error) {
 	return s.master.ListDeviceDrinks(ctx, deviceID)
+}
+
+// ListDeviceBalanceEntries 返回一台设备的余额流水一页。设备不存在时返回
+// repository.ErrDeviceNotFound。
+func (s *MasterDataService) ListDeviceBalanceEntries(
+	ctx context.Context, deviceID string, page, pageSize int,
+) ([]*model.DeviceBalanceEntry, int64, error) {
+	page, pageSize = normalizePage(page, pageSize)
+	return s.master.ListDeviceBalanceEntries(ctx, deviceID, page, pageSize)
 }
 
 // normalizePage 把越界的分页参数收进合法范围，而不是报错：页码越界是前端筛选后

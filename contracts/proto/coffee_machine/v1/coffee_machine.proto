@@ -7,7 +7,11 @@ option go_package = "github.com/panda-dev/panda-v2/contracts/proto/coffee_machin
 //
 // 删掉的东西同样是有意的：主数据之外的 ID（legacy_id）不出现在这里，它只用于
 // 旧库迁移对账，不是接口。门店、商户、用户、订单、支付方式目录都不是本服务的，
-// 所以这些字段里出现的外部 ID 都只是值引用，本服务不校验对方是否存在。
+// 所以这些字段里出现的外部 ID 都只是值引用，本库不为它们建外键。
+//
+// 值引用不等于不校验：store_id 在写之前要问 merchant-service 这个点位存不存在、
+// 还能不能用（见 internal/client.StoreResolver 与 service.checkStore）。跨库的
+// 引用只能由持有那一方的服务来判，所以那是一次调用，不是一个外键。
 
 message Manufacturer {
   string id = 1;
@@ -25,7 +29,8 @@ message Device {
   string manufacturer_id = 2;
   string serial_unique = 3;
   string device_name = 4;
-  // 部署点位，属于 merchant-service。仅作值引用。
+  // 部署点位，属于 merchant-service。本库不建外键，写入前由本服务调 merchant-service
+  // 的 GetStore 确认点位存在且未被停用；确认不了就不写（回 503），而不是跳过校验。
   string store_id = 5;
   // 本系统是否启用：active=启用，disabled=停用。
   //

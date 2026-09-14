@@ -13,17 +13,28 @@ import (
 // ErrDeviceNotFound 表示按 ID 查不到设备。
 var ErrDeviceNotFound = errors.New("device not found")
 
-// DeviceFilter 是设备列表的过滤条件。空串表示不过滤。
+// DeviceFilter 是设备列表的过滤条件。空串/空切片表示不过滤。
+//
+// StoreIDs 是切片而不是单个值：后台的筛选栏里门店是多选，而「选了三个门店」与
+// 「一个都没选」必须区分开——后者不过滤，前者是三条 OR。传进来的每个 id 都必须是
+// 合法 UUID，见下面 ListDevices 的说明。
 type DeviceFilter struct {
 	ManufacturerID string
-	StoreID        string
+	StoreIDs       []string
 	Status         string
-	Page           int
-	PageSize       int
+	// Keyword 按设备序列号模糊匹配（后台那一栏叫「设备标识」）。设备表只有几百行，
+	// 上一个 pg_trgm 索引与它的维护成本换不来什么，所以就是一句 ILIKE。
+	Keyword  string
+	Page     int
+	PageSize int
 }
 
 // DrinkFilter 是饮品列表的过滤条件。空串表示不过滤。
+//
+// DeviceID 是给饮品管理页用的：饮品行本身就挂在设备上，所以那一页天然想看「某台设备
+// 上的饮品」。同样要转成 text 再比，理由见 ListDevices。
 type DrinkFilter struct {
+	DeviceID       string
 	ManufacturerID string
 	Status         string
 	Page           int
@@ -40,7 +51,11 @@ type MasterDataRepository interface {
 	ListDevices(ctx context.Context, filter DeviceFilter) ([]*model.Device, int64, error)
 	ListManufacturers(ctx context.Context) ([]*model.Manufacturer, error)
 	ListDrinks(ctx context.Context, filter DrinkFilter) ([]*model.Drink, int64, error)
-	ListDeviceDrinks(ctx context.Context, deviceID string) ([]*model.DeviceDrink, error)
+	// ListDeviceDrinks 返回一台设备上的全部饮品。饮品行自带 device_id，所以这就是一次
+	// 带设备条件的列表查询，不再是两张表的连接。
+	ListDeviceDrinks(ctx context.Context, deviceID string) ([]*model.Drink, error)
+	// ListDeviceBalanceEntries 返回一台设备的余额流水一页，最近的在前。
+	ListDeviceBalanceEntries(ctx context.Context, deviceID string, page, pageSize int) ([]*model.DeviceBalanceEntry, int64, error)
 }
 
 type postgresRepository struct{ pool *pgxpool.Pool }
@@ -81,16 +96,23 @@ func (r *postgresRepository) GetDevice(ctx context.Context, id string) (*model.D
 func (r *postgresRepository) ListDevices(ctx context.Context, filter DeviceFilter) ([]*model.Device, int64, error) {
 	// uuid 列必须转成 text 再比：PostgreSQL 会把参数按列类型解析，空串在 uuid 列上
 	// 直接报 invalid input syntax，即便 OR 左边永远为真。
+	//
+	// 门店那一条多了 coalesce：pgx 把 nil 切片编码成 NULL，而 cardinality(NULL) 是
+	// NULL——`NULL = 0` 不为真，整条 AND 求值成 NULL，于是「没选门店」会把每一行都
+	// 筛掉，列表空得毫无线索。
 	const where = ` WHERE ($1 = '' OR manufacturer_id::text = $1)
-		AND ($2 = '' OR store_id::text = $2)
-		AND ($3 = '' OR status = $3)`
+		AND (coalesce(cardinality($2::text[]), 0) = 0 OR store_id::text = ANY($2::text[]))
+		AND ($3 = '' OR status = $3)
+		AND ($4 = '' OR serial_unique ILIKE '%' || $4 || '%')`
 	var total int64
-	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM devices`+where, filter.ManufacturerID, filter.StoreID, filter.Status).Scan(&total); err != nil {
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM devices`+where,
+		filter.ManufacturerID, filter.StoreIDs, filter.Status, filter.Keyword).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := r.pool.Query(ctx, `SELECT `+deviceColumns+` FROM devices`+where+
-		` ORDER BY created_at DESC, id LIMIT $4 OFFSET $5`,
-		filter.ManufacturerID, filter.StoreID, filter.Status, filter.PageSize, (filter.Page-1)*filter.PageSize)
+		` ORDER BY created_at DESC, id LIMIT $5 OFFSET $6`,
+		filter.ManufacturerID, filter.StoreIDs, filter.Status, filter.Keyword,
+		filter.PageSize, (filter.Page-1)*filter.PageSize)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -135,27 +157,30 @@ func (r *postgresRepository) ListManufacturers(ctx context.Context) ([]*model.Ma
 	return manufacturers, rows.Err()
 }
 
-const drinkColumns = `id::text, manufacturer_id::text, origin_id, product_num, product_name,
-	en_name, drink_type, product_img, product_desc, price, vip_price, pickup_code_price,
-	status, sort, created_at, updated_at`
+const drinkColumns = `id::text, device_id::text, manufacturer_id::text, origin_id, product_num,
+	product_name, en_name, drink_type, product_img, product_desc, price, vip_price,
+	pickup_code_price, status, sort, created_at, updated_at`
 
 func scanDrink(row interface{ Scan(...any) error }) (*model.Drink, error) {
 	d := &model.Drink{}
-	err := row.Scan(&d.ID, &d.ManufacturerID, &d.OriginID, &d.ProductNum, &d.ProductName,
-		&d.EnName, &d.DrinkType, &d.ProductImg, &d.ProductDesc, &d.Price, &d.VipPrice,
-		&d.PickupCodePrice, &d.Status, &d.Sort, &d.CreatedAt, &d.UpdatedAt)
+	err := row.Scan(&d.ID, &d.DeviceID, &d.ManufacturerID, &d.OriginID, &d.ProductNum,
+		&d.ProductName, &d.EnName, &d.DrinkType, &d.ProductImg, &d.ProductDesc, &d.Price,
+		&d.VipPrice, &d.PickupCodePrice, &d.Status, &d.Sort, &d.CreatedAt, &d.UpdatedAt)
 	return d, err
 }
 
 func (r *postgresRepository) ListDrinks(ctx context.Context, filter DrinkFilter) ([]*model.Drink, int64, error) {
-	const where = ` WHERE ($1 = '' OR manufacturer_id::text = $1) AND ($2 = '' OR status = $2)`
+	const where = ` WHERE ($1 = '' OR device_id::text = $1)
+		AND ($2 = '' OR manufacturer_id::text = $2) AND ($3 = '' OR status = $3)`
 	var total int64
-	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM drinks`+where, filter.ManufacturerID, filter.Status).Scan(&total); err != nil {
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM drinks`+where,
+		filter.DeviceID, filter.ManufacturerID, filter.Status).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := r.pool.Query(ctx, `SELECT `+drinkColumns+` FROM drinks`+where+
-		` ORDER BY sort, created_at DESC, id LIMIT $3 OFFSET $4`,
-		filter.ManufacturerID, filter.Status, filter.PageSize, (filter.Page-1)*filter.PageSize)
+		` ORDER BY sort, created_at DESC, id LIMIT $4 OFFSET $5`,
+		filter.DeviceID, filter.ManufacturerID, filter.Status,
+		filter.PageSize, (filter.Page-1)*filter.PageSize)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -171,24 +196,89 @@ func (r *postgresRepository) ListDrinks(ctx context.Context, filter DrinkFilter)
 	return drinks, total, rows.Err()
 }
 
-// ListDeviceDrinks 返回一台设备供应的全部饮品，含每机覆盖价。
+// ListDeviceDrinks 返回一台设备上的全部饮品。
 // 不做分页：一台设备的饮品数量由设备本身决定，量级是几十。
-func (r *postgresRepository) ListDeviceDrinks(ctx context.Context, deviceID string) ([]*model.DeviceDrink, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id::text, device_id::text, drink_id::text, enabled,
-		sort_order, price, vip_price, pickup_code_price, created_at, updated_at
-		FROM device_drinks WHERE device_id = $1 ORDER BY sort_order, id`, deviceID)
+//
+// 排序用 sort 而不是 created_at：这是后台那一屏的展示次序，值越小越靠前，调完顺序
+// 就该立刻在界面上按新顺序站好。id 是决胜位，同 sort 的行要有稳定次序。
+func (r *postgresRepository) ListDeviceDrinks(ctx context.Context, deviceID string) ([]*model.Drink, error) {
+	// 先确认设备在不在。少了这一句，一个打错的 id 会得到和「这台设备还没配饮品」
+	// 完全一样的空数组，而这两件事在详情页上该说的话不同。这条查询走的是一次索引
+	// 命中，与后面的列表比不上一趟往返的成本。
+	var exists bool
+	if err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1)`, deviceID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrDeviceNotFound
+	}
+	rows, err := r.pool.Query(ctx, `SELECT `+drinkColumns+`
+		FROM drinks WHERE device_id = $1 ORDER BY sort, id`, deviceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	relations := make([]*model.DeviceDrink, 0, 16)
+	drinks := make([]*model.Drink, 0, 16)
 	for rows.Next() {
-		rel := &model.DeviceDrink{}
-		if err := rows.Scan(&rel.ID, &rel.DeviceID, &rel.DrinkID, &rel.Enabled, &rel.SortOrder,
-			&rel.Price, &rel.VipPrice, &rel.PickupCodePrice, &rel.CreatedAt, &rel.UpdatedAt); err != nil {
+		drink, err := scanDrink(rows)
+		if err != nil {
 			return nil, err
 		}
-		relations = append(relations, rel)
+		drinks = append(drinks, drink)
 	}
-	return relations, rows.Err()
+	return drinks, rows.Err()
+}
+
+const balanceEntryColumns = `id::text, device_id::text, type, amount, balance_after,
+	reverses_entry_id::text, reference_type, reference_id::text, request_id, remark,
+	operator_id::text, operator_name, created_at`
+
+func scanBalanceEntry(row interface{ Scan(...any) error }) (*model.DeviceBalanceEntry, error) {
+	e := &model.DeviceBalanceEntry{}
+	err := row.Scan(&e.ID, &e.DeviceID, &e.Type, &e.Amount, &e.BalanceAfter,
+		&e.ReversesEntryID, &e.ReferenceType, &e.ReferenceID, &e.RequestID, &e.Remark,
+		&e.OperatorID, &e.OperatorName, &e.CreatedAt)
+	return e, err
+}
+
+// ListDeviceBalanceEntries 返回一台设备的余额流水一页，最近的在前。
+//
+// 分页而不是一次给全：这张表只增不改不删，一台高频使用的设备攒下的流水没有上界，而
+// 这一屏要回答的是「最近这些钱是怎么来的」。排序走 device_balance_ledger_device_idx
+// (device_id, created_at)：倒序扫这条索引即可，不必新增索引。
+//
+// id 是排序决胜位：同一次批量操作里的若干条流水时间戳可能完全相同（NOW() 在一个事务
+// 里是同一个值），单靠时间排序没有稳定次序，翻页会重复或漏行。
+func (r *postgresRepository) ListDeviceBalanceEntries(ctx context.Context, deviceID string, page, pageSize int) ([]*model.DeviceBalanceEntry, int64, error) {
+	// 与 ListDeviceDrinks 同样的理由：一个打错的 id 要和「这台设备还没动过余额」分得开，
+	// 前者重试无用，后者是正常状态。
+	var exists bool
+	if err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1)`, deviceID).Scan(&exists); err != nil {
+		return nil, 0, err
+	}
+	if !exists {
+		return nil, 0, ErrDeviceNotFound
+	}
+	var total int64
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM device_balance_ledger WHERE device_id = $1`, deviceID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT `+balanceEntryColumns+`
+		FROM device_balance_ledger WHERE device_id = $1
+		ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`,
+		deviceID, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	entries := make([]*model.DeviceBalanceEntry, 0, pageSize)
+	for rows.Next() {
+		entry, err := scanBalanceEntry(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, total, rows.Err()
 }

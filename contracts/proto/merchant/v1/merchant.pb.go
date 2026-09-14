@@ -419,8 +419,11 @@ type Store struct {
 	District      string                 `protobuf:"bytes,9,opt,name=district,proto3" json:"district,omitempty"`
 	Address       string                 `protobuf:"bytes,10,opt,name=address,proto3" json:"address,omitempty"`
 	BusinessHours string                 `protobuf:"bytes,11,opt,name=business_hours,json=businessHours,proto3" json:"business_hours,omitempty"`
-	Longitude     float64                `protobuf:"fixed64,12,opt,name=longitude,proto3" json:"longitude,omitempty"`
-	Latitude      float64                `protobuf:"fixed64,13,opt,name=latitude,proto3" json:"latitude,omitempty"`
+	// Optional because the columns are: an uncollected coordinate is NULL, and a
+	// plain double would carry it as 0 — a real point in the Atlantic that a
+	// reader cannot tell from "nobody surveyed this store".
+	Longitude *float64 `protobuf:"fixed64,12,opt,name=longitude,proto3,oneof" json:"longitude,omitempty"`
+	Latitude  *float64 `protobuf:"fixed64,13,opt,name=latitude,proto3,oneof" json:"latitude,omitempty"`
 	// Deprecated in favor of status_code for new clients. Values are active or disabled.
 	Status          string         `protobuf:"bytes,14,opt,name=status,proto3" json:"status,omitempty"`
 	Visible         bool           `protobuf:"varint,15,opt,name=visible,proto3" json:"visible,omitempty"`
@@ -539,15 +542,15 @@ func (x *Store) GetBusinessHours() string {
 }
 
 func (x *Store) GetLongitude() float64 {
-	if x != nil {
-		return x.Longitude
+	if x != nil && x.Longitude != nil {
+		return *x.Longitude
 	}
 	return 0
 }
 
 func (x *Store) GetLatitude() float64 {
-	if x != nil {
-		return x.Latitude
+	if x != nil && x.Latitude != nil {
+		return *x.Latitude
 	}
 	return 0
 }
@@ -1433,6 +1436,104 @@ func (x *GetStoreMerchantResponse) GetMerchantId() string {
 	return ""
 }
 
+// GetStore reads one store. It answers the question GetStoreMerchant cannot:
+// not just whose the store is, but whether it is usable right now.
+//
+// The caller is coffee-machine-service, which validates a device's deployment
+// point before writing it. A store_id there is a value reference into this
+// service, and a reference nobody checks is how a device ends up deployed to a
+// store that never existed or has since been disabled.
+type GetStoreRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	StoreId       string                 `protobuf:"bytes,1,opt,name=store_id,json=storeId,proto3" json:"store_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetStoreRequest) Reset() {
+	*x = GetStoreRequest{}
+	mi := &file_merchant_v1_merchant_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetStoreRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetStoreRequest) ProtoMessage() {}
+
+func (x *GetStoreRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_merchant_v1_merchant_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetStoreRequest.ProtoReflect.Descriptor instead.
+func (*GetStoreRequest) Descriptor() ([]byte, []int) {
+	return file_merchant_v1_merchant_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *GetStoreRequest) GetStoreId() string {
+	if x != nil {
+		return x.StoreId
+	}
+	return ""
+}
+
+// A store_id that does not exist is reported as NOT_FOUND, not as an empty
+// Store: absent and empty are different answers, and a caller that has to treat
+// them alike would have to guess which one it got.
+type GetStoreResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Store         *Store                 `protobuf:"bytes,1,opt,name=store,proto3" json:"store,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetStoreResponse) Reset() {
+	*x = GetStoreResponse{}
+	mi := &file_merchant_v1_merchant_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetStoreResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetStoreResponse) ProtoMessage() {}
+
+func (x *GetStoreResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_merchant_v1_merchant_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetStoreResponse.ProtoReflect.Descriptor instead.
+func (*GetStoreResponse) Descriptor() ([]byte, []int) {
+	return file_merchant_v1_merchant_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *GetStoreResponse) GetStore() *Store {
+	if x != nil {
+		return x.Store
+	}
+	return nil
+}
+
 // ResolveScopeNamesRequest asks for the display names of the brand and store
 // scopes a set of merchant accounts points at. The two kinds travel as separate
 // lists because they live in separate tables, and one call answers a whole page
@@ -1447,7 +1548,7 @@ type ResolveScopeNamesRequest struct {
 
 func (x *ResolveScopeNamesRequest) Reset() {
 	*x = ResolveScopeNamesRequest{}
-	mi := &file_merchant_v1_merchant_proto_msgTypes[22]
+	mi := &file_merchant_v1_merchant_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1459,7 +1560,7 @@ func (x *ResolveScopeNamesRequest) String() string {
 func (*ResolveScopeNamesRequest) ProtoMessage() {}
 
 func (x *ResolveScopeNamesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_merchant_v1_merchant_proto_msgTypes[22]
+	mi := &file_merchant_v1_merchant_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1472,7 +1573,7 @@ func (x *ResolveScopeNamesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveScopeNamesRequest.ProtoReflect.Descriptor instead.
 func (*ResolveScopeNamesRequest) Descriptor() ([]byte, []int) {
-	return file_merchant_v1_merchant_proto_rawDescGZIP(), []int{22}
+	return file_merchant_v1_merchant_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ResolveScopeNamesRequest) GetBrandIds() []string {
@@ -1502,7 +1603,7 @@ type ResolveScopeNamesResponse struct {
 
 func (x *ResolveScopeNamesResponse) Reset() {
 	*x = ResolveScopeNamesResponse{}
-	mi := &file_merchant_v1_merchant_proto_msgTypes[23]
+	mi := &file_merchant_v1_merchant_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1514,7 +1615,7 @@ func (x *ResolveScopeNamesResponse) String() string {
 func (*ResolveScopeNamesResponse) ProtoMessage() {}
 
 func (x *ResolveScopeNamesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_merchant_v1_merchant_proto_msgTypes[23]
+	mi := &file_merchant_v1_merchant_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1527,7 +1628,7 @@ func (x *ResolveScopeNamesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveScopeNamesResponse.ProtoReflect.Descriptor instead.
 func (*ResolveScopeNamesResponse) Descriptor() ([]byte, []int) {
-	return file_merchant_v1_merchant_proto_rawDescGZIP(), []int{23}
+	return file_merchant_v1_merchant_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ResolveScopeNamesResponse) GetBrandNames() map[string]string {
@@ -1573,7 +1674,7 @@ const file_merchant_v1_merchant_proto_rawDesc = "" +
 	"\vstatus_code\x18\n" +
 	" \x01(\x0e2!.panda.merchant.v1.ResourceStatusR\n" +
 	"statusCode\x12J\n" +
-	"\x11audit_status_code\x18\v \x01(\x0e2\x1e.panda.merchant.v1.AuditStatusR\x0fauditStatusCode\"\xbd\x04\n" +
+	"\x11audit_status_code\x18\v \x01(\x0e2\x1e.panda.merchant.v1.AuditStatusR\x0fauditStatusCode\"\xe2\x04\n" +
 	"\x05Store\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vmerchant_id\x18\x02 \x01(\tR\n" +
@@ -1587,15 +1688,18 @@ const file_merchant_v1_merchant_proto_rawDesc = "" +
 	"\bdistrict\x18\t \x01(\tR\bdistrict\x12\x18\n" +
 	"\aaddress\x18\n" +
 	" \x01(\tR\aaddress\x12%\n" +
-	"\x0ebusiness_hours\x18\v \x01(\tR\rbusinessHours\x12\x1c\n" +
-	"\tlongitude\x18\f \x01(\x01R\tlongitude\x12\x1a\n" +
-	"\blatitude\x18\r \x01(\x01R\blatitude\x12\x16\n" +
+	"\x0ebusiness_hours\x18\v \x01(\tR\rbusinessHours\x12!\n" +
+	"\tlongitude\x18\f \x01(\x01H\x00R\tlongitude\x88\x01\x01\x12\x1f\n" +
+	"\blatitude\x18\r \x01(\x01H\x01R\blatitude\x88\x01\x01\x12\x16\n" +
 	"\x06status\x18\x0e \x01(\tR\x06status\x12\x18\n" +
 	"\avisible\x18\x0f \x01(\bR\avisible\x12!\n" +
 	"\faudit_status\x18\x10 \x01(\tR\vauditStatus\x12B\n" +
 	"\vstatus_code\x18\x11 \x01(\x0e2!.panda.merchant.v1.ResourceStatusR\n" +
 	"statusCode\x12J\n" +
-	"\x11audit_status_code\x18\x12 \x01(\x0e2\x1e.panda.merchant.v1.AuditStatusR\x0fauditStatusCode\"\x85\x01\n" +
+	"\x11audit_status_code\x18\x12 \x01(\x0e2\x1e.panda.merchant.v1.AuditStatusR\x0fauditStatusCodeB\f\n" +
+	"\n" +
+	"_longitudeB\v\n" +
+	"\t_latitude\"\x85\x01\n" +
 	"\x0fMerchantAccount\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tR\taccountId\x12\x1f\n" +
@@ -1639,7 +1743,11 @@ const file_merchant_v1_merchant_proto_rawDesc = "" +
 	"\bstore_id\x18\x01 \x01(\tR\astoreId\";\n" +
 	"\x18GetStoreMerchantResponse\x12\x1f\n" +
 	"\vmerchant_id\x18\x01 \x01(\tR\n" +
-	"merchantId\"T\n" +
+	"merchantId\",\n" +
+	"\x0fGetStoreRequest\x12\x19\n" +
+	"\bstore_id\x18\x01 \x01(\tR\astoreId\"B\n" +
+	"\x10GetStoreResponse\x12.\n" +
+	"\x05store\x18\x01 \x01(\v2\x18.panda.merchant.v1.StoreR\x05store\"T\n" +
 	"\x18ResolveScopeNamesRequest\x12\x1b\n" +
 	"\tbrand_ids\x18\x01 \x03(\tR\bbrandIds\x12\x1b\n" +
 	"\tstore_ids\x18\x02 \x03(\tR\bstoreIds\"\xd7\x02\n" +
@@ -1667,7 +1775,7 @@ const file_merchant_v1_merchant_proto_rawDesc = "" +
 	"\x18AUDIT_STATUS_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14AUDIT_STATUS_PENDING\x10\x01\x12\x19\n" +
 	"\x15AUDIT_STATUS_APPROVED\x10\x02\x12\x19\n" +
-	"\x15AUDIT_STATUS_REJECTED\x10\x032\x87\b\n" +
+	"\x15AUDIT_STATUS_REJECTED\x10\x032\xdc\b\n" +
 	"\x0fMerchantService\x12b\n" +
 	"\rListMerchants\x12'.panda.merchant.v1.ListMerchantsRequest\x1a(.panda.merchant.v1.ListMerchantsResponse\x12\\\n" +
 	"\vGetMerchant\x12%.panda.merchant.v1.GetMerchantRequest\x1a&.panda.merchant.v1.GetMerchantResponse\x12e\n" +
@@ -1678,7 +1786,8 @@ const file_merchant_v1_merchant_proto_rawDesc = "" +
 	"\aProfile\x12).panda.merchant.v1.MerchantProfileRequest\x1a*.panda.merchant.v1.MerchantProfileResponse\x12]\n" +
 	"\x06Stores\x12(.panda.merchant.v1.MerchantStoresRequest\x1a).panda.merchant.v1.MerchantStoresResponse\x12k\n" +
 	"\x10GetBrandMerchant\x12*.panda.merchant.v1.GetBrandMerchantRequest\x1a+.panda.merchant.v1.GetBrandMerchantResponse\x12k\n" +
-	"\x10GetStoreMerchant\x12*.panda.merchant.v1.GetStoreMerchantRequest\x1a+.panda.merchant.v1.GetStoreMerchantResponse\x12n\n" +
+	"\x10GetStoreMerchant\x12*.panda.merchant.v1.GetStoreMerchantRequest\x1a+.panda.merchant.v1.GetStoreMerchantResponse\x12S\n" +
+	"\bGetStore\x12\".panda.merchant.v1.GetStoreRequest\x1a#.panda.merchant.v1.GetStoreResponse\x12n\n" +
 	"\x11ResolveScopeNames\x12+.panda.merchant.v1.ResolveScopeNamesRequest\x1a,.panda.merchant.v1.ResolveScopeNamesResponseB;Z9github.com/panda-dev/panda-v2/contracts/proto/merchant/v1b\x06proto3"
 
 var (
@@ -1694,7 +1803,7 @@ func file_merchant_v1_merchant_proto_rawDescGZIP() []byte {
 }
 
 var file_merchant_v1_merchant_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_merchant_v1_merchant_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_merchant_v1_merchant_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_merchant_v1_merchant_proto_goTypes = []any{
 	(MerchantStatus)(0),               // 0: panda.merchant.v1.MerchantStatus
 	(ResourceStatus)(0),               // 1: panda.merchant.v1.ResourceStatus
@@ -1721,10 +1830,12 @@ var file_merchant_v1_merchant_proto_goTypes = []any{
 	(*GetBrandMerchantResponse)(nil),  // 22: panda.merchant.v1.GetBrandMerchantResponse
 	(*GetStoreMerchantRequest)(nil),   // 23: panda.merchant.v1.GetStoreMerchantRequest
 	(*GetStoreMerchantResponse)(nil),  // 24: panda.merchant.v1.GetStoreMerchantResponse
-	(*ResolveScopeNamesRequest)(nil),  // 25: panda.merchant.v1.ResolveScopeNamesRequest
-	(*ResolveScopeNamesResponse)(nil), // 26: panda.merchant.v1.ResolveScopeNamesResponse
-	nil,                               // 27: panda.merchant.v1.ResolveScopeNamesResponse.BrandNamesEntry
-	nil,                               // 28: panda.merchant.v1.ResolveScopeNamesResponse.StoreNamesEntry
+	(*GetStoreRequest)(nil),           // 25: panda.merchant.v1.GetStoreRequest
+	(*GetStoreResponse)(nil),          // 26: panda.merchant.v1.GetStoreResponse
+	(*ResolveScopeNamesRequest)(nil),  // 27: panda.merchant.v1.ResolveScopeNamesRequest
+	(*ResolveScopeNamesResponse)(nil), // 28: panda.merchant.v1.ResolveScopeNamesResponse
+	nil,                               // 29: panda.merchant.v1.ResolveScopeNamesResponse.BrandNamesEntry
+	nil,                               // 30: panda.merchant.v1.ResolveScopeNamesResponse.StoreNamesEntry
 }
 var file_merchant_v1_merchant_proto_depIdxs = []int32{
 	0,  // 0: panda.merchant.v1.Merchant.status_code:type_name -> panda.merchant.v1.MerchantStatus
@@ -1741,33 +1852,36 @@ var file_merchant_v1_merchant_proto_depIdxs = []int32{
 	5,  // 11: panda.merchant.v1.ListStoresResponse.stores:type_name -> panda.merchant.v1.Store
 	3,  // 12: panda.merchant.v1.MerchantProfileResponse.merchant:type_name -> panda.merchant.v1.Merchant
 	5,  // 13: panda.merchant.v1.MerchantStoresResponse.stores:type_name -> panda.merchant.v1.Store
-	27, // 14: panda.merchant.v1.ResolveScopeNamesResponse.brand_names:type_name -> panda.merchant.v1.ResolveScopeNamesResponse.BrandNamesEntry
-	28, // 15: panda.merchant.v1.ResolveScopeNamesResponse.store_names:type_name -> panda.merchant.v1.ResolveScopeNamesResponse.StoreNamesEntry
-	7,  // 16: panda.merchant.v1.MerchantService.ListMerchants:input_type -> panda.merchant.v1.ListMerchantsRequest
-	9,  // 17: panda.merchant.v1.MerchantService.GetMerchant:input_type -> panda.merchant.v1.GetMerchantRequest
-	11, // 18: panda.merchant.v1.MerchantService.CreateMerchant:input_type -> panda.merchant.v1.CreateMerchantRequest
-	13, // 19: panda.merchant.v1.MerchantService.UpdateMerchant:input_type -> panda.merchant.v1.UpdateMerchantRequest
-	15, // 20: panda.merchant.v1.MerchantService.ListStores:input_type -> panda.merchant.v1.ListStoresRequest
-	17, // 21: panda.merchant.v1.MerchantService.Profile:input_type -> panda.merchant.v1.MerchantProfileRequest
-	19, // 22: panda.merchant.v1.MerchantService.Stores:input_type -> panda.merchant.v1.MerchantStoresRequest
-	21, // 23: panda.merchant.v1.MerchantService.GetBrandMerchant:input_type -> panda.merchant.v1.GetBrandMerchantRequest
-	23, // 24: panda.merchant.v1.MerchantService.GetStoreMerchant:input_type -> panda.merchant.v1.GetStoreMerchantRequest
-	25, // 25: panda.merchant.v1.MerchantService.ResolveScopeNames:input_type -> panda.merchant.v1.ResolveScopeNamesRequest
-	8,  // 26: panda.merchant.v1.MerchantService.ListMerchants:output_type -> panda.merchant.v1.ListMerchantsResponse
-	10, // 27: panda.merchant.v1.MerchantService.GetMerchant:output_type -> panda.merchant.v1.GetMerchantResponse
-	12, // 28: panda.merchant.v1.MerchantService.CreateMerchant:output_type -> panda.merchant.v1.CreateMerchantResponse
-	14, // 29: panda.merchant.v1.MerchantService.UpdateMerchant:output_type -> panda.merchant.v1.UpdateMerchantResponse
-	16, // 30: panda.merchant.v1.MerchantService.ListStores:output_type -> panda.merchant.v1.ListStoresResponse
-	18, // 31: panda.merchant.v1.MerchantService.Profile:output_type -> panda.merchant.v1.MerchantProfileResponse
-	20, // 32: panda.merchant.v1.MerchantService.Stores:output_type -> panda.merchant.v1.MerchantStoresResponse
-	22, // 33: panda.merchant.v1.MerchantService.GetBrandMerchant:output_type -> panda.merchant.v1.GetBrandMerchantResponse
-	24, // 34: panda.merchant.v1.MerchantService.GetStoreMerchant:output_type -> panda.merchant.v1.GetStoreMerchantResponse
-	26, // 35: panda.merchant.v1.MerchantService.ResolveScopeNames:output_type -> panda.merchant.v1.ResolveScopeNamesResponse
-	26, // [26:36] is the sub-list for method output_type
-	16, // [16:26] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	5,  // 14: panda.merchant.v1.GetStoreResponse.store:type_name -> panda.merchant.v1.Store
+	29, // 15: panda.merchant.v1.ResolveScopeNamesResponse.brand_names:type_name -> panda.merchant.v1.ResolveScopeNamesResponse.BrandNamesEntry
+	30, // 16: panda.merchant.v1.ResolveScopeNamesResponse.store_names:type_name -> panda.merchant.v1.ResolveScopeNamesResponse.StoreNamesEntry
+	7,  // 17: panda.merchant.v1.MerchantService.ListMerchants:input_type -> panda.merchant.v1.ListMerchantsRequest
+	9,  // 18: panda.merchant.v1.MerchantService.GetMerchant:input_type -> panda.merchant.v1.GetMerchantRequest
+	11, // 19: panda.merchant.v1.MerchantService.CreateMerchant:input_type -> panda.merchant.v1.CreateMerchantRequest
+	13, // 20: panda.merchant.v1.MerchantService.UpdateMerchant:input_type -> panda.merchant.v1.UpdateMerchantRequest
+	15, // 21: panda.merchant.v1.MerchantService.ListStores:input_type -> panda.merchant.v1.ListStoresRequest
+	17, // 22: panda.merchant.v1.MerchantService.Profile:input_type -> panda.merchant.v1.MerchantProfileRequest
+	19, // 23: panda.merchant.v1.MerchantService.Stores:input_type -> panda.merchant.v1.MerchantStoresRequest
+	21, // 24: panda.merchant.v1.MerchantService.GetBrandMerchant:input_type -> panda.merchant.v1.GetBrandMerchantRequest
+	23, // 25: panda.merchant.v1.MerchantService.GetStoreMerchant:input_type -> panda.merchant.v1.GetStoreMerchantRequest
+	25, // 26: panda.merchant.v1.MerchantService.GetStore:input_type -> panda.merchant.v1.GetStoreRequest
+	27, // 27: panda.merchant.v1.MerchantService.ResolveScopeNames:input_type -> panda.merchant.v1.ResolveScopeNamesRequest
+	8,  // 28: panda.merchant.v1.MerchantService.ListMerchants:output_type -> panda.merchant.v1.ListMerchantsResponse
+	10, // 29: panda.merchant.v1.MerchantService.GetMerchant:output_type -> panda.merchant.v1.GetMerchantResponse
+	12, // 30: panda.merchant.v1.MerchantService.CreateMerchant:output_type -> panda.merchant.v1.CreateMerchantResponse
+	14, // 31: panda.merchant.v1.MerchantService.UpdateMerchant:output_type -> panda.merchant.v1.UpdateMerchantResponse
+	16, // 32: panda.merchant.v1.MerchantService.ListStores:output_type -> panda.merchant.v1.ListStoresResponse
+	18, // 33: panda.merchant.v1.MerchantService.Profile:output_type -> panda.merchant.v1.MerchantProfileResponse
+	20, // 34: panda.merchant.v1.MerchantService.Stores:output_type -> panda.merchant.v1.MerchantStoresResponse
+	22, // 35: panda.merchant.v1.MerchantService.GetBrandMerchant:output_type -> panda.merchant.v1.GetBrandMerchantResponse
+	24, // 36: panda.merchant.v1.MerchantService.GetStoreMerchant:output_type -> panda.merchant.v1.GetStoreMerchantResponse
+	26, // 37: panda.merchant.v1.MerchantService.GetStore:output_type -> panda.merchant.v1.GetStoreResponse
+	28, // 38: panda.merchant.v1.MerchantService.ResolveScopeNames:output_type -> panda.merchant.v1.ResolveScopeNamesResponse
+	28, // [28:39] is the sub-list for method output_type
+	17, // [17:28] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_merchant_v1_merchant_proto_init() }
@@ -1775,13 +1889,14 @@ func file_merchant_v1_merchant_proto_init() {
 	if File_merchant_v1_merchant_proto != nil {
 		return
 	}
+	file_merchant_v1_merchant_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_merchant_v1_merchant_proto_rawDesc), len(file_merchant_v1_merchant_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   26,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

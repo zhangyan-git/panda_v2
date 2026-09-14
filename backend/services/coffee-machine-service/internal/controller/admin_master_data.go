@@ -44,10 +44,19 @@ func (c *AdminMasterDataController) Manufacturers(w http.ResponseWriter, r *http
 }
 
 // Drinks 处理 GET /v1/admin/coffee-machines/drinks。
+//
+// deviceId 是饮品管理页的「所属设备」筛选。校验格式的理由与 manufacturers 那一条
+// 相同但更要紧：device_id 是 uuid 列，畸形值会让 PostgreSQL 在参数解析阶段报 22P02，
+// 而这里本该回一句「这个 id 写错了」。
 func (c *AdminMasterDataController) Drinks(w http.ResponseWriter, r *http.Request) {
 	manufacturerID := strings.TrimSpace(r.URL.Query().Get("manufacturerId"))
 	if manufacturerID != "" && !validUUID(manufacturerID) {
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "manufacturerId must be a UUID")
+		return
+	}
+	deviceID := strings.TrimSpace(r.URL.Query().Get("deviceId"))
+	if deviceID != "" && !validUUID(deviceID) {
+		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "deviceId must be a UUID")
 		return
 	}
 	page, size, ok, message := api.ParsePage(r.URL.Query().Get("page"), r.URL.Query().Get("pageSize"), service.MaxPageSize)
@@ -58,6 +67,7 @@ func (c *AdminMasterDataController) Drinks(w http.ResponseWriter, r *http.Reques
 	drinks, total, err := c.master.ListDrinks(r.Context(), dto.DrinkQuery{
 		Page:           page,
 		PageSize:       size,
+		DeviceID:       deviceID,
 		ManufacturerID: manufacturerID,
 		Status:         strings.TrimSpace(r.URL.Query().Get("status")),
 	})
@@ -75,6 +85,7 @@ func (c *AdminMasterDataController) Drinks(w http.ResponseWriter, r *http.Reques
 func drinkSummary(d *model.Drink) dto.DrinkSummary {
 	return dto.DrinkSummary{
 		ID:              d.ID,
+		DeviceID:        d.DeviceID,
 		ManufacturerID:  d.ManufacturerID,
 		OriginID:        d.OriginID,
 		ProductNum:      d.ProductNum,
@@ -92,12 +103,23 @@ func drinkSummary(d *model.Drink) dto.DrinkSummary {
 }
 
 // ListDevices 处理 GET /v1/admin/coffee-machines/devices。
+//
+// storeIds 是可重复参数（?storeIds=a&storeIds=b），不是逗号拼接的一串：门店 id 里
+// 没有逗号，但拼串的方案一旦定下，将来任何带分隔符的值都得先想一遍转义。
 func (c *AdminMasterDataController) ListDevices(w http.ResponseWriter, r *http.Request) {
 	manufacturerID := strings.TrimSpace(r.URL.Query().Get("manufacturerId"))
-	storeID := strings.TrimSpace(r.URL.Query().Get("storeId"))
-	for name, value := range map[string]string{"manufacturerId": manufacturerID, "storeId": storeID} {
-		if value != "" && !validUUID(value) {
-			api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, name+" must be a UUID")
+	if manufacturerID != "" && !validUUID(manufacturerID) {
+		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "manufacturerId must be a UUID")
+		return
+	}
+	// 逐个校验再下传。SQL 那边用的是 store_id::text = ANY($2::text[])，本来就不会
+	// 因为一个畸形值整条报错，校验是为了让「传错一个 id」当场变成 400，而不是安安静静
+	// 筛出一个空列表——空列表看起来和「这个门店确实没设备」一模一样。
+	storeIDs := r.URL.Query()["storeIds"]
+	for i, raw := range storeIDs {
+		storeIDs[i] = strings.TrimSpace(raw)
+		if !validUUID(storeIDs[i]) {
+			api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "storeIds must be UUIDs")
 			return
 		}
 	}
@@ -110,8 +132,9 @@ func (c *AdminMasterDataController) ListDevices(w http.ResponseWriter, r *http.R
 		Page:           page,
 		PageSize:       size,
 		ManufacturerID: manufacturerID,
-		StoreID:        storeID,
+		StoreIDs:       storeIDs,
 		Status:         strings.TrimSpace(r.URL.Query().Get("status")),
+		Keyword:        strings.TrimSpace(r.URL.Query().Get("keyword")),
 	})
 	if err != nil {
 		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "failed to list devices")
@@ -143,29 +166,80 @@ func (c *AdminMasterDataController) GetDevice(w http.ResponseWriter, r *http.Req
 }
 
 // ListDeviceDrinks 处理 GET /v1/admin/coffee-machines/devices/{id}/drinks。
+//
+// 设备不存在回 404 而不是空数组：详情页是一个带 id 的地址，那个 id 打错了要和
+// 「这台设备确实一款饮品都没有」分得开——前者重试无用，后者是还没配饮品。
+//
+// 返回的形状与 GET /drinks 完全一致（同一行饮品，只是换了个入口）：设备详情页那一屏
+// 要的就是这个列表，两处各写一份摘要结构只会让字段各自漂移。
 func (c *AdminMasterDataController) ListDeviceDrinks(w http.ResponseWriter, r *http.Request) {
 	deviceID, ok := pathID(w, r)
 	if !ok {
 		return
 	}
-	relations, err := c.master.ListDeviceDrinks(r.Context(), deviceID)
+	drinks, err := c.master.ListDeviceDrinks(r.Context(), deviceID)
+	if errors.Is(err, repository.ErrDeviceNotFound) {
+		api.Error(w, http.StatusNotFound, api.CodeNotFound, "device not found")
+		return
+	}
 	if err != nil {
 		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "failed to list device drinks")
 		return
 	}
-	items := make([]dto.DeviceDrinkSummary, 0, len(relations))
-	for _, rel := range relations {
-		items = append(items, dto.DeviceDrinkSummary{
-			DeviceID:        rel.DeviceID,
-			DrinkID:         rel.DrinkID,
-			Enabled:         rel.Enabled,
-			SortOrder:       rel.SortOrder,
-			Price:           rel.Price,
-			VipPrice:        rel.VipPrice,
-			PickupCodePrice: rel.PickupCodePrice,
-		})
+	items := make([]dto.DrinkSummary, 0, len(drinks))
+	for _, d := range drinks {
+		items = append(items, drinkSummary(d))
 	}
 	api.Success(w, items)
+}
+
+// ListDeviceBalanceEntries 处理 GET /v1/admin/coffee-machines/devices/{id}/balance。
+//
+// 设备不存在回 404 而不是空列表，理由同 ListDeviceDrinks：详情页上「这台设备不在了」
+// 和「这台设备还没动过余额」要说的话不一样。
+func (c *AdminMasterDataController) ListDeviceBalanceEntries(w http.ResponseWriter, r *http.Request) {
+	deviceID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	page, size, ok, message := api.ParsePage(r.URL.Query().Get("page"), r.URL.Query().Get("pageSize"), service.MaxPageSize)
+	if !ok {
+		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, message)
+		return
+	}
+	entries, total, err := c.master.ListDeviceBalanceEntries(r.Context(), deviceID, page, size)
+	if errors.Is(err, repository.ErrDeviceNotFound) {
+		api.Error(w, http.StatusNotFound, api.CodeNotFound, "device not found")
+		return
+	}
+	if err != nil {
+		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "failed to list device balance entries")
+		return
+	}
+	items := make([]dto.DeviceBalanceEntrySummary, 0, len(entries))
+	for _, e := range entries {
+		items = append(items, balanceEntrySummary(e))
+	}
+	api.Success(w, api.PageResponse{Items: items, Total: total, Page: page, PageSize: size})
+}
+
+func balanceEntrySummary(e *model.DeviceBalanceEntry) dto.DeviceBalanceEntrySummary {
+	return dto.DeviceBalanceEntrySummary{
+		ID:              e.ID,
+		DeviceID:        e.DeviceID,
+		Type:            e.Type,
+		Amount:          e.Amount,
+		BalanceBefore:   e.BalanceAfter - e.Amount,
+		BalanceAfter:    e.BalanceAfter,
+		ReversesEntryID: e.ReversesEntryID,
+		ReferenceType:   e.ReferenceType,
+		ReferenceID:     e.ReferenceID,
+		RequestID:       e.RequestID,
+		Remark:          e.Remark,
+		OperatorID:      e.OperatorID,
+		OperatorName:    e.OperatorName,
+		CreatedAt:       e.CreatedAt,
+	}
 }
 
 func deviceSummary(d *model.Device) dto.DeviceSummary {

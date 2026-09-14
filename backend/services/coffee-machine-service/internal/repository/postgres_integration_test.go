@@ -69,8 +69,9 @@ func deviceFixture(t *testing.T, pool *pgxpool.Pool, manufacturerID, status stri
 	t.Cleanup(func() {
 		// 按依赖顺序删，一个闭包里依次执行：流水与设备事件的外键是 RESTRICT 而不是
 		// CASCADE（见 pg_constraint），线上没人想删台设备就顺手带走余额流水和事件
-		// 记录，所以得先删它们；device_drinks 与 device_payment_methods 是 CASCADE，
-		// 不用管。
+		// 记录，所以得先删它们；drinks 与 device_payment_methods 是 CASCADE，不用管
+		// ——饮品的 device_id 有 ON DELETE CASCADE，删设备时这台机器的饮品跟着走，
+		// 这正是「饮品行属于设备」该有的样子。
 		//
 		// 这里删流水还有一层意思：device_balance_ledger 上有 BEFORE DELETE/UPDATE
 		// 触发器，删除是删不掉的。所以这两句在「本夹具本来就不该有流水」时是空操作，
@@ -231,48 +232,247 @@ func TestListDevicesFiltersAndPages(t *testing.T) {
 	}
 }
 
-func TestListDeviceDrinksKeepsNullOverrideDistinctFromZero(t *testing.T) {
+// TestListDeviceDrinksScopesToTheDevice 是这一屏的核心查询：饮品行自带 device_id，
+// 「这台设备上有哪些饮品」就是一句 WHERE。
+//
+// 边界要一起钉住——别的设备上的同款饮品、以及还没挂设备的行都不能混进来。它们和
+// 「这台设备的饮品」在库里只差一个列值，前端没法分辨，漏筛的话界面会显示别的机器的
+// 菜单而看不出任何异常。
+func TestListDeviceDrinksScopesToTheDevice(t *testing.T) {
 	pool := integrationPool(t)
 	repo := NewPostgresRepository(pool)
 	ctx := context.Background()
 	manufacturerID := manufacturerFixture(t, pool)
 	deviceID := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+	otherDeviceID := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
 
-	inheritDrinkID := uuid.NewString()
-	freeDrinkID := uuid.NewString()
-	for _, drinkID := range []string{inheritDrinkID, freeDrinkID} {
-		_, err := pool.Exec(ctx, `INSERT INTO drinks(id, manufacturer_id, product_name, price) VALUES($1, $2, $3, 1800)`,
-			drinkID, manufacturerID, "集成测试饮品")
-		if err != nil {
+	insertDrink := func(device *string, name string, price int64, sort int) string {
+		t.Helper()
+		drinkID := uuid.NewString()
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO drinks(id, device_id, manufacturer_id, product_name, price, sort)
+			 VALUES($1, $2, $3, $4, $5, $6)`,
+			drinkID, device, manufacturerID, name, price, sort); err != nil {
 			t.Fatalf("insert drink: %v", err)
 		}
 		cleanupFixture(t, pool, `DELETE FROM drinks WHERE id = $1`, drinkID)
+		return drinkID
 	}
+	// sort 故意与插入顺序相反：排序要按 sort 走，不是按 created_at 或者插入次序。
+	freeDrinkID := insertDrink(&deviceID, "集成测试免费的", 0, 1)
+	paidDrinkID := insertDrink(&deviceID, "集成测试美式", 1800, 2)
+	insertDrink(&otherDeviceID, "另一台设备上的", 1800, 3)
+	// 还没挂设备的行：它是合法的数据库状态（003 是加列迁移），但绝不属于任何一台设备。
+	insertDrink(nil, "还没分配设备的", 1800, 4)
 
-	_, err := pool.Exec(ctx, `INSERT INTO device_drinks(id, device_id, drink_id, enabled, sort_order) VALUES($1, $2, $3, TRUE, 1)`,
-		uuid.NewString(), deviceID, inheritDrinkID)
-	if err != nil {
-		t.Fatalf("insert inheriting relation: %v", err)
-	}
-	_, err = pool.Exec(ctx, `INSERT INTO device_drinks(id, device_id, drink_id, enabled, sort_order, price) VALUES($1, $2, $3, TRUE, 2, 0)`,
-		uuid.NewString(), deviceID, freeDrinkID)
-	if err != nil {
-		t.Fatalf("insert zero-priced relation: %v", err)
-	}
-
-	relations, err := repo.ListDeviceDrinks(ctx, deviceID)
+	drinks, err := repo.ListDeviceDrinks(ctx, deviceID)
 	if err != nil {
 		t.Fatalf("list device drinks: %v", err)
 	}
-	if len(relations) != 2 {
-		t.Fatalf("len = %d, want 2", len(relations))
+	if len(drinks) != 2 {
+		t.Fatalf("len = %d, want 2（别的设备上的、以及未分配设备的行都不该出现）", len(drinks))
 	}
-	if relations[0].Price != nil {
-		t.Fatalf("price = %v, want nil for a relation that inherits the catalog price", *relations[0].Price)
+	if drinks[0].ID != freeDrinkID || drinks[1].ID != paidDrinkID {
+		t.Fatalf("排序没按 sort 来：%s, %s", drinks[0].ID, drinks[1].ID)
 	}
-	if relations[1].Price == nil || *relations[1].Price != 0 {
-		t.Fatalf("price = %v, want a known 0 for a device that sells it for free", relations[1].Price)
+	// 0 是「这台机器上免费」，一个合法的售价，不是「没填」。
+	if drinks[0].Price != 0 {
+		t.Fatalf("price = %d, want 0 for a drink sold for free on this device", drinks[0].Price)
 	}
+	if drinks[1].Price != 1800 {
+		t.Fatalf("price = %d, want 1800", drinks[1].Price)
+	}
+	if drinks[0].ProductName != "集成测试免费的" || drinks[1].ProductName != "集成测试美式" {
+		t.Fatalf("product name 没跟着读出来：%q, %q", drinks[0].ProductName, drinks[1].ProductName)
+	}
+	// 每一行的 DeviceID 都该指回这台设备：详情页那一屏的写操作要把这个值原样回传，
+	// 读回来是 nil 的话前端会把它当成「未分配设备」再存回去，饮品就从设备上掉了。
+	for _, d := range drinks {
+		if d.DeviceID == nil || *d.DeviceID != deviceID {
+			t.Fatalf("deviceId = %v, want %s", d.DeviceID, deviceID)
+		}
+	}
+}
+
+// TestListDeviceDrinksReportsUnknownDevice 盯的是「设备不存在」与「这台设备还没配饮品」
+// 的分野。两者都会得到一个空列表，而详情页上该说的话完全不同：一个是地址打错了，
+// 一个是等厂商同步。
+func TestListDeviceDrinksReportsUnknownDevice(t *testing.T) {
+	pool := integrationPool(t)
+	repo := NewPostgresRepository(pool)
+
+	_, err := repo.ListDeviceDrinks(context.Background(), uuid.NewString())
+	if !errors.Is(err, ErrDeviceNotFound) {
+		t.Fatalf("err = %v, want ErrDeviceNotFound", err)
+	}
+}
+
+// TestListDevicesFiltersByStoreIDsAndKeyword 覆盖筛选栏新增的两项。
+//
+// 门店是多选，所以这里必须同时钉住两件事：选了多个门店时是 OR（不是只认第一个），
+// 以及**一个都不选时不过滤**——后者才是真正容易写错的地方，pgx 把 nil 切片编码成
+// NULL，cardinality(NULL) 是 NULL 而不是 0，少一个 coalesce 就会让「没选门店」
+// 把整张表筛空，而列表空着看起来和「确实没有设备」一模一样。
+func TestListDevicesFiltersByStoreIDsAndKeyword(t *testing.T) {
+	pool := integrationPool(t)
+	repo := NewPostgresRepository(pool)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	storeA, storeB := uuid.NewString(), uuid.NewString()
+
+	deviceA := deviceFixture(t, pool, manufacturerID, "active", nil, &storeA)
+	deviceFixture(t, pool, manufacturerID, "active", nil, &storeB)
+	deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+
+	both, total, err := repo.ListDevices(ctx, DeviceFilter{StoreIDs: []string{storeA, storeB}, Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list by two stores: %v", err)
+	}
+	if total != 2 || len(both) != 2 {
+		t.Fatalf("两个门店应该是并集：total = %d, len = %d, want 2 and 2", total, len(both))
+	}
+
+	one, total, err := repo.ListDevices(ctx, DeviceFilter{StoreIDs: []string{storeA}, Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list by one store: %v", err)
+	}
+	if total != 1 || len(one) != 1 || one[0].StoreID == nil || *one[0].StoreID != storeA {
+		t.Fatalf("只选一个门店却返回了 %d 行", total)
+	}
+
+	// 空切片与 nil 都必须表示「不过滤」。nil 那条正是上面注释里说的坑。
+	for _, tc := range []struct {
+		name  string
+		store []string
+	}{
+		{"nil 切片", nil},
+		{"空切片", []string{}},
+	} {
+		_, total, err := repo.ListDevices(ctx, DeviceFilter{StoreIDs: tc.store, Page: 1, PageSize: 100})
+		if err != nil {
+			t.Fatalf("list with %s: %v", tc.name, err)
+		}
+		if total < 3 {
+			t.Fatalf("%s 把列表筛成了 %d 行，want 至少三台夹具设备", tc.name, total)
+		}
+	}
+
+	// 取 A 序列号中间的一段做模糊匹配。序列号是 "it-"+uuid，这 8 位十六进制只会出现在
+	// A 自己身上，所以命中数必须是 1——写成「大于 0」的话，一条把 keyword 整个忽略掉的
+	// 实现也能过。
+	keyword, total, err := repo.ListDevices(ctx, DeviceFilter{Keyword: deviceA[6:14], Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list by keyword: %v", err)
+	}
+	if total != 1 || len(keyword) != 1 || keyword[0].ID != deviceA {
+		t.Fatalf("设备标识模糊匹配：total = %d, len = %d, 命中的是 %v，want 只有 %s",
+			total, len(keyword), keyword, deviceA)
+	}
+}
+
+// TestListDeviceBalanceEntriesReadsNewestFirstAndPages 覆盖设备详情页「账变记录」那一屏
+// 的读路径。
+//
+// 流水直接 INSERT 而不是走 AdjustBalance：这里要的是三种 type 各一行、带 reference 的
+// 一行、operator_id 为 NULL 的一行，走写接口造不出后面几种（后台调整只会写 adjust）。
+// created_at 显式给值，排序才有确定的期望——靠 NOW() 的话同一毫秒内的两行谁在前是随机的。
+func TestListDeviceBalanceEntriesReadsNewestFirstAndPages(t *testing.T) {
+	pool := integrationPool(t)
+	repo := NewPostgresRepository(pool)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	deviceID := balanceDeviceFixture(t, pool, manufacturerID)
+
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	operatorID := uuid.NewString()
+	// 充值是第一笔（变动前余额为 0），后面两笔在它之上继续。
+	rechargeID := insertLedgerFixture(t, pool, deviceID, "recharge", 20000, 20000, nil, "", nil, operatorID, base)
+	deductID := insertLedgerFixture(t, pool, deviceID, "deduct", -5000, 15000, nil, "", nil, "", base.Add(time.Minute))
+	// reference 指向提货单那一类来源单据；冲正指向被冲正的那条流水（表上有 CHECK，冲正
+	// 必须带 reverses_entry_id）。
+	referenceID := uuid.NewString()
+	insertLedgerFixture(t, pool, deviceID, "deduct", -1500, 13500, nil, "pickup", &referenceID, "", base.Add(2*time.Minute))
+	insertLedgerFixture(t, pool, deviceID, "reverse", 1500, 15000, &deductID, "", nil, "", base.Add(3*time.Minute))
+
+	entries, total, err := repo.ListDeviceBalanceEntries(ctx, deviceID, 1, 2)
+	if err != nil {
+		t.Fatalf("list balance entries: %v", err)
+	}
+	if total != 4 {
+		t.Fatalf("total = %d, want 4", total)
+	}
+	// 倒序：最新的一页是冲正和那条带来源单据的扣减。
+	if len(entries) != 2 {
+		t.Fatalf("len = %d, want 2 (pageSize 限制)", len(entries))
+	}
+	if entries[0].Type != "reverse" || entries[1].Type != "deduct" {
+		t.Fatalf("第一页顺序 = %q, %q；want reverse, deduct", entries[0].Type, entries[1].Type)
+	}
+	if entries[0].ReversesEntryID == nil || *entries[0].ReversesEntryID != deductID {
+		t.Fatalf("reverses_entry_id = %v, want %s", entries[0].ReversesEntryID, deductID)
+	}
+	if entries[1].ReferenceType != "pickup" || entries[1].ReferenceID == nil || *entries[1].ReferenceID != referenceID {
+		t.Fatalf("来源单据没读回来：%q / %v", entries[1].ReferenceType, entries[1].ReferenceID)
+	}
+
+	// 第二页是剩下的两笔。翻页要真能翻到，而不是永远返回第一页。
+	second, _, err := repo.ListDeviceBalanceEntries(ctx, deviceID, 2, 2)
+	if err != nil {
+		t.Fatalf("list second page: %v", err)
+	}
+	if len(second) != 2 || second[0].ID != deductID || second[1].ID != rechargeID {
+		t.Fatalf("第二页 = %v，want deduct 与 recharge（按时间倒序）", second)
+	}
+
+	// balance_after 是变动**之后**的余额，不是增量；operator_id 为空要原样是 nil，
+	// 不能被读成一个零值 uuid（那会在界面上显示成另一个操作人）。
+	recharge := second[1]
+	if recharge.Amount != 20000 || recharge.BalanceAfter != 20000 {
+		t.Fatalf("首笔充值 amount/balance_after = %d/%d, want 20000/20000", recharge.Amount, recharge.BalanceAfter)
+	}
+	if recharge.OperatorID == nil || *recharge.OperatorID != operatorID {
+		t.Fatalf("operator_id = %v, want %s", recharge.OperatorID, operatorID)
+	}
+	if second[0].OperatorID != nil {
+		t.Fatalf("没有操作人的那笔读出了 operator_id = %v, want nil", *second[0].OperatorID)
+	}
+	if second[0].Remark != "" {
+		t.Fatalf("remark = %q, want 空串", second[0].Remark)
+	}
+}
+
+// TestListDeviceBalanceEntriesReportsUnknownDevice 同 ListDeviceDrinks：设备不存在要
+// 能和「这台设备还没动过余额」分开，前者在详情页上是地址打错了。
+func TestListDeviceBalanceEntriesReportsUnknownDevice(t *testing.T) {
+	pool := integrationPool(t)
+	repo := NewPostgresRepository(pool)
+
+	_, _, err := repo.ListDeviceBalanceEntries(context.Background(), uuid.NewString(), 1, 20)
+	if !errors.Is(err, ErrDeviceNotFound) {
+		t.Fatalf("err = %v, want ErrDeviceNotFound", err)
+	}
+}
+
+// insertLedgerFixture 插一条流水并返回它的 id。清理由 balanceDeviceFixture 统一负责
+// （那张表只增不改不删，普通 deviceFixture 的清理会在有流水时直接报错）。
+func insertLedgerFixture(
+	t *testing.T, pool *pgxpool.Pool, deviceID, entryType string, amount, balanceAfter int64,
+	reversesEntryID *string, referenceType string, referenceID *string, operatorID string, createdAt time.Time,
+) string {
+	t.Helper()
+	entryID := uuid.NewString()
+	var operator any
+	if operatorID != "" {
+		operator = operatorID
+	}
+	_, err := pool.Exec(context.Background(), `INSERT INTO device_balance_ledger
+		(id, device_id, type, amount, balance_after, reverses_entry_id, reference_type, reference_id, operator_id, created_at)
+		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		entryID, deviceID, entryType, amount, balanceAfter, reversesEntryID, referenceType, referenceID, operator, createdAt)
+	if err != nil {
+		t.Fatalf("insert ledger row: %v", err)
+	}
+	return entryID
 }
 
 func TestListDrinksFiltersByManufacturer(t *testing.T) {

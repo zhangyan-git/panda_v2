@@ -69,8 +69,11 @@ message Store {
   string district = 9;
   string address = 10;
   string business_hours = 11;
-  double longitude = 12;
-  double latitude = 13;
+  // Optional because the columns are: an uncollected coordinate is NULL, and a
+  // plain double would carry it as 0 — a real point in the Atlantic that a
+  // reader cannot tell from "nobody surveyed this store".
+  optional double longitude = 12;
+  optional double latitude = 13;
   // Deprecated in favor of status_code for new clients. Values are active or disabled.
   string status = 14;
   bool visible = 15;
@@ -109,6 +112,19 @@ message GetBrandMerchantResponse { string merchant_id = 1; }
 message GetStoreMerchantRequest { string store_id = 1; }
 message GetStoreMerchantResponse { string merchant_id = 1; }
 
+// GetStore reads one store. It answers the question GetStoreMerchant cannot:
+// not just whose the store is, but whether it is usable right now.
+//
+// The caller is coffee-machine-service, which validates a device's deployment
+// point before writing it. A store_id there is a value reference into this
+// service, and a reference nobody checks is how a device ends up deployed to a
+// store that never existed or has since been disabled.
+message GetStoreRequest { string store_id = 1; }
+// A store_id that does not exist is reported as NOT_FOUND, not as an empty
+// Store: absent and empty are different answers, and a caller that has to treat
+// them alike would have to guess which one it got.
+message GetStoreResponse { Store store = 1; }
+
 // ResolveScopeNamesRequest asks for the display names of the brand and store
 // scopes a set of merchant accounts points at. The two kinds travel as separate
 // lists because they live in separate tables, and one call answers a whole page
@@ -136,6 +152,7 @@ service MerchantService {
   rpc Stores(MerchantStoresRequest) returns (MerchantStoresResponse);
   rpc GetBrandMerchant(GetBrandMerchantRequest) returns (GetBrandMerchantResponse);
   rpc GetStoreMerchant(GetStoreMerchantRequest) returns (GetStoreMerchantResponse);
+  rpc GetStore(GetStoreRequest) returns (GetStoreResponse);
   // ResolveScopeNames replaces the brand/store join user-service used to run
   // against merchant tables that no longer live in its database.
   rpc ResolveScopeNames(ResolveScopeNamesRequest) returns (ResolveScopeNamesResponse);

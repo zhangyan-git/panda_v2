@@ -20,10 +20,11 @@ type merchantReader interface {
 }
 
 // ownershipReader resolves brand and store references: which merchant owns one,
-// and what a batch of them is called.
+// what a batch of them is called, and what a store looks like right now.
 type ownershipReader interface {
 	FindBrandMerchantID(ctx context.Context, id string) (string, error)
 	FindStoreMerchantID(ctx context.Context, id string) (string, error)
+	FindStore(ctx context.Context, id string) (*model.Store, error)
 	ScopeNames(ctx context.Context, brandIDs, storeIDs []string) (map[string]string, map[string]string, error)
 }
 
@@ -87,6 +88,21 @@ func (s *MerchantService) GetStoreMerchant(ctx context.Context, req *merchantv1.
 	return &merchantv1.GetStoreMerchantResponse{MerchantId: id}, nil
 }
 
+// GetStore returns one store, including the status fields that decide whether a
+// device may be deployed there. A missing store is NotFound, mapped by the same
+// resourceError the other lookups use, so callers get one rule for "this id
+// points at nothing".
+func (s *MerchantService) GetStore(ctx context.Context, req *merchantv1.GetStoreRequest) (*merchantv1.GetStoreResponse, error) {
+	if err := auth.RequireService(ctx); err != nil {
+		return nil, err
+	}
+	store, err := s.access.FindStore(ctx, req.GetStoreId())
+	if err != nil {
+		return nil, resourceError(err)
+	}
+	return &merchantv1.GetStoreResponse{Store: storeToProto(store)}, nil
+}
+
 // ResolveScopeNames answers the scope column of a merchant account listing. An
 // absent id is not an error here — the account stays listable with an empty
 // scope name — so this deliberately does not go through resourceError.
@@ -110,6 +126,62 @@ func resourceError(err error) error {
 		return status.Error(codes.NotFound, "merchant resource not found")
 	}
 	return status.Error(codes.Internal, "merchant service error")
+}
+
+// storeToProto carries the store columns the internal RPCs expose. Both the
+// string and the enum form of each status travel together, for the same reason
+// they do on Merchant: the string is what the columns hold and what older
+// readers switch on, the enum is what new readers should use.
+func storeToProto(store *model.Store) *merchantv1.Store {
+	if store == nil {
+		return nil
+	}
+	return &merchantv1.Store{
+		Id:              store.ID,
+		MerchantId:      store.MerchantID,
+		BrandId:         store.BrandID,
+		Name:            store.Name,
+		Logo:            store.Logo,
+		Phone:           store.Phone,
+		Province:        store.Province,
+		City:            store.City,
+		District:        store.District,
+		Address:         store.Address,
+		BusinessHours:   store.BusinessHours,
+		Longitude:       store.Longitude,
+		Latitude:        store.Latitude,
+		Status:          store.Status,
+		StatusCode:      storeStatusCode(store.Status),
+		Visible:         store.Visible,
+		AuditStatus:     store.AuditStatus,
+		AuditStatusCode: storeAuditStatusCode(store.AuditStatus),
+	}
+}
+
+// storeStatusCode mirrors the additive enum form of Store.status.
+func storeStatusCode(status string) merchantv1.ResourceStatus {
+	switch status {
+	case "active":
+		return merchantv1.ResourceStatus_RESOURCE_STATUS_ACTIVE
+	case "disabled":
+		return merchantv1.ResourceStatus_RESOURCE_STATUS_DISABLED
+	default:
+		return merchantv1.ResourceStatus_RESOURCE_STATUS_UNSPECIFIED
+	}
+}
+
+// storeAuditStatusCode mirrors the additive enum form of Store.audit_status.
+func storeAuditStatusCode(auditStatus string) merchantv1.AuditStatus {
+	switch auditStatus {
+	case "pending":
+		return merchantv1.AuditStatus_AUDIT_STATUS_PENDING
+	case "approved":
+		return merchantv1.AuditStatus_AUDIT_STATUS_APPROVED
+	case "rejected":
+		return merchantv1.AuditStatus_AUDIT_STATUS_REJECTED
+	default:
+		return merchantv1.AuditStatus_AUDIT_STATUS_UNSPECIFIED
+	}
 }
 
 // merchantStatusCode mirrors the additive enum form of Merchant.status.

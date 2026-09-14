@@ -42,11 +42,17 @@ type DeviceInput struct {
 
 // DrinkInput 是饮品的新增入参。
 //
-// ManufacturerID 与 OriginID 是厂商同步的自然键，只在创建时定下：编辑入参是另一个
-// 结构（DrinkUpdateInput），它没有这两个字段，从类型上就改不了。
+// **没有 manufacturerId**：厂商挂在设备上（设备表那一列是必填的），所以饮品挂到哪台
+// 设备就等于归属哪个厂商，服务层按 deviceId 现取，不由调用方给。让调用方也填一次的话，
+// 迟早会有一条饮品的厂商和它那台设备对不上，而那种行既卖不出去也查不出来。
+//
+// OriginID 是厂商同步的自然键，只在创建时定下：编辑入参是另一个结构
+// （DrinkUpdateInput），它没有这个字段，从类型上就改不了。
 type DrinkInput struct {
-	ManufacturerID string `json:"manufacturerId"`
-	OriginID       string `json:"originId"`
+	// DeviceID 是这杯饮品挂在哪台设备上。新建饮品时必填——饮品行就是「某台设备上的
+	// 一杯」，没有设备的行卖不出去，界面上只会显示成「未分配设备」。
+	DeviceID       *string `json:"deviceId"`
+	OriginID       string  `json:"originId"`
 	ProductNum     string `json:"productNum"`
 	ProductName    string `json:"productName"`
 	EnName         string `json:"enName"`
@@ -61,7 +67,12 @@ type DrinkInput struct {
 }
 
 // DrinkUpdateInput 是饮品的编辑入参，比创建少掉自然键那两个。
+//
+// DeviceID 可以改：设备详情那一屏的写走的就是这个接口（改价、改排序），而库里已经
+// 有没挂设备的行需要有个地方把它们挂上去。与三个价格同一条规则——**整行覆盖**，
+// 没带 deviceId 就是「不挂设备」，所以前端必须把当前值原样回传。
 type DrinkUpdateInput struct {
+	DeviceID        *string `json:"deviceId"`
 	ProductNum      string  `json:"productNum"`
 	ProductName     string  `json:"productName"`
 	EnName          string  `json:"enName"`

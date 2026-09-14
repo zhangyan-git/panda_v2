@@ -48,21 +48,29 @@ fulfillment-service 直连厂商执行出杯，调用前向本服务取一组只
 审计落在身份库的 `admin_operation_logs`。`device_balance_ledger` 上有 BEFORE DELETE/UPDATE
 触发器，流水只增不改不删；这也意味着有流水的设备在库里删不掉，写集成测试夹具时要留意。
 
-尚未落地：删除接口（三张主数据都没有 DELETE）、设备与饮品的关系编辑（只读 `device_drinks`）、
-设备与饮品同步、厂商状态拉取。
+饮品行自带 `device_id`（迁移 `003_drinks_own_device.sql`）：一行饮品就是「某台设备上的一杯」，
+价格与上下架都在这一行上，设备详情页那一屏读写的就是这些行——改价走 `PUT /drinks/{id}`、
+上下架走 `PATCH /drinks/{id}/status`，没有一条设备维度的饮品写路由（`GET /devices/{id}/drinks`
+只是换个入口读同一张表）。
+
+尚未落地：删除接口（三张主数据都没有 DELETE）、设备与饮品同步、厂商状态拉取。
 
 ## 本地运行
 
 ```sh
 DB_MIGRATE_ON_START=true \
 COFFEE_MACHINE_DATABASE_URL='postgres://panda:replace-me@localhost:5432/panda_coffee_machine?sslmode=disable' \
-USER_GRPC_ADDR=127.0.0.1:19093 \
+USER_GRPC_ADDR=127.0.0.1:19091 \
+MERCHANT_GRPC_ADDR=127.0.0.1:19093 \
 MERCHANT_INTERNAL_TOKEN='<32 字节以上>' \
 JWT_SECRET='<32 字节以上>' JWT_ISSUER=panda PANDA_ENV=dev \
 go run ./cmd/api
 ```
 
 `USER_GRPC_ADDR` 是必需的：后台每条路由都要按请求去 user-service 取实时授权。
+`MERCHANT_GRPC_ADDR` 也是必需的：设备挂点位之前要向商户服务确认这个点位存不存在、
+还能不能用（见 `internal/client/store.go`）。**这不是一个可选依赖**——地址缺席时校验会
+整条失效，所以 `config.Load` 直接拒绝启动，而不是等到第一次保存设备才报错。
 `MERCHANT_INTERNAL_TOKEN` 在本仓库里是服务之间互认的那一枚共享令牌（名字带 merchant
 是历史），gRPC 用它校验内部调用方。
 

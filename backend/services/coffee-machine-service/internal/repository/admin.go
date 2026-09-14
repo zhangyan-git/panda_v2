@@ -24,11 +24,15 @@ var (
 	// ErrManufacturerMissing 表示请求里引用的厂商不存在——设备或饮品挂在了一个不
 	// 存在的厂商上（字段，400）。与上一条分开：都是「厂商不存在」，但一个要回 404、
 	// 一个要回 400，合成一个哨兵错误就没法在 HTTP 层区分了。
-	ErrManufacturerMissing   = errors.New("referenced manufacturer does not exist")
+	ErrManufacturerMissing = errors.New("referenced manufacturer does not exist")
+	// ErrDeviceMissing 表示请求里引用的设备不存在——饮品挂在了不存在的设备上
+	// （字段，400）。与 ErrDeviceNotFound 分开，理由同上面那对厂商：一个是目标不在，
+	// 一个是入参填错，HTTP 层要回不同的码。
+	ErrDeviceMissing         = errors.New("referenced device does not exist")
 	ErrDrinkNotFound         = errors.New("drink not found")
 	ErrSerialTaken           = errors.New("device serial_unique already exists")
 	ErrManufacturerCodeTaken = errors.New("manufacturer code already exists")
-	ErrDrinkOriginTaken      = errors.New("drink origin_id already exists for this manufacturer")
+	ErrDrinkOriginTaken      = errors.New("drink origin_id already exists on this device")
 	ErrDuplicateRequest      = errors.New("request_id already recorded")
 	// ErrInsufficientBalance 表示这次调整会把余额扣成负数。
 	ErrInsufficientBalance = errors.New("balance would go negative")
@@ -71,9 +75,20 @@ type AdminRepository interface {
 	// 字段，因为它有第三种状态：nil 表示**不动那一列**。放进结构体里就会变成一个
 	// 「传了但被忽略」的字段，那种坑不如让签名说清楚。
 	UpdateDevice(ctx context.Context, d *model.Device, pickupPassword *string) error
+	// DeviceStoreID 读设备当前挂的点位（nil 表示没挂）。
+	//
+	// 它是一条读，却长在写路径上：编辑设备时要靠它判断「这次到底动没动点位」——没动就
+	// 不必再问一遍商户服务，见 service.AdminService.checkStoreIfChanged。判据只能是库里
+	// 这一行，不能是入参：入参里只有「要写成什么」，没有「原来是什么」。
+	DeviceStoreID(ctx context.Context, id string) (*string, error)
+	// DeviceManufacturerID 读设备所属的厂商（新建饮品时用它填 manufacturer_id）。
+	// 设备不存在返回 ErrDeviceMissing。
+	DeviceManufacturerID(ctx context.Context, id string) (string, error)
 	SetDeviceStatus(ctx context.Context, id, status string) error
 
 	CreateDrink(ctx context.Context, d *model.Drink) (*model.Drink, error)
+	// UpdateDrink 改饮品这一行的可编辑列，device_id 也在其中。挂到哪台设备上是这一行
+	// 自己的属性，改价、改排序、换设备都走这一条语句。
 	UpdateDrink(ctx context.Context, d *model.Drink) error
 	SetDrinkStatus(ctx context.Context, id, status string) error
 
@@ -100,7 +115,7 @@ func NewAdminRepository(pool *pgxpool.Pool, recorder audit.Recorder) AdminReposi
 //
 // 约束名是从实际数据库里查出来的（pg_constraint / pg_indexes），不是照默认命名
 // 规则推的：设备序列号那个是 devices_serial_unique_key，饮品那个自然键是部分索引
-// drinks_manufacturer_origin_unique，名字对不上就会静默落回 500。
+// drinks_device_origin_unique，名字对不上就会静默落回 500。
 func mapPGError(err error) error {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
@@ -113,7 +128,7 @@ func mapPGError(err error) error {
 			return ErrSerialTaken
 		case "manufacturers_code_key":
 			return ErrManufacturerCodeTaken
-		case "drinks_manufacturer_origin_unique":
+		case "drinks_device_origin_unique":
 			return ErrDrinkOriginTaken
 		case "device_balance_ledger_one_per_request":
 			return ErrDuplicateRequest
@@ -123,6 +138,9 @@ func mapPGError(err error) error {
 		case "devices_manufacturer_id_fkey", "drinks_manufacturer_id_fkey":
 			// 引用不存在的厂商是请求字段的问题，不是「目标不存在」。
 			return ErrManufacturerMissing
+		case "drinks_device_id_fkey":
+			// 同上，这次挂错的是设备。
+			return ErrDeviceMissing
 		}
 	}
 	return err
@@ -170,7 +188,11 @@ type deviceSnapshot struct {
 }
 
 // drinkSnapshot 是饮品在审计里的样子。价格是分。
+//
+// DeviceID 可空，且必须保持可空：从有设备变成 nil 是「把这一行从设备上摘下来」，与
+// 「换到另一台设备」是两件事，压成空串就再也读不出来。
 type drinkSnapshot struct {
+	DeviceID        *string `json:"device_id"`
 	ManufacturerID  string  `json:"manufacturer_id"`
 	OriginID        string  `json:"origin_id"`
 	ProductNum      string  `json:"product_num"`
@@ -371,6 +393,42 @@ func (r *pgAdminRepository) CreateDevice(ctx context.Context, d *model.Device) (
 	return created, nil
 }
 
+// DeviceStoreID 只读那一列，不取整行：调用方只关心「换没换点位」，读得多反而多一处
+// 要跟着迁移改的地方。查询不带 FOR UPDATE——它不参与写入，锁在这里只会白占。
+func (r *pgAdminRepository) DeviceStoreID(ctx context.Context, id string) (*string, error) {
+	var storeID *string
+	// store_id::text 与 selectDeviceSnapshot 保持同一个口径：这里读到的值和那边快照里
+	// 的必须是同一种形态，否则「换没换」的判定会因为类型转换的差异而时对时错。
+	err := r.pool.QueryRow(ctx, `SELECT store_id::text FROM devices WHERE id = $1`, id).Scan(&storeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrDeviceNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return storeID, nil
+}
+
+// DeviceManufacturerID 读设备所属的厂商。与 DeviceStoreID 一样是一条长在写路径上的读：
+// 饮品行上的 manufacturer_id 不再由调用方给，而是从它挂的那台设备推出来——厂商挂在设备
+// 上，饮品跟着设备走。让两边各填一次的话，迟早会有一条饮品的厂商和它那台设备对不上。
+//
+// 查不到设备时返回 ErrDeviceMissing（400）而不是 ErrDeviceNotFound（404）：错的是入参里
+// 那个 deviceId，不是「目标饮品不在」，两者的 HTTP 码不一样。
+func (r *pgAdminRepository) DeviceManufacturerID(ctx context.Context, id string) (string, error) {
+	var manufacturerID string
+	err := r.pool.QueryRow(ctx, `SELECT manufacturer_id::text FROM devices WHERE id = $1`, id).Scan(&manufacturerID)
+	// device_id 也是 uuid 列，畸形值会在参数解析阶段报 22P02——调用方（服务层）已经先
+	// 用 uuid.Parse 挡过一遍，这里不再重复判。
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrDeviceMissing
+	}
+	if err != nil {
+		return "", err
+	}
+	return manufacturerID, nil
+}
+
 // UpdateDevice 改后台可编辑的那几列。状态、余额、厂商同步写入的列都不在 SET 里，
 // 理由见 model.Device 的分类注释。
 //
@@ -459,11 +517,11 @@ func (r *pgAdminRepository) SetDeviceStatus(ctx context.Context, id, status stri
 
 func selectDrinkSnapshot(ctx context.Context, tx pgx.Tx, id string) (drinkSnapshot, error) {
 	var s drinkSnapshot
-	err := tx.QueryRow(ctx, `SELECT manufacturer_id::text, origin_id, product_num,
-		product_name, en_name, drink_type, product_img, product_desc, price, vip_price,
-		pickup_code_price, status, sort FROM drinks WHERE id = $1 FOR UPDATE`, id).
-		Scan(&s.ManufacturerID, &s.OriginID, &s.ProductNum, &s.ProductName, &s.EnName,
-			&s.DrinkType, &s.ProductImg, &s.ProductDesc, &s.Price, &s.VipPrice,
+	err := tx.QueryRow(ctx, `SELECT device_id::text, manufacturer_id::text, origin_id,
+		product_num, product_name, en_name, drink_type, product_img, product_desc, price,
+		vip_price, pickup_code_price, status, sort FROM drinks WHERE id = $1 FOR UPDATE`, id).
+		Scan(&s.DeviceID, &s.ManufacturerID, &s.OriginID, &s.ProductNum, &s.ProductName,
+			&s.EnName, &s.DrinkType, &s.ProductImg, &s.ProductDesc, &s.Price, &s.VipPrice,
 			&s.PickupCodePrice, &s.Status, &s.Sort)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return s, ErrDrinkNotFound
@@ -479,12 +537,12 @@ func (r *pgAdminRepository) CreateDrink(ctx context.Context, d *model.Drink) (*m
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	// 与设备同理：status 走列默认值 on_shelf，上下架有专门的入口。
-	if _, err := tx.Exec(ctx, `INSERT INTO drinks (id, manufacturer_id, origin_id,
-		product_num, product_name, en_name, drink_type, product_img, product_desc,
-		price, vip_price, pickup_code_price, sort)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		d.ID, d.ManufacturerID, d.OriginID, d.ProductNum, d.ProductName, d.EnName,
-		d.DrinkType, d.ProductImg, d.ProductDesc, d.Price, d.VipPrice,
+	if _, err := tx.Exec(ctx, `INSERT INTO drinks (id, device_id, manufacturer_id,
+		origin_id, product_num, product_name, en_name, drink_type, product_img,
+		product_desc, price, vip_price, pickup_code_price, sort)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		d.ID, d.DeviceID, d.ManufacturerID, d.OriginID, d.ProductNum, d.ProductName,
+		d.EnName, d.DrinkType, d.ProductImg, d.ProductDesc, d.Price, d.VipPrice,
 		d.PickupCodePrice, d.Sort); err != nil {
 		return nil, mapPGError(err)
 	}
@@ -509,10 +567,13 @@ func (r *pgAdminRepository) CreateDrink(ctx context.Context, d *model.Drink) (*m
 	return created, nil
 }
 
-// UpdateDrink 改饮品目录字段。
+// UpdateDrink 改饮品这一行的可编辑列。
+//
+// device_id 在 SET 里：这一行就是「某台设备上的一杯」，换设备（以及把库里遗留的
+// 无设备行挂上去）都是改这一列，不是另建一行关系。
 //
 // manufacturer_id 与 origin_id 不在 SET 里：这两个是厂商同步的自然键
-// （drinks_manufacturer_origin_unique），后台改掉它们，这一行就再也匹配不上厂商
+// （drinks_device_origin_unique），后台改掉它们，这一行就再也匹配不上厂商
 // 侧的同一款饮品，下一轮同步会新插一行，旧的留在库里变成谁都说不清来历的孤儿。
 func (r *pgAdminRepository) UpdateDrink(ctx context.Context, d *model.Drink) error {
 	tx, err := r.pool.Begin(ctx)
@@ -525,12 +586,13 @@ func (r *pgAdminRepository) UpdateDrink(ctx context.Context, d *model.Drink) err
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE drinks SET product_num = $2, product_name = $3,
-		en_name = $4, drink_type = $5, product_img = $6, product_desc = $7,
-		price = $8, vip_price = $9, pickup_code_price = $10, sort = $11,
-		updated_at = NOW() WHERE id = $1`,
-		d.ID, d.ProductNum, d.ProductName, d.EnName, d.DrinkType, d.ProductImg,
-		d.ProductDesc, d.Price, d.VipPrice, d.PickupCodePrice, d.Sort); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE drinks SET device_id = $2, product_num = $3,
+		product_name = $4, en_name = $5, drink_type = $6, product_img = $7,
+		product_desc = $8, price = $9, vip_price = $10, pickup_code_price = $11,
+		sort = $12, updated_at = NOW() WHERE id = $1`,
+		d.ID, d.DeviceID, d.ProductNum, d.ProductName, d.EnName, d.DrinkType,
+		d.ProductImg, d.ProductDesc, d.Price, d.VipPrice, d.PickupCodePrice,
+		d.Sort); err != nil {
 		return mapPGError(err)
 	}
 	after, err := selectDrinkSnapshot(ctx, tx, d.ID)

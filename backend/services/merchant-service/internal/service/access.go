@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/repository"
 )
 
@@ -47,6 +48,15 @@ func (s *MerchantAccessService) FindStoreMerchantID(ctx context.Context, id stri
 		return "", err
 	}
 	return store.MerchantID, nil
+}
+
+// FindStore 返回门店本身，而不只是它属于谁。
+//
+// 调用方是 coffee-machine-service：它要在把设备挂到某个点位上之前确认这个点位真实存在
+// 且当前可用，而「谁的」回答不了「能不能用」。两者都留着而不是把 FindStoreMerchantID
+// 折成 FindStore：user-service 只要归属，让它拖回一整行是替它做了主。
+func (s *MerchantAccessService) FindStore(ctx context.Context, id string) (*model.Store, error) {
+	return s.stores.FindByID(ctx, id)
 }
 
 // ScopeNames resolves brand and store ids to display names. It backs the scope

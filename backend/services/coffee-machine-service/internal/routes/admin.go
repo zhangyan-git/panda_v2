@@ -86,9 +86,15 @@ func RegisterAdmin(r *runtime.HTTPRouter, read *controller.AdminMasterDataContro
 	r.HandleFunc("/v1/admin/coffee-machines/devices/{id}/status", routeFor(map[string]methodRoute{
 		http.MethodPatch: {permManage, write.SetDeviceStatus},
 	}))
+	// 同一条路径上的读和写都是资金相关的，所以两个方法共用一个码：GET 取的是余额流水，
+	// 看的就是「钱是怎么动的」，能调余额的人才需要看见它。这也让详情页那个 tab 可以
+	// 整个用 access.canAdjustCoffeeBalance 控制，不必再要一个新权限码。
 	r.HandleFunc("/v1/admin/coffee-machines/devices/{id}/balance", routeFor(map[string]methodRoute{
+		http.MethodGet:  {permBalance, read.ListDeviceBalanceEntries},
 		http.MethodPost: {permBalance, write.AdjustDeviceBalance},
 	}))
+	// 只有读。写这一屏的饮品走下面 /drinks/{id}：饮品行自带 device_id，改价、改排序、
+	// 上下架都是改那一行自己的列，没有一张需要单独写的「设备上的饮品」关系表。
 	r.HandleFunc("/v1/admin/coffee-machines/devices/{id}/drinks", routeFor(map[string]methodRoute{
 		http.MethodGet: {permRead, read.ListDeviceDrinks},
 	}))

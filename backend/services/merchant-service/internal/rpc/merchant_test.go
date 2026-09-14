@@ -37,6 +37,7 @@ type fakeAccess struct {
 	namesErr   error
 	brandNames map[string]string
 	storeNames map[string]string
+	store      *model.Store
 }
 
 func (f fakeAccess) FindBrandMerchantID(context.Context, string) (string, error) {
@@ -45,6 +46,10 @@ func (f fakeAccess) FindBrandMerchantID(context.Context, string) (string, error)
 
 func (f fakeAccess) FindStoreMerchantID(context.Context, string) (string, error) {
 	return f.merchantID, f.storeErr
+}
+
+func (f fakeAccess) FindStore(context.Context, string) (*model.Store, error) {
+	return f.store, f.storeErr
 }
 
 func (f fakeAccess) ScopeNames(context.Context, []string, []string) (map[string]string, map[string]string, error) {
@@ -98,6 +103,10 @@ func TestMerchantServiceRequiresServiceToken(t *testing.T) {
 		},
 		"GetStoreMerchant": func(ctx context.Context) error {
 			_, err := client.GetStoreMerchant(ctx, &merchantv1.GetStoreMerchantRequest{StoreId: "s1"})
+			return err
+		},
+		"GetStore": func(ctx context.Context) error {
+			_, err := client.GetStore(ctx, &merchantv1.GetStoreRequest{StoreId: "s1"})
 			return err
 		},
 		"ResolveScopeNames": func(ctx context.Context) error {
@@ -161,6 +170,36 @@ func TestMerchantServiceResults(t *testing.T) {
 	}
 }
 
+// TestGetStoreCarriesUsability covers the extra question GetStore answers over
+// GetStoreMerchant: a caller about to deploy a device needs the store's status,
+// not just its owner, and both forms of each status travel together.
+func TestGetStoreCarriesUsability(t *testing.T) {
+	serviceCtx := auth.WithServiceToken(context.Background(), serviceToken)
+	client, _ := testServer(t, fakeMerchants{}, fakeAccess{store: &model.Store{
+		ID: "s1", MerchantID: "m1", BrandID: "b1", Name: "门店一",
+		Status: "disabled", AuditStatus: "approved", Visible: true,
+	}})
+	resp, err := client.GetStore(serviceCtx, &merchantv1.GetStoreRequest{StoreId: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := resp.GetStore()
+	if store.GetMerchantId() != "m1" || store.GetName() != "门店一" {
+		t.Fatalf("store=%v", store)
+	}
+	if store.GetStatus() != "disabled" || store.GetStatusCode() != merchantv1.ResourceStatus_RESOURCE_STATUS_DISABLED {
+		t.Fatalf("status=%q code=%v", store.GetStatus(), store.GetStatusCode())
+	}
+	if store.GetAuditStatus() != "approved" || store.GetAuditStatusCode() != merchantv1.AuditStatus_AUDIT_STATUS_APPROVED {
+		t.Fatalf("audit status=%q code=%v", store.GetAuditStatus(), store.GetAuditStatusCode())
+	}
+	// 未采集的坐标必须是「没有」，不能落成 0：0 是一个真实坐标，读的人分不出
+	// 「没测过」和「在赤道上」。
+	if store.Longitude != nil || store.Latitude != nil {
+		t.Fatalf("unset coordinates must stay unset: %v %v", store.Longitude, store.Latitude)
+	}
+}
+
 // TestResolveScopeNamesAnswersListings covers the scope column of a merchant
 // account listing. An id the merchant service does not know is absent from the
 // maps — an account whose scope was deleted stays listable — while a storage
@@ -213,6 +252,10 @@ func TestMerchantServiceNotFound(t *testing.T) {
 		}},
 		{"store", func(c merchantv1.MerchantServiceClient) error {
 			_, err := c.GetStoreMerchant(serviceCtx, &merchantv1.GetStoreMerchantRequest{StoreId: "missing"})
+			return err
+		}},
+		{"store detail", func(c merchantv1.MerchantServiceClient) error {
+			_, err := c.GetStore(serviceCtx, &merchantv1.GetStoreRequest{StoreId: "missing"})
 			return err
 		}},
 	} {

@@ -113,7 +113,8 @@ type Device struct {
 	ManufacturerId string                 `protobuf:"bytes,2,opt,name=manufacturer_id,json=manufacturerId,proto3" json:"manufacturer_id,omitempty"`
 	SerialUnique   string                 `protobuf:"bytes,3,opt,name=serial_unique,json=serialUnique,proto3" json:"serial_unique,omitempty"`
 	DeviceName     string                 `protobuf:"bytes,4,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
-	// 部署点位，属于 merchant-service。仅作值引用。
+	// 部署点位，属于 merchant-service。本库不建外键，写入前由本服务调 merchant-service
+	// 的 GetStore 确认点位存在且未被停用；确认不了就不写（回 503），而不是跳过校验。
 	StoreId string `protobuf:"bytes,5,opt,name=store_id,json=storeId,proto3" json:"store_id,omitempty"`
 	// 本系统是否启用：active=启用，disabled=停用。
 	//

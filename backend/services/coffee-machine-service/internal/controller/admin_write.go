@@ -287,9 +287,21 @@ func writeAdminError(w http.ResponseWriter, err error, internalMsg string) {
 		// 回 409 而不是当作成功，让调用方自己去查流水，而不是在这里替它下结论。
 		api.Error(w, http.StatusConflict, api.CodeConflict, "该 requestId 已经记过账")
 	case errors.Is(err, repository.ErrManufacturerMissing),
+		// 饮品挂到一台不存在的设备上：错的也是入参，不是「目标不在」——要改的是
+		// deviceId 那个字段，所以和上面那三种 404 分开。
+		errors.Is(err, repository.ErrDeviceMissing),
 		errors.Is(err, repository.ErrInsufficientBalance),
 		errors.Is(err, repository.ErrBalanceOutOfRange):
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, err.Error())
+	case errors.Is(err, service.ErrStoreUnavailable):
+		// 点位校验问不到商户服务。回 503 而不是 400：参数没错，现在重试或稍后再试就
+		// 能成——回 400 会让人去改一个本来就对的 storeId。也不能因为问不到就放行，
+		// 那样校验只在商户服务正常时才生效，等于没有校验。
+		//
+		// 只回哨兵那句话，不回 err.Error()：后者是被 Join 上来的传输层错误，里面有
+		// 「dial tcp 127.0.0.1:19096」这样的内网地址，还会带个换行把提示折成两截。
+		// 其它服务的 503 也都是固定文案。
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, service.ErrStoreUnavailable.Error())
 	case service.IsValidationError(err):
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, err.Error())
 	default:

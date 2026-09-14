@@ -366,6 +366,43 @@ func TestUpdateDeviceKeepsVendorAndMoneyColumns(t *testing.T) {
 	}
 }
 
+// TestDeviceStoreIDSeparatesMissingFromUnset 盯的是「这次有没有换点位」的判据来源。
+//
+// 判据必须直接来自库里那一行（入参里只有「要写成什么」），而三种情况要分得开：挂了
+// 某个点位 / 没挂点位 / 设备不存在。后两者塌成一个空串的话，一台还没挂点位的设备去挂
+// 一个停用的点位，就会被读成「和原来一样」而跳过校验——正是这条改动要拦的那件事。
+func TestDeviceStoreIDSeparatesMissingFromUnset(t *testing.T) {
+	pool := integrationPool(t)
+	repo := adminRepo(t, pool)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	storeID := uuid.NewString()
+
+	attached := deviceFixture(t, pool, manufacturerID, "active", nil, &storeID)
+	got, err := repo.DeviceStoreID(ctx, attached)
+	if err != nil {
+		t.Fatalf("DeviceStoreID: %v", err)
+	}
+	if got == nil || *got != storeID {
+		t.Fatalf("DeviceStoreID = %v, want %q", got, storeID)
+	}
+
+	detached := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+	got, err = repo.DeviceStoreID(ctx, detached)
+	if err != nil {
+		t.Fatalf("DeviceStoreID: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("没挂点位的设备读出 %q, want nil", *got)
+	}
+
+	// 设备不存在要报错，不能也回 nil——那会和「没挂点位」混成一条路，编辑一台不存在
+	// 的设备看起来就像编辑一台没挂点位的设备。
+	if _, err := repo.DeviceStoreID(ctx, uuid.NewString()); !errors.Is(err, ErrDeviceNotFound) {
+		t.Fatalf("DeviceStoreID(不存在的设备) = %v, want ErrDeviceNotFound", err)
+	}
+}
+
 // TestUpdateDeviceClearsPaymentMethodWhenNotRegular 盯的是那条引用了两列的 CHECK：
 // qrcode_type <> 'regular' OR regular_qrcode_payment_method IS NOT NULL。切回小程序
 // 时把旧的支付方式留着，下一次有人切到 regular 就会带着一个没人记得的值通过校验。
@@ -547,7 +584,17 @@ func TestUpdateDrinkKeepsNaturalKey(t *testing.T) {
 	}
 }
 
-func TestCreateDrinkRejectsDuplicateOrigin(t *testing.T) {
+// TestOriginIndexOnlyBindsWithinOneDevice 守住判重索引的两个「不生效」面。它们不是漏
+// 网，是索引定义本身的两条边界，改动索引写法时最容易顺手丢掉：
+//
+//   - device_id 为 NULL 的行互不相撞：唯一索引把 NULL 当作彼此不同，所以没有设备的
+//     历史行（迁移 003 之前建的那批）可以同 origin 并存。这是可接受的——设备维度的读
+//     接口根本看不到它们，而新写入路径已经被服务层挡在 ErrDrinkDeviceRequired 上。
+//   - origin_id 为空的行也不相撞：索引是 WHERE origin_id <> '' 的部分索引，后台手工
+//     新建的饮品全是空 origin，同一台设备上可以有任意多行。
+//
+// 「同一台设备上的同款被拒」在 TestDrinkOriginIsUniquePerDeviceNotPerManufacturer 里。
+func TestOriginIndexOnlyBindsWithinOneDevice(t *testing.T) {
 	pool := integrationPool(t)
 	repo := adminRepo(t, pool)
 	ctx := context.Background()
@@ -565,18 +612,23 @@ func TestCreateDrinkRejectsDuplicateOrigin(t *testing.T) {
 	if _, err := repo.CreateDrink(ctx, first); err != nil {
 		t.Fatalf("create first: %v", err)
 	}
-	if _, err := repo.CreateDrink(ctx, second); !errors.Is(err, ErrDrinkOriginTaken) {
-		t.Fatalf("err = %v, want ErrDrinkOriginTaken", err)
+	if _, err := repo.CreateDrink(ctx, second); err != nil {
+		t.Fatalf("create a second device-less drink with the same origin: %v（device_id 为 NULL 的行不该被唯一索引拦住）", err)
 	}
 
-	// 空 origin_id 是后台手工新建的行，那个唯一索引是部分索引（只对非空生效），
-	// 所以第二行手工饮品不该撞上第一行。
-	manual := &model.Drink{ID: uuid.NewString(), ManufacturerID: manufacturerID,
-		OriginID: "", ProductName: "手工饮品", Price: 1000}
-	cleanupFixture(t, pool, `DELETE FROM drinks WHERE id = $1`, manual.ID)
+	// 同一台设备上的两行手工饮品：origin 都是空串，必须都放行。
+	deviceID := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+	manual := &model.Drink{ID: uuid.NewString(), DeviceID: &deviceID, ManufacturerID: manufacturerID,
+		OriginID: "", ProductName: "手工饮品一", Price: 1000}
+	another := &model.Drink{ID: uuid.NewString(), DeviceID: &deviceID, ManufacturerID: manufacturerID,
+		OriginID: "", ProductName: "手工饮品二", Price: 1200}
+	cleanupFixture(t, pool, `DELETE FROM drinks WHERE id = ANY($1)`, []string{manual.ID, another.ID})
 	cleanupAudit(t, pool, manual.ID)
-	if _, err := repo.CreateDrink(ctx, manual); err != nil {
-		t.Fatalf("create a manual drink with an empty origin_id: %v", err)
+	cleanupAudit(t, pool, another.ID)
+	for _, d := range []*model.Drink{manual, another} {
+		if _, err := repo.CreateDrink(ctx, d); err != nil {
+			t.Fatalf("create %s with an empty origin_id: %v", d.ProductName, err)
+		}
 	}
 }
 
@@ -849,5 +901,225 @@ func TestNoopRecorderStillWritesBusinessRows(t *testing.T) {
 	}
 	if createdAt.IsZero() {
 		t.Fatalf("created_at is the zero time")
+	}
+}
+
+// ============================================================
+// 饮品行上的设备
+// ============================================================
+
+// drinkFixture 造一款饮品并注册清理，返回它的 id。deviceID 为空串时写 NULL——库里
+// 确实存在还没挂设备的行（003 是加列迁移），「未分配设备」那条路径要有现场。
+func drinkFixture(t *testing.T, pool *pgxpool.Pool, manufacturerID, deviceID, name string) string {
+	t.Helper()
+	drinkID := uuid.NewString()
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO drinks(id, manufacturer_id, device_id, product_name, price)
+		 VALUES($1, $2, NULLIF($3, '')::uuid, $4, 1800)`,
+		drinkID, manufacturerID, deviceID, name); err != nil {
+		t.Fatalf("insert drink: %v", err)
+	}
+	cleanupFixture(t, pool, `DELETE FROM drinks WHERE id = $1`, drinkID)
+	return drinkID
+}
+
+// readDrinkDevice 读回这一行挂在哪台设备上。空串表示 NULL。
+func readDrinkDevice(t *testing.T, pool *pgxpool.Pool, drinkID string) string {
+	t.Helper()
+	var deviceID string
+	err := pool.QueryRow(context.Background(),
+		`SELECT coalesce(device_id::text, '') FROM drinks WHERE id = $1`, drinkID).Scan(&deviceID)
+	if err != nil {
+		t.Fatalf("read drink: %v", err)
+	}
+	return deviceID
+}
+
+// TestCreateDrinkStoresDeviceAndRecordsAudit 盯的是这次改动的核心：设备 ID 就存在
+// 饮品行上，不是另建一行关系。审计里也要看得见它——「这杯是哪台机器上的」是这一行
+// 最有信息量的字段。
+func TestCreateDrinkStoresDeviceAndRecordsAudit(t *testing.T) {
+	pool := integrationPool(t)
+	repo := adminRepo(t, pool)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	deviceID := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+	drinkID := uuid.NewString()
+	cleanupFixture(t, pool, `DELETE FROM drinks WHERE id = $1`, drinkID)
+	cleanupAudit(t, pool, drinkID)
+
+	d := &model.Drink{
+		ID: drinkID, DeviceID: &deviceID, ManufacturerID: manufacturerID,
+		ProductName: "集成测试美式", Price: 1800, Sort: 3,
+	}
+	created, err := repo.CreateDrink(ctx, d)
+	if err != nil {
+		t.Fatalf("create drink: %v", err)
+	}
+	// 回的是库里读回来的那一行：扫描列清单里少一个 device_id 就会让这里拿到 nil，
+	// 而接口那头看起来只是「新建完设备没了」。
+	if created.DeviceID == nil || *created.DeviceID != deviceID {
+		t.Fatalf("created.DeviceID = %v, want %s", created.DeviceID, deviceID)
+	}
+	if got := readDrinkDevice(t, pool, drinkID); got != deviceID {
+		t.Fatalf("devices in db = %q, want %q", got, deviceID)
+	}
+
+	if count := countAudit(t, pool, drinkID); count != 1 {
+		t.Fatalf("audit rows = %d, want exactly 1", count)
+	}
+	entry := latestAudit(t, pool, drinkID)
+	if entry.Module != "drinks" || entry.Action != "create" || entry.TargetType != "drink" {
+		t.Fatalf("audit = %q/%q/%q, want drinks/create/drink", entry.Module, entry.Action, entry.TargetType)
+	}
+	if len(entry.Before) != 0 {
+		t.Fatalf("before_data = %s, want empty on create", entry.Before)
+	}
+	var after drinkSnapshot
+	if err := json.Unmarshal(entry.After, &after); err != nil {
+		t.Fatalf("decode after_data: %v", err)
+	}
+	if after.DeviceID == nil || *after.DeviceID != deviceID {
+		t.Fatalf("after_data device = %v, want %s", after.DeviceID, deviceID)
+	}
+}
+
+// TestUpdateDrinkMovesAndDetachesDevice 盯的是编辑这一行的两个方向：换到另一台设备、
+// 以及摘下来。before/after 都得带着改之前是哪台——只看 after 一个值的话，「从哪台
+// 挪过来的」读不出来，而这正是这种事后来要查的东西。
+func TestUpdateDrinkMovesAndDetachesDevice(t *testing.T) {
+	pool := integrationPool(t)
+	repo := adminRepo(t, pool)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	first := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+	second := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+	drinkID := drinkFixture(t, pool, manufacturerID, first, "集成测试卡布")
+	cleanupAudit(t, pool, drinkID)
+
+	// 换设备。
+	if err := repo.UpdateDrink(ctx, &model.Drink{
+		ID: drinkID, DeviceID: &second, ProductName: "集成测试卡布", Price: 1800, Sort: 1,
+	}); err != nil {
+		t.Fatalf("move drink: %v", err)
+	}
+	if got := readDrinkDevice(t, pool, drinkID); got != second {
+		t.Fatalf("device after move = %q, want %q", got, second)
+	}
+
+	// 摘下来：device_id 变成 NULL，这一行留在库里（不是删行）。
+	if err := repo.UpdateDrink(ctx, &model.Drink{
+		ID: drinkID, ProductName: "集成测试卡布", Price: 1800, Sort: 1,
+	}); err != nil {
+		t.Fatalf("detach drink: %v", err)
+	}
+	if got := readDrinkDevice(t, pool, drinkID); got != "" {
+		t.Fatalf("device after detach = %q, want NULL", got)
+	}
+
+	if count := countAudit(t, pool, drinkID); count != 2 {
+		t.Fatalf("audit rows = %d, want 2", count)
+	}
+	entry := latestAudit(t, pool, drinkID)
+	var before, after drinkSnapshot
+	if err := json.Unmarshal(entry.Before, &before); err != nil {
+		t.Fatalf("decode before_data: %v", err)
+	}
+	if err := json.Unmarshal(entry.After, &after); err != nil {
+		t.Fatalf("decode after_data: %v", err)
+	}
+	if before.DeviceID == nil || *before.DeviceID != second {
+		t.Fatalf("before_data device = %v, want %s", before.DeviceID, second)
+	}
+	if after.DeviceID != nil {
+		t.Fatalf("after_data device = %v, want nil（摘下来要看得见）", *after.DeviceID)
+	}
+}
+
+// TestDrinkOriginIsUniquePerDeviceNotPerManufacturer 是这次模型改动最要紧的一条：
+// 判重键从 (manufacturer_id, origin_id) 变成 (device_id, manufacturer_id, origin_id)。
+//
+// 同一款饮品在 N 台设备上就是 N 行——这正是「每台设备一行饮品」的应有之义。旧的唯一
+// 索引会把第二台设备上架同款饮品直接拒掉，静默地少一行。
+func TestDrinkOriginIsUniquePerDeviceNotPerManufacturer(t *testing.T) {
+	pool := integrationPool(t)
+	repo := adminRepo(t, pool)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	first := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+	second := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+	originID := "origin-" + uuid.NewString()
+	cleanupFixture(t, pool, `DELETE FROM drinks WHERE manufacturer_id = $1 AND origin_id = $2`, manufacturerID, originID)
+
+	// 同一台设备上的同款：第二行必须被拒。
+	newDrink := func(deviceID, name string) *model.Drink {
+		return &model.Drink{
+			ID: uuid.NewString(), DeviceID: &deviceID, ManufacturerID: manufacturerID,
+			OriginID: originID, ProductName: name, Price: 1800,
+		}
+	}
+	firstDrink := newDrink(first, "集成测试美式 A")
+	if _, err := repo.CreateDrink(ctx, firstDrink); err != nil {
+		t.Fatalf("create on first device: %v", err)
+	}
+	cleanupAudit(t, pool, firstDrink.ID)
+	if _, err := repo.CreateDrink(ctx, newDrink(first, "集成测试美式 A 重复")); !errors.Is(err, ErrDrinkOriginTaken) {
+		t.Fatalf("err = %v, want ErrDrinkOriginTaken（同一台设备上的同款饮品）", err)
+	}
+	// 换一台设备：同样的 origin 必须放行。
+	secondDrink := newDrink(second, "集成测试美式 B")
+	if _, err := repo.CreateDrink(ctx, secondDrink); err != nil {
+		t.Fatalf("create on second device: %v", err)
+	}
+	cleanupAudit(t, pool, secondDrink.ID)
+}
+
+// TestUpdateDrinkRejectsUnknownDevice 走的是外键那条路：device_id 有 FK，填一个不存在
+// 的设备会是一条 23503。mapPGError 必须认识它，否则「设备填错了」会以 500 收场。
+func TestUpdateDrinkRejectsUnknownDevice(t *testing.T) {
+	pool := integrationPool(t)
+	repo := adminRepo(t, pool)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	drinkID := drinkFixture(t, pool, manufacturerID, "", "集成测试摩卡")
+	cleanupAudit(t, pool, drinkID)
+
+	missing := uuid.NewString()
+	err := repo.UpdateDrink(ctx, &model.Drink{
+		ID: drinkID, DeviceID: &missing, ProductName: "集成测试摩卡", Price: 1800,
+	})
+	if !errors.Is(err, ErrDeviceMissing) {
+		t.Fatalf("err = %v, want ErrDeviceMissing", err)
+	}
+	// 被拒的写入不留痕迹：设备没挂上（写下去就是个孤儿引用），也没有审计
+	// （一条说自己发生过的日志描述的是没发生的事）。
+	if got := readDrinkDevice(t, pool, drinkID); got != "" {
+		t.Fatalf("device = %q, want NULL after a rejected write", got)
+	}
+	if got := countAudit(t, pool, drinkID); got != 0 {
+		t.Fatalf("audit rows = %d, want 0 for a rejected write", got)
+	}
+}
+
+// TestUpdateDrinkIsSilentWithoutRecorder 顺带把 Noop 那条路走一遍：关掉审计时业务行
+// 照样要写。审计是可选的旁路，不该成为写入是否能成功的前提。
+func TestUpdateDrinkIsSilentWithoutRecorder(t *testing.T) {
+	pool := integrationPool(t)
+	repo := NewAdminRepository(pool, nil)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	deviceID := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+	drinkID := drinkFixture(t, pool, manufacturerID, "", "集成测试澳白")
+
+	if err := repo.UpdateDrink(ctx, &model.Drink{
+		ID: drinkID, DeviceID: &deviceID, ProductName: "集成测试澳白", Price: 1800,
+	}); err != nil {
+		t.Fatalf("update drink with auditing off: %v", err)
+	}
+	if got := readDrinkDevice(t, pool, drinkID); got != deviceID {
+		t.Fatalf("device = %q, want %q", got, deviceID)
+	}
+	if count := countAudit(t, pool, drinkID); count != 0 {
+		t.Fatalf("audit rows = %d, want 0 with a nil recorder", count)
 	}
 }

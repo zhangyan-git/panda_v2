@@ -37,9 +37,15 @@ import (
 const (
 	// userServiceDialTimeout 限制启动时建立那条共享连接的时间。
 	userServiceDialTimeout = 5 * time.Second
+	// merchantServiceDialTimeout 同理，只是这条连接给点位校验用。
+	merchantServiceDialTimeout = 5 * time.Second
 	// authorizationTimeout 限制单次实时鉴权查询，不是缓存 TTL：每个后台请求都重新
 	// 查一次调用方的授权。
 	authorizationTimeout = 5 * time.Second
+	// storeLookupTimeout 限制一次点位校验。它跟着每一次带 storeId 的保存走，所以是
+	// 每个请求都要付的往返预算：本地 gRPC 是毫秒级，2 秒足够容忍抖动，又短到不会把
+	// 一个卡住的商户服务拖成一次长时间挂起。超时按「没问到」处理——不落库。
+	storeLookupTimeout = 2 * time.Second
 )
 
 func main() {
@@ -65,15 +71,8 @@ func main() {
 		}
 	}
 
-	masterData := service.NewMasterDataService(repository.NewPostgresRepository(pool.Pool()))
-	adminMasterData := controller.NewAdminMasterDataController(masterData)
-	// 写路径单独一个仓储，因为它多了审计依赖：读路径（含 gRPC 的 GetDevice）不该
-	// 为了一个用不到的 recorder 而多传一个参数。
-	adminService := service.NewAdminService(repository.NewAdminRepository(pool.Pool(), audit.NewRecorder()))
-	adminWrite := controller.NewAdminWriteController(adminService)
-
-	// 一个注册中心、一条连接供所有实时鉴权查询使用；注册中心未启用发现时回落到
-	// 静态地址。
+	// 一个注册中心、两条共享连接：一条问 user-service 要实时授权，一条问
+	// merchant-service 要点位事实。注册中心未启用发现时都回落到静态地址。
 	reg := registry.New(cfg.RegistryEndpoint)
 	conn, err := platformclient.Dial(context.Background(), "user-service", cfg.UserGRPCAddress, userServiceDialTimeout, reg)
 	if err != nil {
@@ -81,6 +80,24 @@ func main() {
 	}
 	defer conn.Close()
 	authorizer := client.NewAdminAccessResolver(conn)
+
+	merchantConn, err := platformclient.Dial(context.Background(), "merchant-service", cfg.MerchantGRPCAddress, merchantServiceDialTimeout, reg)
+	if err != nil {
+		log.Fatalf("coffee-machine-service: dial merchant-service: %v", err)
+	}
+	defer merchantConn.Close()
+	storeResolver, err := client.NewStoreResolver(merchantConn, cfg.MerchantInternalToken, storeLookupTimeout)
+	if err != nil {
+		log.Fatalf("coffee-machine-service: init store resolver: %v", err)
+	}
+
+	masterData := service.NewMasterDataService(repository.NewPostgresRepository(pool.Pool()))
+	adminMasterData := controller.NewAdminMasterDataController(masterData)
+	// 写路径单独一个仓储，因为它多了审计依赖：读路径（含 gRPC 的 GetDevice）不该
+	// 为了一个用不到的 recorder 而多传一个参数。
+	adminService := service.NewAdminService(
+		repository.NewAdminRepository(pool.Pool(), audit.NewRecorder()), storeResolver)
+	adminWrite := controller.NewAdminWriteController(adminService)
 
 	// access token 24 小时，与 user-service / merchant-service / coupon-service 保持
 	// 一致（见那几处的说明）。四处 auth.NewService 的取值必须一致。
