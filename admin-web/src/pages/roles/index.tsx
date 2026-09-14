@@ -116,7 +116,9 @@ const RolesPage: React.FC = () => {
     {
       title: '操作',
       valueType: 'option',
-      width: 340,
+      // 四个按钮（两个带图标）实测要 352px。给少了不会换行——Space 默认 nowrap，
+      // 多出来的宽度直接顶破单元格，而这一列又钉在右边，看起来就是按钮跑到表格外面。
+      width: 360,
       fixed: 'right',
       render: (_, row) => (
         <Space>

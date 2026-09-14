@@ -123,7 +123,9 @@ const StoresPage: React.FC = () => {
     {
       title: '操作',
       valueType: 'option',
-      width: 320,
+      // 待审核的行有五个按钮（通过/驳回/禁用/编辑/删除），实测要 346px。
+      // 这一列钉在右边，宽度给少了溢出的按钮会直接落在表格外面。
+      width: 360,
       fixed: 'right',
       render: (_, row) => (
         <Space>
@@ -217,7 +219,9 @@ const StoresPage: React.FC = () => {
         actionRef={actionRef}
         rowKey="id"
         columns={columns}
-        scroll={{ x: 1500 }}
+        // 必须等于各列 width 之和：180+150+150+220+130+80+100+160+360=1530。
+        // 之前是 1500，比实际列宽之和小，钉在右边的操作列跟表体是错开的。
+        scroll={{ x: 1530 }}
         search={false}
         request={async (params) => {
           const result = await listStores(toPageParams(params));

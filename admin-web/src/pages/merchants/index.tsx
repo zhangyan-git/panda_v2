@@ -97,7 +97,8 @@ const MerchantsPage: React.FC = () => {
     {
       title: '操作',
       valueType: 'option',
-      width: 300,
+      // 四个按钮实测 302px，300 会顶破单元格右边缘（这一列钉在右边，溢出即出表格）。
+      width: 320,
       fixed: 'right',
       render: (_, row) => (
         <Space>
@@ -244,7 +245,9 @@ const MerchantsPage: React.FC = () => {
         actionRef={actionRef}
         rowKey="id"
         columns={columns}
-        scroll={{ x: 1220 }}
+        // scroll.x 必须 ≥ 各列 width 之和（200+100+120+140+200+160+320=1240）：
+        // 小于实际列宽之和时，钉在右边的操作列是按 scroll.x 定位的，会跟表体错开。
+        scroll={{ x: 1240 }}
         search={false}
         request={async (params) => {
           const result = await listMerchants(toPageParams(params));
