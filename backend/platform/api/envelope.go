@@ -99,6 +99,16 @@ func Created(w http.ResponseWriter, data any) {
 	write(w, http.StatusCreated, Response{Success: true, Data: data})
 }
 
+// Accepted 返回「收下了但还没做完」的成功响应（202）。
+//
+// 它与 Success 的区别不是状态码本身，而是 body 里那句「还不知道结果」：抽奖的参与要跨服务
+// 扣卡，扣减超时的时候我们既不能说成功也不能说失败——用户的卡可能已经被扣了，也可能没有。
+// 回 200 是在替一次没落地的操作背书，回 5xx 是在把一个未决说成故障（客户端会去重试，
+// 而重试是由修复 worker 用同一个幂等号做的，不是客户端）。
+func Accepted(w http.ResponseWriter, data any) {
+	write(w, http.StatusAccepted, Response{Success: true, Data: data})
+}
+
 // NoContent 返回无内容成功响应（204），用于删除等操作。
 func NoContent(w http.ResponseWriter) {
 	write(w, http.StatusNoContent, Response{})

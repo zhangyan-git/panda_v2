@@ -1,7 +1,7 @@
 // Package migrations embeds the SQL migration sets this repository ships.
 //
 // The SQL lives outside every Go module tree, so it is embedded here and handed
-// to platform/database/migrate as an fs.FS. Eight sets exist:
+// to platform/database/migrate as an fs.FS. Nine sets exist:
 //
 //   - Legacy: the pre-split single-database chain (001…009). It is kept
 //     byte-for-byte as it was applied, so a database that predates the split can
@@ -13,10 +13,11 @@
 //   - Order: order-service's database.
 //   - Payment: payment-service's database.
 //   - Account: account-service's database.
+//   - Lottery: lottery-service's database.
 //
-// Identity, Merchant, Coupon, CoffeeMachine, Order, Payment, and Account each
-// encode the state their service owns. No migration set creates a foreign key
-// into another service's database.
+// Identity, Merchant, Coupon, CoffeeMachine, Order, Payment, Account, and Lottery
+// each encode the state their service owns. No migration set creates a foreign
+// key into another service's database.
 //
 // Identity and Merchant each encode the state the legacy chain converges to for
 // their own domain — no cross-database foreign key, no table that moved to the
@@ -62,6 +63,9 @@ var paymentFiles embed.FS
 //go:embed account/*.sql
 var accountFiles embed.FS
 
+//go:embed lottery/*.sql
+var lotteryFiles embed.FS
+
 // Legacy is the pre-split single-database migration chain.
 var Legacy fs.FS = sub(legacyFiles, ".")
 
@@ -85,6 +89,9 @@ var Payment fs.FS = sub(paymentFiles, "payment")
 
 // Account is account-service's migration set.
 var Account fs.FS = sub(accountFiles, "account")
+
+// Lottery is lottery-service's migration set.
+var Lottery fs.FS = sub(lotteryFiles, "lottery")
 
 // Versions lists a set's migration file names in the order the runner applies
 // them: top-level *.sql, sorted by name. It mirrors platform/database/migrate's

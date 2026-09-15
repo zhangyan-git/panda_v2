@@ -339,6 +339,101 @@ func TestNewHandlerRoutesFortuneCardsAheadOfTheMiniappPrefix(t *testing.T) {
 	}
 }
 
+func TestNewHandlerRoutesLotteryAheadOfTheMiniappPrefix(t *testing.T) {
+	var gotPath string
+	lottery := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer lottery.Close()
+
+	user := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = "user:" + r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer user.Close()
+
+	h, err := NewHandler(Config{
+		MerchantServiceURL: "http://merchant.test",
+		UserServiceURL:     user.URL,
+		LotteryServiceURL:  lottery.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	for _, path := range []string{
+		"/v1/miniapp/lottery/campaigns",
+		"/api/v1/miniapp/lottery/campaigns",
+		"/v1/miniapp/lottery/wins",
+		// 后台那几条。抽奖域的路径形状比账户域深一层：期次带 {id}、人工开奖在
+		// {id}/draw 上，两条都列出来，免得前缀少写一段时在这里看不出来。
+		"/v1/admin/lottery/activations",
+		"/v1/admin/lottery/campaigns/0c7f2c8e-6a1a-4d0e-9b8f-1f2a3b4c5d6e",
+		"/v1/admin/lottery/rounds/0c7f2c8e-6a1a-4d0e-9b8f-1f2a3b4c5d6e/draw",
+	} {
+		t.Run(path, func(t *testing.T) {
+			gotPath = ""
+			res := httptest.NewRecorder()
+			h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+			if res.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d", res.Code, http.StatusNoContent)
+			}
+			if gotPath != normalizePath(path) {
+				t.Errorf("upstream path = %q, want %q (user-service answered instead of lottery-service)", gotPath, normalizePath(path))
+			}
+		})
+	}
+
+	// 反方向：同前缀下的其它小程序路径仍然归 user-service。少了这一条，把
+	// /v1/miniapp 整段挪给抽奖服务也能让上面几条全绿。
+	gotPath = ""
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/v1/miniapp/auth/login", nil))
+	if gotPath != "user:/v1/miniapp/auth/login" {
+		t.Fatalf("upstream = %q, want the user-service one", gotPath)
+	}
+
+	// 前缀按路径段比较，不是字符串前缀：lottery-extra 与 lottery 不是同一个前缀，
+	// 配了上游也不能被抽奖服务接走。用后台那条来断言，因为 /v1/miniapp/lottery-extra
+	// 会被下面的 /v1/miniapp 接走——那是对的（user-service 就是那个前缀的兜底），
+	// 不是这里要证的事；后台这条没人接，落 default 才是 404。
+	gotPath = ""
+	res = httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/v1/admin/lottery-extra/campaigns", nil))
+	if res.Code != http.StatusNotFound || gotPath != "" {
+		t.Fatalf("status/upstream path = %d/%q, want 404 and no upstream call", res.Code, gotPath)
+	}
+
+	// 上面那条的反面：小程序的同级路径确实由 /v1/miniapp 的兜底接走。这一条不是
+	// 「抽奖域漏了」的证明，而是把兜底行为写下来，免得后来的人把 404 和转给
+	// user-service 当成同一件事去「修」。
+	gotPath = ""
+	res = httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/v1/miniapp/lottery-extra/campaigns", nil))
+	if gotPath != "user:/v1/miniapp/lottery-extra/campaigns" {
+		t.Fatalf("upstream = %q, want the user-service catch-all", gotPath)
+	}
+
+	// 没配上游时保持 404，而不是落到 /v1/miniapp 去让 user-service 回答：那样客户端
+	// 拿到的 404 看着像「用户服务没有这个接口」，而真相是抽奖服务没接上。
+	unset, err := NewHandler(Config{MerchantServiceURL: "http://merchant.test", UserServiceURL: user.URL})
+	if err != nil {
+		t.Fatalf("NewHandler() without a lottery upstream error = %v", err)
+	}
+	for _, path := range []string{"/v1/miniapp/lottery/campaigns", "/v1/admin/lottery/campaigns"} {
+		gotPath = ""
+		res := httptest.NewRecorder()
+		unset.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+		if res.Code != http.StatusNotFound {
+			t.Fatalf("%s status without upstream = %d, want %d", path, res.Code, http.StatusNotFound)
+		}
+		if gotPath != "" {
+			t.Fatalf("%s without a lottery upstream reached %q, want nobody answered it", path, gotPath)
+		}
+	}
+}
+
 // 客户端塞进来的 X-Forwarded-For 必须被丢掉、换成真实的 RemoteAddr。
 // 追加语义（httputil 的默认行为）会把伪造值留在链首，下游按「第一个」取来源时
 // 拿到的就是它——限流键、审计里的来源都会跟着错。

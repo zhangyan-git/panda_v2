@@ -85,6 +85,14 @@ func TestCompatibilityRouteMatrix(t *testing.T) {
 			{"/v1/admin/coffee-beans/entries", ""},
 			{"/v1/admin/coffee-beans/0c7f2c8e-6a1a-4d0e-9b8f-1f2a3b4c5d6e/adjustments", ""},
 			{"/v1/miniapp/coffee-beans", ""},
+			// 抽奖域同理：testConfig() 不填 LOTTERY_SERVICE_URL，所以这三条锁的是
+			// 「没配就保持 404」。前两条是后台的活动列表与期次，第三条是小程序的那棵
+			// 树——小程序那几条尤其重要，没配时必须在这里 404，而不是落到
+			// /v1/miniapp 被转给 user-service（那样客户端会以为用户服务没有这个接口）。
+			{"/v1/admin/lottery/campaigns", ""},
+			{"/v1/admin/lottery/rounds/123/draw", ""},
+			{"/v1/miniapp/lottery/campaigns", ""},
+			{"/v1/miniapp/lottery/wins", ""},
 			{"/v1/unknown", ""},
 			{"/v1/admin", ""},
 			{"//v1/admin/users", ""},

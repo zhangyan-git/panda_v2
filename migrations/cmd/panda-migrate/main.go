@@ -2,8 +2,8 @@
 //
 // Usage:
 //
-//	panda-migrate -database URL apply <identity|merchant|coupon|coffee_machine|order|payment|account|legacy>
-//	panda-migrate -database URL adopt <identity|merchant|coupon|coffee_machine|order|payment|account|legacy> THROUGH
+//	panda-migrate -database URL apply <identity|merchant|coupon|coffee_machine|order|payment|account|lottery|legacy>
+//	panda-migrate -database URL adopt <identity|merchant|coupon|coffee_machine|order|payment|account|lottery|legacy> THROUGH
 //
 // apply runs every migration in the set that the database has not recorded yet,
 // and is safe to re-run. Services do the same thing on start when
@@ -159,19 +159,21 @@ func setByName(name string) (fs.FS, error) {
 		return migrations.Payment, nil
 	case "account":
 		return migrations.Account, nil
+	case "lottery":
+		return migrations.Lottery, nil
 	case "legacy":
 		return migrations.Legacy, nil
 	default:
-		return nil, fmt.Errorf("unknown set %q, want identity, merchant, coupon, coffee_machine, order, payment, account, or legacy", name)
+		return nil, fmt.Errorf("unknown set %q, want identity, merchant, coupon, coffee_machine, order, payment, account, lottery, or legacy", name)
 	}
 }
 
 func usage() {
 	fmt.Fprint(flag.CommandLine.Output(), `panda-migrate applies the repository's migration sets.
 
-  panda-migrate -database URL apply <identity|merchant|coupon|coffee_machine|order|payment|account|legacy>
-  panda-migrate -database URL adopt <identity|merchant|coupon|coffee_machine|order|payment|account|legacy> THROUGH
-  panda-migrate -database URL -baseline-only adopt <identity|merchant|coupon|coffee_machine|order|payment|account|legacy> THROUGH
+  panda-migrate -database URL apply <identity|merchant|coupon|coffee_machine|order|payment|account|lottery|legacy>
+  panda-migrate -database URL adopt <identity|merchant|coupon|coffee_machine|order|payment|account|lottery|legacy> THROUGH
+  panda-migrate -database URL -baseline-only adopt <identity|merchant|coupon|coffee_machine|order|payment|account|lottery|legacy> THROUGH
 
 apply          run every migration the database has not recorded yet (safe to re-run)
 adopt          record everything up to and including THROUGH as applied, then run the rest;

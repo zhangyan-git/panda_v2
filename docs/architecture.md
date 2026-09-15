@@ -16,11 +16,12 @@
 | `backend/services/order-service` | 订单域：订单与订单行、支付分摊、售后单 | `panda_order` |
 | `backend/services/payment-service` | 支付域：渠道与支付方式配置、支付单与资金行、渠道回调、记账流水 | `panda_payment` |
 | `backend/services/account-service` | 资产账户域：福卡余额与不可变流水（发放 / 扣减 / 冲正） | `panda_account` |
+| `backend/services/lottery-service` | 抽奖域：门店开通、抽奖活动与奖池、期次与参与、开奖与中奖记录 | `panda_lottery` |
 | `backend/services/gateway-service` | 全站唯一入口，单二进制单路由表 | 无 |
 | `contracts/` | proto 定义与已提交的生成代码 | — |
-| `migrations/` | 八套迁移：`Legacy`（单库时代 001–009，冻结）、`Identity`、`Merchant`、`Coupon`、`CoffeeMachine`、`Order`、`Payment`、`Account` | — |
+| `migrations/` | 九套迁移：`Legacy`（单库时代 001–009，冻结）、`Identity`、`Merchant`、`Coupon`、`CoffeeMachine`、`Order`、`Payment`、`Account`、`Lottery` | — |
 
-嵌套的 `go.mod` 是**独立模块**：在 `backend/` 里跑 `go test ./...` 不会碰到八个
+嵌套的 `go.mod` 是**独立模块**：在 `backend/` 里跑 `go test ./...` 不会碰到九个
 服务模块。CI（`.github/workflows/check.yml`）对每个模块各跑一遍
 `gofmt` / `go build` / `go vet` / `go test`，就是为了不再出现「服务从未被构建过」。
 
@@ -156,6 +157,43 @@ switch 它、不 switch 渠道代码。新接一家同形态的渠道 = 插一�
 **宁可多冻**：多冻可解冻，少冻则追不回——已经抽过奖的福卡是追不回来的，这条规则存在的
 全部理由就在这里。
 
+`panda_lottery`（lottery-service）
+: `lottery_activations` `lottery_campaigns` `lottery_campaign_prizes` `lottery_rounds`
+  `lottery_participations` `lottery_draws` `lottery_wins` `lottery_win_events`
+  `message_outbox` `message_inbox`
+
+抽奖域**只拥有抽奖与奖品数据**（§5.7）：福卡余额在账户库，订单事实在订单库，门店与设备在
+商户库与设备库，四者一律只存不透明 UUID + 展示用快照名。所以「这个用户有几张卡」在抽奖库里
+查不到——参与时实时调 account-service 的 `DeductFortuneCards`，把回来的 `entry_id` 存成值引用。
+
+**开通是挂门店的一个动作，活动再分粒度。** `lottery_activations` 一个门店一行
+（`UNIQUE (location_id)`），活动通过 `activation_id` 挂上去，设备级活动靠
+`lottery_campaigns.machine_id` 非空表达——**不用 `scope_type` + `scope_id` 两列**，那样
+「某台咖啡机的活动不属于本门店」在结构上就写得出来，而这种写法要靠服务层自觉。开通有操作人
+和时间，不是从「有没有启用中的活动」派生出来的：派生会让门店在期次之间的空档里显示成
+「没开通」。
+
+**期次是滚出来的，没有「建一期」的接口**：活动一开第一期就出来了，开奖的同事务里开出下一期。
+一期只能开一次的全部依据是 `lottery_draws.round_id` 上的**唯一索引**——多副本 worker 因此
+不需要选主，抢输的那个 INSERT 冲突即可。`lottery_rounds` 上还有一条部分唯一索引
+`(campaign_id) WHERE status IN ('open','closed')`，保证一个活动同时只有一期在收人。
+
+`participant_count` 是**存下来的列**而不是 `COUNT(*)`：它既是抽奖中心的渲染要读的数，又是开奖
+worker 的扫描判据。所以它和 `SUM(amount) = balance` 一样是要被测的不变式。并发下它靠
+`UPDATE ... SET participant_count = participant_count + 1 WHERE id = $1 AND status = 'open'`
+这一句串行化：`READ COMMITTED` 下行锁会重读最新版本再算 `SET`，没有「先读后写」的窗口。
+达标即把期次置 `closed` 停止收人，与 `status='open'` 那个条件一起构成「扣减飞行途中期次关了」
+的唯一检出点——影响 0 行就走冲正把卡退回去。
+
+开奖**可复核但不可证明公平**：种子是派生值而非随机数，
+`sha256(round_id ‖ 首个参与 id ‖ 末个参与 id ‖ 参与数 ‖ trigger)`；中奖名单是对每条已确认参与算
+`sha256(seed ‖ participation_id)` 升序取前 N 名（`algorithm = 'sha256-sort-v1'`），插入顺序不影响
+结果。种子与参与集合都落库，所以第三方可以把名单完整重算一遍。**这不是 commit–reveal**：有库读
+权限的运维在「最后一人参与到扫描之间」能预测结果，那不在本轮范围。
+
+奖品兑付**不调 coupon-service**：`coupon.proto` 是空壳，发券只有要管理员 actor 的
+`POST /v1/admin/coupons/issue`。所以奖品的 `prize_kind` / `coupon_template_id` 今天只存不消费。
+
 **不再有跨库外键。** 迁移里出现 `REFERENCES` 跨到另一个库的表，就是拆库没做完。
 
 `scope_id`（账号范围）本来就是多态指针、没有外键，拆库后维持原样。
@@ -177,6 +215,8 @@ switch 它、不 switch 渠道代码。新接一家同形态的渠道 = 插一�
 | coffee-machine-service → merchant-service `GetStore` | 设备挂点位前确认这个点位存在且可用 |
 | order-service → coffee-machine-service `GetDevice` | 下单前确认这台设备在不在、启没启用、点位对不对（§5.8 L454） |
 | order-service → payment-service `CreatePayment` | 发起支付：订单侧在锁内校验完归属、状态与金额，把**权威金额**交给支付域建支付单 |
+| lottery-service → account-service `DeductFortuneCards` | 用福卡参与抽奖时扣卡。`fortune_card.proto` 的**第一个真实调用方** |
+| lottery-service → account-service `ReverseFortuneCardEntry` | 参与在中途被开奖抢先（期次已关）时把卡原路退回 |
 
 除 gRPC 之外还有一类跨服务事实，它走的是消息而不是调用：**福卡的发放与退款冻结**。
 
@@ -201,25 +241,27 @@ account-service 与订单域之间的交接点，散到几个队列只会让「�
 
 这条事件今天由后台的「标记完成」产生（`paid → completed` 那条边本该由履约完成事件驱动，
 而 fulfillment-service 还没建）。两者发的是同一个 `order.completed`，所以履约接上来时下游
-一个字都不用改。账户域**不发下游事件**：发放结果今天没有消费者（抽奖没建），发出去只会被
-静默丢弃。
+一个字都不用改。账户域**不发下游事件**：发放结果今天没有消费者——抽奖域虽然建起来了，但它
+按设计**不消费 `order.completed`**：参与是用户拿着福卡主动发起的（§3.1 明确舍弃了「订单完成
+自动加入抽奖」），所以抽奖库那边没有 inbox 消费者，`RABBITMQ_QUEUE` 也不配。
 
 最后一条与其余几条有一点不同：它是一次**写**（建支付单）而不是读一个事实。它成立的前提是
 归属分得清——金额与「这单能不能付」的判据在订单库里，只有订单服务说得清；而支付单、渠道
 配置、回调验签在支付库里，只有支付服务碰得到。所以是订单侧编排、支付侧执行，不是反过来。
 它走同步 gRPC 而不是消息：客户端发起支付后要立刻拿到支付参数，异步那条路给不了。
 
-`order/v1` 与 `coupon/v1` 两个 proto 目前仍是空壳（`service X {}`，一个 rpc 都没有）。
-那不是「这两个域没实现」——它们的 HTTP 入口都已经在跑——而是**还没有一条需要固化成契约的
+`order/v1`、`coupon/v1` 与 `lottery/v1` 三个 proto 目前仍是空壳（`service X {}`，一个 rpc 都没有）。
+那不是「这几个域没实现」——它们的 HTTP 入口都已经在跑——而是**还没有一条需要固化成契约的
 内部调用**。空壳在这里只是「还没被依赖」，等第一个调用方出现再往里加 rpc；现在写了也没人验。
-`fulfillment` / `inventory` / `lottery` / `membership` / `partner` / `settlement`
-才是真的没有实现。
+lottery 这一头尤其干净：开奖在进程内，没有任何入向 gRPC，所以它是全仓第一个
+「**只出向、不入向**」的服务（出向那两条见上面的服务间契约表）。
+`fulfillment` / `inventory` / `membership` / `partner` / `settlement` 才是真的没有实现。
 
 `account/v1` 这个目录里有两个不相干的东西，别把它们当成一件事：`account.proto` 是后台与商户端
 **登录账号**的草稿，全仓没有一处 import；`fortune_card.proto` 是资产账户域，已经实现。
-后者的 `GetFortuneCardBalance` / `DeductFortuneCards` / `ReverseFortuneCardEntry`
-**今天没有调用方**（抽奖没建、退款单没建），它们不是死代码而是这个服务的对外契约——
-集成测试直接走 gRPC 客户端打这三个。
+后者的 `DeductFortuneCards` / `ReverseFortuneCardEntry` 第一个真实调用方就是 lottery-service
+（见上面的服务间契约表），`GetFortuneCardBalance` 还没有人调——退款单也没建。三个 rpc 的
+集成测试都直接走 gRPC 客户端打，所以它们不是死代码，是这个服务的对外契约。
 
 coffee-machine-service 两头各占一半：作为**调用方**它问商户服务的点位，作为**被调方**它回答
 订单服务的设备查询。写入、同步与出杯那几条链路还没实现。
@@ -478,13 +520,20 @@ OTel 全局 provider；没配时返回全局的空实现，不建立任何网络
   有意的，不是漏了。**豆那一半相反：审核通过（`approved`）就冲正**，两者不矛盾——福卡是
   还没花出去的凭证，钱没离开账户，解冻等于放它回去继续花；豆是支付时就已经收下的钱，还
   回去才是退款。渠道支付的订单走到豆的冲正这条路上会什么都不发生（找不到那笔扣减），那
-  是常态不是异常。抽奖（lottery-service 的活动、参与、开奖、中奖、核销）也没建，
-  `DeductFortuneCards` 仍然没有调用方——冻结落地后它判「够不够扣」看的第一次是**可用**
-  余额，这是冻结唯一的判据改动。服务端**不计算**承诺福卡——`fortuneCardsExpected` 仍采信
+  是常态不是异常。服务端**不计算**承诺福卡——`fortuneCardsExpected` 仍采信
   调用方，与「价格来自调用方」是同一个已知缺口；加购加赠活动的规则归属也仍未定，本轮只是
   把它的快照原样记进流水。人工冻结/解冻没有后台入口（冻结只有「售后申请」一个触发源），
   也没有补冻的定时兜底——事件丢了就是丢了，与发放同一条取舍。`miniapp/` 前端仍是空目录
   （余额与冻结字段已经在接口里回来了，页面下一轮）。
+
+- **抽奖到「开奖 + 中奖记录」为止**（lottery-service）：门店开通、活动与奖池、期次滚动、
+  用福卡参与、自动/人工开奖、中奖记录都落库了，`DeductFortuneCards` 的调用方就是它。
+  `available = balance - frozen_balance` 是它判「够不够扣」的判据，也是冻结唯一的判据改动。
+  **没做的**：核销 / 领取 / 换奖（中奖一律停在 `pending`，列与状态机按最终形态建全了）、
+  商户端入口（`/v1/merchant/lottery/*` 一条都没有）、退款成功后的追回（抽奖域**不消费任何
+  事件**——发券那条线的自动发放要 coupon-service 的 gRPC，而那是空壳）、重抽、开奖审批流。
+  规则先记在这儿：**已开奖的期次是终局；未开奖期次内的参与在退款成功时冲正 + 回退
+  `participant_count`**（跌破门槛且未到点则把期次开回 `open`）。
 - **支付方式列表接口不做**：「这台设备能用哪几条方式」是设备域 `device_payment_methods`
   的事实，归设备域；支付服务不为它开一条从支付库读咖啡机库的口子。
 - **后台/商户端的支付页面不做**：`/v1/admin/payments` 这类前缀留给后台切片，admin-web 与

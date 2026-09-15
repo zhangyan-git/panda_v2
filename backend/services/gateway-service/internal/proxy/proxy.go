@@ -53,6 +53,10 @@ type Config struct {
 	// 与 /v1/miniapp/{fortune-cards,coffee-beans}——后两条落在 user-service 的
 	// /v1/miniapp 前缀里，顺序见 NewHandler 的那条 case。
 	AccountServiceURL string
+	// LotteryServiceURL 同上：可留空，留空时抽奖域的路径保持 404（抽奖域是最后加的
+	// 服务）。它接的是两条 /v1/miniapp/lottery/*（抽奖中心与我的中奖记录），都落在
+	// user-service 的 /v1/miniapp 前缀里——顺序见 NewHandler 的那条 case。
+	LotteryServiceURL string
 	RequestTimeout    time.Duration
 	// UploadTimeout replaces RequestTimeout for the upload path only, so one slow
 	// route does not buy every other route a two-minute hang.
@@ -124,6 +128,15 @@ func NewHandler(cfg Config) (http.Handler, error) {
 			return nil, fmt.Errorf("account service URL: %w", err)
 		}
 	}
+	// 抽奖域同样后加。它接的两条 /v1/miniapp/lottery/* 也落在 user-service 的
+	// /v1/miniapp 前缀里，构造完之后同样要看下面那条 case 的位置。
+	var lottery http.Handler
+	if strings.TrimSpace(cfg.LotteryServiceURL) != "" {
+		lottery, err = newProxy(cfg.LotteryServiceURL, cfg.HTTPClient)
+		if err != nil {
+			return nil, fmt.Errorf("lottery service URL: %w", err)
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := normalizePath(r.URL.Path)
 		r.URL.Path = path
@@ -161,6 +174,27 @@ func NewHandler(cfg Config) (http.Handler, error) {
 				return
 			}
 			upstream = account
+		// 抽奖域的两条小程序路径，理由与账户域逐字相同：/v1/miniapp/lottery/campaigns
+		// 与 /v1/miniapp/lottery/wins 都落在下面的 /v1/miniapp → user-service 前缀里，
+		// 写在它后面就永远轮不到，小程序拿到的会是一句「用户服务没有这个接口」。
+		//
+		// 后台那一条（/v1/admin/lottery/*）本可以放到后面去——/v1/admin/lottery 与
+		// user-service 接的 /v1/admin/* 都不冲突——但两端同属一个上游，拆成两条 case
+		// 只是让「抽奖域接哪几条路径」这个问题有两个答案。写前缀而不是整条路径：
+		// 一棵树上有多条子路径（campaigns/{id}、rounds/{id}/draw），逐个列举漏一个
+		// 就是一个静默的 404。
+		//
+		// 与 account/order 那几条一样，这里**不把 lottery == nil 合进 case 条件**：
+		// 没配上游时落到 /v1/miniapp 会被转给 user-service，而真正的原因是抽奖服务
+		// 没接上。写在这里显式 404，客户端才不会把「抽奖域没部署」读成「用户服务
+		// 没这个接口」。
+		case hasPathPrefix(path, "/v1/admin/lottery"),
+			hasPathPrefix(path, "/v1/miniapp/lottery"):
+			if lottery == nil {
+				http.NotFound(w, r)
+				return
+			}
+			upstream = lottery
 		// 订单域的四条路径必须先于 user-service 那一条：/v1/miniapp/orders 与
 		// /v1/miniapp/after-sales 同时落在「/v1/miniapp →user-service」这个前缀里，
 		// 而 Go 的 switch 取第一个成立的 case，写在它后面就永远轮不到。放到前面的

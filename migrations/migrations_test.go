@@ -32,7 +32,7 @@ func TestLegacySetIsFrozen(t *testing.T) {
 }
 
 func TestSetsAreUsable(t *testing.T) {
-	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "payment": Payment, "account": Account, "legacy": Legacy} {
+	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "payment": Payment, "account": Account, "lottery": Lottery, "legacy": Legacy} {
 		t.Run(name, func(t *testing.T) {
 			versions, err := Versions(set)
 			if err != nil {
@@ -90,8 +90,19 @@ func TestSetsDoNotCrossTheDatabaseBoundary(t *testing.T) {
 		// this list, because their references point at each other inside the
 		// database.
 		"account": regexp.MustCompile(`REFERENCES\s+(orders|order_\w+|merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule|coupon_\w+|user_coupons|coupon_templates|coupon_batches|payment_methods|payments|payment_\w+|devices|drinks|device_drinks|manufacturers|manufacturer_credentials|memberships|membership_plans|users|miniapp_users|user_accounts)\s*\(`),
+		// lottery-service owns the 抽奖 and 奖品 data and nothing else. The store a
+		// campaign is scoped to, the coffee machine it hangs off, the order whose
+		// 福卡 paid for a participation, and the user who participated all appear as
+		// values (location_id, machine_id, source_order_id, user_id…); the 福卡
+		// balance itself lives in account-service and is only ever reached over
+		// gRPC, which is why no fortune_card table may appear here. Its own eight
+		// tables — lottery_activations, lottery_campaigns, lottery_campaign_prizes,
+		// lottery_rounds, lottery_participations, lottery_draws, lottery_wins and
+		// lottery_win_events — are deliberately absent from this list, because their
+		// references point at each other inside the database.
+		"lottery": regexp.MustCompile(`REFERENCES\s+(orders|order_\w+|merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule|coupon_\w+|user_coupons|coupon_templates|coupon_batches|payment_methods|payments|payment_\w+|devices|drinks|device_drinks|manufacturers|manufacturer_credentials|memberships|membership_plans|users|miniapp_users|user_accounts|account_\w+|fortune_card_\w+|coffee_bean_\w+)\s*\(`),
 	}
-	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "payment": Payment, "account": Account} {
+	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "payment": Payment, "account": Account, "lottery": Lottery} {
 		t.Run(name, func(t *testing.T) {
 			versions, err := Versions(set)
 			if err != nil {
@@ -112,7 +123,7 @@ func TestSetsDoNotCrossTheDatabaseBoundary(t *testing.T) {
 
 // Every database needs its own pair of message tables — the outbox is written in
 // the same transaction as the business row, so it cannot be a shared table. That
-// makes seven copies of the same DDL, and seven places to forget.
+// makes eight copies of the same DDL, and eight places to forget.
 //
 // The copies are compared on their CREATE TABLE column lists, in order. Comments,
 // formatting, and the ALTER block the identity and merchant sets carry (it exists
@@ -133,6 +144,7 @@ var messageTableCopies = []struct {
 	{Order, "001_order_core.sql", "order"},
 	{Payment, "001_payment_core.sql", "payment"},
 	{Account, "001_account_core.sql", "account"},
+	{Lottery, "001_lottery_core.sql", "lottery"},
 }
 
 func TestMessageTablesStayInSyncAcrossSets(t *testing.T) {

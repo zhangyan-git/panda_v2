@@ -117,6 +117,19 @@ export default function access(initialState: {
     // 权限数据见 migrations/identity/021。只绑了 super_admin。
     canAdjustCoffeeBeans: has('account:manage'),
 
+    // 抽奖域（lottery-service）。三个码的破坏力差三档（差得比订单域还开），与后端
+    // routes/admin.go 里那三个常量一一对应：
+    //   read   只是看活动、期次、中奖名单。泄露的是运营数据。
+    //   manage 能建/改活动、改奖池、开关门店。改奖池就是改**将来中奖的名额与奖品**——
+    //          它今天不直接动人资产，等券类奖品能自动发放了就会。
+    //   draw   人工开奖与作废。**全系统唯一一个能凭空决定「谁中奖」的动作**，所以后端
+    //          只把它绑给 super_admin，前端这里也只是照实反映——把它并进 manage 等于
+    //          让任何一个能改活动名字的人也能决定中奖名单。
+    // 「能看」与后面两个分开，是为了让客服能查「这个人中没中奖」而不必拿到开奖权。
+    canViewLottery: has('lottery:read'),
+    canManageLottery: has('lottery:manage'),
+    canDrawLottery: has('lottery:draw'),
+
     // 原始检查——当需要用权限码直接判断时
     can: (code: string) => has(code),
   };

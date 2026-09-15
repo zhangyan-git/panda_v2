@@ -64,6 +64,8 @@ func main() {
 		PaymentServiceURL: os.Getenv("PAYMENT_SERVICE_URL"),
 		// 资产账户域（福卡）同理。
 		AccountServiceURL: os.Getenv("ACCOUNT_SERVICE_URL"),
+		// 抽奖域同理。这个服务没有入向 gRPC，也没有 LOTTERY_GRPC_ADDR。
+		LotteryServiceURL: os.Getenv("LOTTERY_SERVICE_URL"),
 		RequestTimeout:    timeout,
 		UploadTimeout:     uploadTimeout,
 	})

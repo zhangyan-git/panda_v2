@@ -112,6 +112,18 @@ export default defineConfig({
     // 这一页审的是用户提交的售后申请，退款单在 payment-service（还没建）。所以叫「退款申请」
     // 而不是老后台的「退款订单」——页面上点的「通过申请」并不会真的把钱退了。
     { path: '/after-sales', name: '退款申请', icon: 'RollbackOutlined', component: 'after-sales', access: 'canViewOrders' },
+    // 抽奖域。侧边栏是「抽奖管理 > 开通门店 / 抽奖活动 / 期次 / 中奖记录」，那套目录层级
+    // 由服务端菜单树给（migrations/identity/022_lottery_admin.sql，app.ts 的
+    // menuDataRender 整个替换掉静态 routes 里的菜单项），这里只需要能被路由到，所以
+    // **平铺**着写，与订单域那几条同一条约定。
+    { path: '/lottery/activations', name: '开通门店', icon: 'EnvironmentOutlined', component: 'lottery/activations', access: 'canViewLottery' },
+    { path: '/lottery/campaigns', name: '抽奖活动', icon: 'GiftOutlined', component: 'lottery/campaigns', access: 'canViewLottery' },
+    // 活动详情是带参数的路由，与设备详情、订单详情同一条约定：**不进侧边栏**
+    // （它必须带 id 才有意义），name 只用于面包屑。排在 /lottery/campaigns 之后只是
+    // 让人读起来顺——真正决定匹配的是 react-router 6 的静态段优先规则。
+    { path: '/lottery/campaigns/:id', name: '活动详情', component: 'lottery/campaigns/detail', access: 'canViewLottery' },
+    { path: '/lottery/rounds', name: '期次', icon: 'FieldTimeOutlined', component: 'lottery/rounds', access: 'canViewLottery' },
+    { path: '/lottery/wins', name: '中奖记录', icon: 'CrownOutlined', component: 'lottery/wins', access: 'canViewLottery' },
     {
       path: '/miniapp-users',
       name: '小程序用户',

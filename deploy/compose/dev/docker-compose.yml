@@ -392,6 +392,41 @@ services:
       etcd:
         condition: service_healthy
 
+  lottery-service:
+    profiles: ["app"]
+    build:
+      context: ../../..
+      dockerfile: deploy/docker/Dockerfile.backend
+      args:
+        SERVICE: lottery-service
+        CMD: ./cmd
+    env_file: ["../../../.env"]
+    environment:
+      PANDA_ENV: dev
+      SERVICE_NAME: lottery-service
+      HTTP_ADDR: ":8080"
+      # 这个服务不设 GRPC_ADDR：它本轮没有入向 gRPC（内部调用方一个都没有——退款追回
+      # 本轮不接，开奖在进程内），只有出向的账户服务调用和给控制台/小程序的 HTTP。
+      LOTTERY_DATABASE_URL: postgres://${POSTGRES_USER:-panda}:${POSTGRES_PASSWORD:-replace-me}@postgres:5432/panda_lottery?sslmode=disable
+      # 一次参与就是当场扣一张福卡，所以账户服务是硬依赖；后台页面要走实时授权，用户
+      # 服务也是硬依赖。两个都在 config 里必填：少任何一个都拒绝启动。
+      ACCOUNT_GRPC_ADDR: account-service:9090
+      USER_GRPC_ADDR: user-service:9090
+      # 和 user-service 同理：.env 里的 RABBITMQ_URL 指向 localhost，容器里到不了。
+      # 本轮它只用发布侧（开奖事件进 outbox 再发出去），没有消费侧。
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-user}:${RABBITMQ_PASSWORD:-replace-me}@rabbitmq:5672/
+      REGISTRY_ENDPOINT: http://etcd:2379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      DB_MIGRATE_ON_START: "false"
+      # 与 merchant-service 一样刻意不设 REDIS_ADDR：这个服务不用 Redis。
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+
   gateway-service:
     profiles: ["app"]
     build:
@@ -420,6 +455,10 @@ services:
       # /v1/miniapp → user-service，小程序拿到的 404 看着像「用户服务没有这个接口」；
       # /v1/admin/fortune-cards 则是网关自己的 404。两者都在页面上表现为接口不存在。
       ACCOUNT_SERVICE_URL: http://account-service:8080
+      # 抽奖域。少了这一行，/v1/miniapp/lottery/* 会落到 /v1/miniapp → user-service
+      # （那条 catch-all 在 proxy.go 里排在具体域之前就会被它吃掉），小程序拿到的 404
+      # 看着像「用户服务没有这个接口」；/v1/admin/lottery/* 则是网关自己的 404。
+      LOTTERY_SERVICE_URL: http://lottery-service:8080
       REGISTRY_ENDPOINT: http://etcd:2379
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       # Without this the gateway keys rate limits on nginx's container address,
