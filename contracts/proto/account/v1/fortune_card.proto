@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package panda.account.v1;
+option go_package = "github.com/panda-dev/panda-v2/contracts/proto/account/v1";
+
+// 福卡账户的内部契约——方案 5.6 的 account-service 里，福卡账户那一半。
+//
+// ⚠️ 同目录的 account.proto 是**登录账号**的草稿（ADMIN / MERCHANT 的 Login），全仓没有
+// 任何地方 import 它，与本文件不是一回事：这里的「账户」是用户的资产账户，不是能登录后台的
+// 账号。这个目录名两义是历史遗留，改它要动一堆 go_package，不在本轮。
+//
+// 调用方都是**服务**，不是客户端：抽奖（lottery-service）扣减、退款追回冲正。小程序与后台
+// 读余额、流水走 HTTP（`/v1/miniapp/fortune-cards`、`/v1/admin/fortune-cards/*`），不走这里。
+//
+// 金额一律是「张数」，整数，没有小数。
+service FortuneCardService {
+  // 读一个用户的福卡余额。
+  //
+  // 抽奖在扣减之前先看一眼，好在余额不够时给出一句「福卡余额不足」，而不是拿一次失败去
+  // 说同一件事。没有账户行就是 0——账户行是第一次发放时懒创建的。
+  rpc GetFortuneCardBalance(GetFortuneCardBalanceRequest) returns (GetFortuneCardBalanceResponse);
+
+  // 扣减福卡：用户每参与一次抽奖扣 1 张（张数由调用方给，本服务不持有抽奖规则）。
+  //
+  // request_id 是幂等号，调用方重试必须拿回同一笔而不是扣第二次，所以它进 entry_key
+  // 唯一索引。余额不足是本服务**认识**的业务结果，回 FailedPrecondition；那是「用户没钱」，
+  // 不是「服务坏了」，调用方应当把它翻译成给用户看的一句话。
+  rpc DeductFortuneCards(DeductFortuneCardsRequest) returns (DeductFortuneCardsResponse);
+
+  // 冲正一笔已有的流水，把张数还回去（退款追回福卡）。
+  //
+  // 幂等键就从 entry_id 派生（`reverse:{entryId}`）：一笔流水只能被冲正一次，重放回放
+  // 已经生成的那笔。冲正会把余额扣成负数时拒绝——「已经抽过奖的福卡追不回来」是业务规则，
+  // 不是故障，所以是明确的错误消息，不是 500。
+  rpc ReverseFortuneCardEntry(ReverseFortuneCardEntryRequest) returns (ReverseFortuneCardEntryResponse);
+}
+
+message GetFortuneCardBalanceRequest {
+  // 小程序用户 ID，值引用（身份服务的用户）。本服务不持有用户资料。
+  string user_id = 1;
+}
+
+message GetFortuneCardBalanceResponse {
+  // 可用福卡张数。
+  int64 balance = 1;
+}
+
+message DeductFortuneCardsRequest {
+  string user_id = 1;
+  // 扣减张数，恒 > 0。
+  int64 amount = 2;
+  // 幂等号，由调用方给（抽奖侧就是参与记录的 ID）。
+  string request_id = 3;
+  // 流水上给用户看的那一行文案，例如「参与抽奖」。
+  string title = 4;
+  // 起因对象，都是值引用：reference_type 是 draw / order / entry 之类，reference_id 是它的
+  // ID，reference_no 是给人看的号（订单号）。本服务的流水上记「为什么余额变了」，
+  // 与事件日志不是一回事。
+  string reference_type = 5;
+  string reference_id = 6;
+  string reference_no = 7;
+  string remark = 8;
+}
+
+message DeductFortuneCardsResponse {
+  // 本次扣减后的余额。重放时给的是**当时那笔**的 balance_after，不是此刻的余额。
+  int64 balance_after = 1;
+  // 这一笔流水的 ID。退款追回时拿它去冲正。
+  string entry_id = 2;
+  // true = 这一笔之前就存在，本次没有新增行（重放）。
+  bool replayed = 3;
+}
+
+message ReverseFortuneCardEntryRequest {
+  // 要冲正的那笔流水 ID（fortune_card_entries.id）。
+  string entry_id = 1;
+  // 冲正流水上的文案与备注，留空则用「冲正」。
+  string title = 2;
+  string remark = 3;
+}
+
+message ReverseFortuneCardEntryResponse {
+  // 冲正流水的 ID（重放时是已有的那一笔）。
+  string entry_id = 1;
+  // 冲正之后的余额。重放时给的是**当时那笔**的 balance_after。
+  int64 balance_after = 2;
+  // true = 这笔冲正之前就存在，本次没有新增行（重放）。
+  bool replayed = 3;
+}

@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -247,6 +248,97 @@ func TestNewHandlerRoutesOrderAheadOfTheMiniappPrefix(t *testing.T) {
 	}
 }
 
+// 福卡账户域也是独立的上游，且它的两条路径分属两棵树：后台那条没有冲突前缀，
+// 小程序那条落在「/v1/miniapp →user-service」里——和订单域同一个坑，所以这里
+// 也把「谁答的」记下来，只比状态码是看不出区别的（两边都是 404 或 204）。
+func TestNewHandlerRoutesFortuneCardsAheadOfTheMiniappPrefix(t *testing.T) {
+	var gotPath string
+	account := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer account.Close()
+
+	user := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = "user:" + r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer user.Close()
+
+	h, err := NewHandler(Config{
+		MerchantServiceURL: "http://merchant.test",
+		UserServiceURL:     user.URL,
+		AccountServiceURL:  account.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	for _, path := range []string{
+		"/v1/miniapp/fortune-cards",
+		"/api/v1/miniapp/fortune-cards",
+		"/v1/miniapp/fortune-cards/entries",
+		"/v1/admin/fortune-cards/entries",
+		"/v1/admin/fortune-cards/0c7f2c8e-6a1a-4d0e-9b8f-1f2a3b4c5d6e",
+		// 咖啡豆那一棵树。后台三条都列出来：网关是按前缀转发的（不分发到方法），
+		// 但「前缀写对了、account-service 那边怎么分发」是两件事，这三条正好覆盖
+		// account-service 里那条从长到短的注册顺序（entries → {userId}/adjustments
+		// → {userId}），哪一条被网关漏掉都会在这里红。
+		"/v1/miniapp/coffee-beans",
+		"/v1/admin/coffee-beans/entries",
+		"/v1/admin/coffee-beans/0c7f2c8e-6a1a-4d0e-9b8f-1f2a3b4c5d6e",
+		"/v1/admin/coffee-beans/0c7f2c8e-6a1a-4d0e-9b8f-1f2a3b4c5d6e/adjustments",
+	} {
+		t.Run(path, func(t *testing.T) {
+			gotPath = ""
+			res := httptest.NewRecorder()
+			h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+			if res.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d", res.Code, http.StatusNoContent)
+			}
+			if gotPath != normalizePath(path) {
+				t.Errorf("upstream path = %q, want %q (user-service answered instead of account-service)", gotPath, normalizePath(path))
+			}
+		})
+	}
+
+	// 反方向：同前缀下的其它小程序路径仍然归 user-service。少了这一条，把
+	// /v1/miniapp 整段挪给账户服务也能让上面几条全绿。
+	gotPath = ""
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/v1/miniapp/auth/login", nil))
+	if gotPath != "user:/v1/miniapp/auth/login" {
+		t.Fatalf("upstream = %q, want the user-service one", gotPath)
+	}
+
+	// 前缀按路径段比较，不是字符串前缀：fortune-cards-extra 与 fortune-cards 不是
+	// 同一个前缀，配了上游也不能被账户服务接走。
+	gotPath = ""
+	res = httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/v1/admin/fortune-cards-extra/entries", nil))
+	if res.Code != http.StatusNotFound || gotPath != "" {
+		t.Fatalf("status/upstream path = %d/%q, want 404 and no upstream call", res.Code, gotPath)
+	}
+
+	// 没配上游时保持 404，而不是落到 /v1/miniapp 去让 user-service 回答：那样客户端
+	// 拿到的 404 看着像「用户服务没有这个接口」，而真相是账户服务没接上。
+	unset, err := NewHandler(Config{MerchantServiceURL: "http://merchant.test", UserServiceURL: user.URL})
+	if err != nil {
+		t.Fatalf("NewHandler() without an account upstream error = %v", err)
+	}
+	for _, path := range []string{"/v1/miniapp/fortune-cards", "/v1/admin/fortune-cards/entries"} {
+		gotPath = ""
+		res := httptest.NewRecorder()
+		unset.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+		if res.Code != http.StatusNotFound {
+			t.Fatalf("%s status without upstream = %d, want %d", path, res.Code, http.StatusNotFound)
+		}
+		if gotPath != "" {
+			t.Fatalf("%s without an account upstream reached %q, want nobody answered it", path, gotPath)
+		}
+	}
+}
+
 // 客户端塞进来的 X-Forwarded-For 必须被丢掉、换成真实的 RemoteAddr。
 // 追加语义（httputil 的默认行为）会把伪造值留在链首，下游按「第一个」取来源时
 // 拿到的就是它——限流键、审计里的来源都会跟着错。
@@ -283,6 +375,71 @@ func TestNewHandlerOverwritesInboundForwardedHeaders(t *testing.T) {
 	}
 	if gotForwardedHost != "example.com" {
 		t.Fatalf("X-Forwarded-Host = %q, want the inbound Host", gotForwardedHost)
+	}
+}
+
+// TestNewHandlerRoutesPaymentCallback 覆盖支付域那条唯一的公网路径。
+//
+// 它和上面几个域一样测两件事：配了上游要真的转发过去（含 /api 前缀的归一化），没配就
+// 保持 404。这一条特别值得单测，因为**渠道回调是唯一一条从公网打进内网的路径**——
+// 少写一个 case 的后果不是页面上一个 404，而是渠道的回调永远到不了，支付单停在 pending，
+// 而渠道那边以为通知成功了（它收到的是网关的 404，会按自己的策略重试一阵然后放弃）。
+func TestNewHandlerRoutesPaymentCallback(t *testing.T) {
+	var gotPath, gotMethod string
+	payment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":"SUCCESS"}`))
+	}))
+	defer payment.Close()
+
+	h, err := NewHandler(Config{
+		MerchantServiceURL: "http://merchant.test",
+		UserServiceURL:     "http://user.test",
+		PaymentServiceURL:  payment.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	for _, path := range []string{
+		"/v1/payments/callback/manual_dev",
+		"/api/v1/payments/callback/manual_dev",
+	} {
+		t.Run(path, func(t *testing.T) {
+			gotPath, gotMethod = "", ""
+			res := httptest.NewRecorder()
+			h.ServeHTTP(res, httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}")))
+			if res.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", res.Code, http.StatusOK)
+			}
+			if gotPath != normalizePath(path) {
+				t.Errorf("upstream path = %q, want %q", gotPath, normalizePath(path))
+			}
+			if gotMethod != http.MethodPost {
+				t.Errorf("upstream method = %q, want POST", gotMethod)
+			}
+		})
+	}
+
+	// 前缀按路径段比较：/v1/payments-extra 不是支付域。
+	gotPath = ""
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/v1/payments-extra/callback/x", nil))
+	if res.Code != http.StatusNotFound || gotPath != "" {
+		t.Fatalf("status/upstream path = %d/%q, want 404 and no upstream call", res.Code, gotPath)
+	}
+
+	// 没配上游时保持 404，而不是落到别的域去（/v1/payments 与它们没有共同前缀，落到
+	// default 也是 404——这条断言守的是「将来有人给它加前缀时别把它接走」）。
+	unset, err := NewHandler(Config{MerchantServiceURL: "http://merchant.test", UserServiceURL: "http://user.test"})
+	if err != nil {
+		t.Fatalf("NewHandler() without a payment upstream error = %v", err)
+	}
+	unsetRes := httptest.NewRecorder()
+	unset.ServeHTTP(unsetRes, httptest.NewRequest(http.MethodPost, "/v1/payments/callback/manual_dev", nil))
+	if unsetRes.Code != http.StatusNotFound {
+		t.Fatalf("status without upstream = %d, want %d", unsetRes.Code, http.StatusNotFound)
 	}
 }
 

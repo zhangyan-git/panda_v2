@@ -26,7 +26,7 @@ var (
 	ErrRegularQrcodePaymentNeeded = errors.New("二维码类型为 regular 时必须指定支付方式")
 	ErrRegularQrcodePaymentBad    = errors.New("支付方式只能为 fengxuan_wanlian 或 youlian")
 
-	ErrDrinkNameRequired         = errors.New("饮品名称不能为空")
+	ErrDrinkNameRequired = errors.New("饮品名称不能为空")
 	// ErrDrinkDeviceRequired 是新建饮品时的必填：饮品行就是「某台设备上的一杯」，
 	// 没有设备的行卖不出去，只会在列表里显示成「未分配设备」。编辑时允许传空——
 	// 库里那几行遗留的无设备饮品得有个地方能挂上去，但**不能**从界面上造出新的。
@@ -35,7 +35,7 @@ var (
 	// "abc" 会让 PostgreSQL 在参数解析阶段报 22P02 并以 500 收场，而这明摆着是填错了。
 	ErrDrinkDeviceInvalid = errors.New("deviceId 必须是合法的设备 ID")
 	ErrDrinkTypeInvalid   = errors.New("drinkType 只能为 milk_coffee、black_coffee 或 other")
-	ErrPriceNegative             = errors.New("价格不能为负数")
+	ErrPriceNegative      = errors.New("价格不能为负数")
 	// ErrDrinkPriceInvalid 对应数据库那条 CHECK (price > 0 OR (vip_price = 0 AND
 	// pickup_code_price = 0))：原价为 0 时只允许整款饮品三级价全为 0（免费的），
 	// 不允许「原价 0、会员价 5 元」这种只填了一半的行。

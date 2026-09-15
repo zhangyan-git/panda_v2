@@ -58,6 +58,25 @@ func (r *PostgresRepository) FindOrderByID(ctx context.Context, id string) (*mod
 	return order, nil
 }
 
+// FindOrderByNo 按订单号读一张订单的头部信息。
+//
+// 与 FindOrderByID 是同一份投影的两个键：orderColumns 多一列或换顺序，两个函数都要跟着动，
+// 放在一起才看得见这件事。
+//
+// 为什么要有这个键：发起支付那条路走的是**订单号**。它是这一单对外的标识——写进
+// payments.order_no、印在渠道账单上、支付结果事件里回传的也是它——而调用方（小程序）手上
+// 只有它。用内部 UUID 做那条路的路由，等于要求客户端先拿到一个它不需要知道的标识。
+//
+// order_no 上有唯一索引（orders_order_no_key），所以这是一次索引查找，不是扫描。
+func (r *PostgresRepository) FindOrderByNo(ctx context.Context, orderNo string) (*model.Order, error) {
+	order, err := scanOrder(r.pool.QueryRow(ctx,
+		`SELECT `+orderColumns+` FROM orders WHERE order_no = $1`, orderNo))
+	if err != nil {
+		return nil, mapPGError(err)
+	}
+	return order, nil
+}
+
 // OrderDetail 是一张订单的全量：头 + 行 + 出资 + 状态流水 + 售后记录。
 type OrderDetail struct {
 	Order        *model.Order
@@ -172,6 +191,8 @@ type OrderRow struct {
 	HasDrinkLine      bool
 	HasAddonLine      bool
 	HasMembershipLine bool
+	// 取杯号也由列表顺手带出来（列表不读行，见下）。没有饮品行或还没付成功就是 nil。
+	PickupCode *string
 }
 
 // orderRowFlagColumns 是列表 SELECT 里跟在 orderColumns 后面的那三列派生标记。
@@ -184,6 +205,16 @@ var orderRowFlagColumns = strings.Join([]string{
 	lineExistsCondition(model.LineTypeAddon, true),
 	lineExistsCondition(model.LineTypeMembership, true),
 }, ", ")
+
+// orderRowPickupColumn 是列表 SELECT 里最后那一列：这一单的取杯号。
+//
+// 用标量子查询而不是把 order_lines JOIN 进来，理由与上面三个 EXISTS 相同（见 ListOrders 的
+// 注释）：饮品行一单可以有好几行，JOIN 会让订单在结果里重复，叠上 LIMIT 就跳着翻页。
+// 走 order_lines_order_idx (order_id, line_no)，取 line_no 最小的那行——一单的饮品行共用
+// 一个取杯号，真要出现不一致也该是稳定地取第一行而不是随机一行。
+const orderRowPickupColumn = `(SELECT l.pickup_code FROM order_lines l
+	WHERE l.order_id = orders.id AND l.pickup_code IS NOT NULL
+	ORDER BY l.line_no LIMIT 1)`
 
 // ListOrders 按筛选条件分页读订单头部（不含行）。
 //
@@ -255,7 +286,7 @@ func (r *PostgresRepository) ListOrders(ctx context.Context, f OrderFilter) ([]*
 	}
 
 	pageArgs := append(append([]any{}, args...), f.PageSize, (f.Page-1)*f.PageSize)
-	rows, err := r.pool.Query(ctx, `SELECT `+orderColumns+`, `+orderRowFlagColumns+`
+	rows, err := r.pool.Query(ctx, `SELECT `+orderColumns+`, `+orderRowFlagColumns+`, `+orderRowPickupColumn+`
 		FROM orders`+where+
 		fmt.Sprintf(" ORDER BY created_at DESC, id LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2),
 		pageArgs...)
@@ -267,10 +298,11 @@ func (r *PostgresRepository) ListOrders(ctx context.Context, f OrderFilter) ([]*
 	orders := make([]*OrderRow, 0, f.PageSize)
 	for rows.Next() {
 		row := &OrderRow{}
-		// 复用 scanOrder 的列顺序，再顺手读三个标记：两边的列顺序必须一起改
-		// （orderRowFlagColumns 是那次改动的唯一入口），所以追加的列只能跟在
-		// orderColumns 后面，不能插进中间。
-		order, err := scanOrderWith(rows, &row.HasDrinkLine, &row.HasAddonLine, &row.HasMembershipLine)
+		// 复用 scanOrder 的列顺序，再顺手读三个标记与取杯号：两边的列顺序必须一起改
+		// （orderRowFlagColumns 与 orderRowPickupColumn 是那次改动的唯一入口），所以追加的
+		// 列只能跟在 orderColumns 后面，不能插进中间。
+		order, err := scanOrderWith(rows, &row.HasDrinkLine, &row.HasAddonLine,
+			&row.HasMembershipLine, &row.PickupCode)
 		if err != nil {
 			return nil, 0, err
 		}

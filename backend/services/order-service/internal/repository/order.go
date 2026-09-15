@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/panda-dev/panda-v2/backend/platform/audit"
+	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/dto"
+	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/model"
 )
 
 // 领域事件类型。方案 7.3 / 7.4：订单状态变更、支付结果与售后退款都以事件发出去，
@@ -22,16 +24,27 @@ const (
 	EventOrderPaymentFailed = "order.payment_failed"
 	EventOrderCancelled     = "order.cancelled"
 	EventOrderExpired       = "order.expired"
+	// EventOrderCompleted 是「这一单完成了」——福卡的发放时点就是它（原型口径：订单完成后
+	// 到账，制作中不入账）。**人工标记完成与将来的履约完成事件共用这一个类型**：触发源不同，
+	// 发放口径一个字不差，所以后台那个临时入口敢先上线，履约接上来时下游一行不用改。
+	EventOrderCompleted = "order.completed"
 	// EventAfterSaleApplied / EventAfterSaleReviewed 是售后这一段的两个交接点（方案 7.4）：
 	// 退款链是「Order 创建售后申请 → Payment 创建退款单」，事件就是这个接力棒。
-	// 今天没有消费者（payment-service 未建），事件投出去会被静默丢弃；等它建起来，
-	// 消费 reviewed 里 approved 的那条就能建退款单，本服务的形状一个字不用改。
+	// payment-service 未建之前 reviewed 里 approved 的那条会被静默丢弃，等它建起来消费，
+	// 本服务的形状一个字不用改。
 	//
-	// 用户撤销 pending 不发事件：那一刻还没有任何下游动作可撤（申请阶段没有退款单），
-	// 发出去只是一条没人需要的通知。
+	// 这三个事件今天有一个**真实的**消费者：account-service。它用 applied 冻结这一单的福卡
+	// （申请即冻，用户提交申请的那一刻起那些卡不能拿去抽奖）、用 reviewed 里被驳回的那条
+	// 与 cancelled 解冻。
 	EventAfterSaleApplied  = "order.after_sale.applied"
 	EventAfterSaleReviewed = "order.after_sale.reviewed"
-	eventVersion           = "v1"
+	// EventAfterSaleCancelled 是用户撤销自己那张还没被审核的申请。
+	//
+	// 它曾经不发事件，理由是「这一刻还没有任何下游动作可撤」——申请阶段没有退款单，
+	// payments 侧什么都没做过。福卡冻结让那句话不再成立：**有**动作可撤了，冻着的卡得放回去。
+	// 所以撤销必须发出来，否则用户撤了申请、卡还锁着，而他手上再没有任何能解开它的动作。
+	EventAfterSaleCancelled = "order.after_sale.cancelled"
+	eventVersion            = "v1"
 
 	// idempotencyScopeCreate 是下单幂等键的 scope。写成常量而不是散在各处的字面量：
 	// 它同时出现在「抢占」和「回填响应」两处，写歪一处就变成两个互不相认的命名空间。
@@ -43,11 +56,12 @@ const (
 
 func newEventID() string { return uuid.NewString() }
 
-// newPickupCode 生成取杯码：一个不透明的短凭据。
+// newPickupCode 生成取杯号：取杯口屏幕上那个短号（用户侧叫取杯号、屏幕上叫取杯码）。
 //
-// 为什么是随机而不是从订单号派生：取杯码是**凭据**，谁拿到它就能取走那杯咖啡。
-// 从订单号派生等于把凭据公开——订单号会出现在客服系统、对账文件、后台列表里。
-// order_lines_pickup_code_key 唯一索引兜住碰撞，撞了就是一次 500 重试，不是安全问题。
+// 为什么是随机而不是从订单号派生：这个号会大字摆在取杯口的屏幕上，谁站在那儿都看得见，
+// 而订单号出现在客服系统、对账文件、后台列表里。两者能互相推导就等于把「谁的单」和
+// 「屏幕上的号」连了起来。它本身不是凭据——取走咖啡靠的是这一单的状态，不是念出号码。
+// order_lines_pickup_code_key 唯一索引兜住碰撞，撞了就是一次 500 重试。
 func newPickupCode() (string, error) {
 	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // 去掉 I/O/0/1，避免口头/肉眼混淆
 	raw := make([]byte, 12)
@@ -344,18 +358,26 @@ func (r *PostgresRepository) SettlePayment(ctx context.Context, p SettlePaymentP
 		WHERE id=$1`, order.ID, p.Amount, p.PaymentMethod, p.PaymentNo, paidAt); err != nil {
 		return nil, false, mapPGError(err)
 	}
+	// 行号接着已有的最大值往下排，不能从 1 重数：这张订单上可能已经躺着几行失败的尝试
+	// （见 settleFailed），而「换一种支付方式重付」正是那些失败行存在的理由。从 1 重数
+	// 会撞 UNIQUE(order_id, line_no)，整个落单事务回滚——而钱在支付侧已经收了，订单
+	// 永远变不成 paid，重放也照撞，只能人工改数据。
+	nextLineNo, err := nextPaymentLineNo(ctx, tx, order.ID)
+	if err != nil {
+		return nil, false, err
+	}
 	for i, f := range fundings {
 		if _, err := tx.Exec(ctx, `INSERT INTO order_payment_lines
 			(order_id, line_no, line_type, amount, status, payment_no, provider_transaction_id,
 			 account_entry_id, succeeded_at)
 			VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8)`,
-			order.ID, i+1, f.LineType, f.Amount, f.PaymentNo, p.ProviderTransactionID,
+			order.ID, nextLineNo+i, f.LineType, f.Amount, f.PaymentNo, p.ProviderTransactionID,
 			f.AccountEntryID, paidAt); err != nil {
 			return nil, false, mapPGError(err)
 		}
 	}
-	// 取杯码在这一刻生成：付款之前它只是一张空头凭据，付款之后才是取走那杯咖啡的凭据。
-	// 只在用户本人查自己的订单时返回（见 controller 的响应构造）。
+	// 取杯号在这一刻生成：付款之前这单还没成，屏幕上也没什么可显示；付款之后才叫号。
+	// 用户侧与后台都看得到（见 controller 的响应构造）。
 	code, err := newPickupCode()
 	if err != nil {
 		return nil, false, err
@@ -390,6 +412,29 @@ type OrderPaymentResult struct {
 	Applied bool
 }
 
+// nextPaymentLineNo 给出这张订单上下一笔出资流水该用的行号。
+//
+// 出资流水的 line_no 只是一张订单内部的排序号（唯一约束 UNIQUE(order_id, line_no) 让
+// 「同一单里第几笔」这件事可读），真正的业务约束是 order_payment_lines_one_live_success。
+// 所以它必须**接着已有的最大值往下排**，不能各写各的：成功路径从 1 重数、失败路径从
+// MAX+1 排，两边一碰就撞唯一索引，而这张表里同时存在成功行与失败行是常态——用户用微信
+// 付失败、改用咖啡豆付成功，正是最常见的那条路。
+//
+// 唯一索引撞车在这里的后果不对称：settleFailed 与 SettlePayment 都在 FOR UPDATE 锁住的
+// 订单行事务里，撞了就是整个事务回滚——钱在支付侧已经收了，本地的订单却永远停在
+// pending_payment，而且这条失败行还在，事件重放也一样撞，只能人工改数据。
+//
+// 调用方已经持有订单行的写锁，所以 MAX+1 不会与并发的另一笔结算抢到同一个号。
+func nextPaymentLineNo(ctx context.Context, tx pgx.Tx, orderID string) (int, error) {
+	var next int
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(line_no), 0) + 1 FROM order_payment_lines WHERE order_id=$1`,
+		orderID).Scan(&next); err != nil {
+		return 0, mapPGError(err)
+	}
+	return next, nil
+}
+
 // settleFailed 记录一次失败的支付尝试：主状态不动，只留一笔失败的出资流水与状态流水。
 //
 // 主状态不改是有意的：一次支付失败不等于订单作废，用户可以换一种方式再付一次
@@ -408,12 +453,15 @@ func settleFailed(ctx context.Context, tx pgx.Tx, order *lockedOrder, p SettlePa
 			amount = 1
 		}
 	}
+	lineNo, err := nextPaymentLineNo(ctx, tx, order.ID)
+	if err != nil {
+		return err
+	}
 	var lineID string
 	if err := tx.QueryRow(ctx, `INSERT INTO order_payment_lines
 		(order_id, line_no, line_type, amount, status, payment_no, provider_transaction_id, failure_code)
-		VALUES ($1, COALESCE((SELECT MAX(line_no) FROM order_payment_lines WHERE order_id=$1), 0) + 1,
-		        $2, $3, 'failed', $4, $5, $6)
-		RETURNING id::text`, order.ID, method, amount, p.PaymentNo, p.ProviderTransactionID, p.FailureCode).Scan(&lineID); err != nil {
+		VALUES ($1,$7,$2,$3,'failed',$4,$5,$6)
+		RETURNING id::text`, order.ID, method, amount, p.PaymentNo, p.ProviderTransactionID, p.FailureCode, lineNo).Scan(&lineID); err != nil {
 		return mapPGError(err)
 	}
 	if err := recordTransition(ctx, tx, "payment_line", lineID, "", "failed", p.FailureMessage, p.RequestID, "system", nil, nil); err != nil {
@@ -439,15 +487,20 @@ type lockedOrder struct {
 	PaidAmount           int64
 	RefundedAmount       int64
 	FortuneCardsExpected int
+	// FortuneCardSnapshot 是承诺福卡的构成快照（调用方给的 JSON，形状见 order_event.go）。
+	// 标记完成要用它把承诺拆成流水条目，而拆的结果要写进事件——所以它必须在锁内读到，
+	// 与那一行订单同属一个时刻。
+	FortuneCardSnapshot []byte
 }
 
 const lockedOrderColumns = `id::text, order_no, user_id::text, status, payable_amount,
-	paid_amount, refunded_amount, fortune_cards_expected`
+	paid_amount, refunded_amount, fortune_cards_expected, fortune_card_snapshot`
 
 func scanLockedOrder(row scanner) (*lockedOrder, error) {
 	order := &lockedOrder{}
 	err := row.Scan(&order.ID, &order.OrderNo, &order.UserID, &order.Status,
-		&order.PayableAmount, &order.PaidAmount, &order.RefundedAmount, &order.FortuneCardsExpected)
+		&order.PayableAmount, &order.PaidAmount, &order.RefundedAmount, &order.FortuneCardsExpected,
+		&order.FortuneCardSnapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -523,6 +576,89 @@ func (r *PostgresRepository) CancelOrder(ctx context.Context, p CancelOrderParam
 		return nil, err
 	}
 	return &OrderPaymentResult{OrderID: order.ID, OrderNo: order.OrderNo, Status: "cancelled", Applied: true}, nil
+}
+
+// CompleteOrderParams 是标记完成的输入。
+type CompleteOrderParams struct {
+	OrderID string
+	TraceID string
+	// ActorType 与 ActorID 写进状态流水。今天只有后台一个来源，所以没有 CancelOrder
+	// 那样的 Audit 开关：解除这个方法的唯一调用方就是一次人工干预，必审（方案 11.6）。
+	// 履约完成事件接上来时另开一条路，那条路不带 actor——它不是人做的。
+	ActorType string
+	ActorID   *string
+}
+
+// CompleteOrder 把一笔已付款的订单标记为完成，并在同一个事务里发出 order.completed。
+//
+// 只有 paid 能完成：没付钱的没什么可完成，已完成的重放要挡（同一单发两次福卡），
+// 已取消/已退款的更不该被推着往前走。越界的状态用 ErrOrderNotCompletable 报出去，
+// controller 翻成 409，而不是 500。
+//
+// 事件在同一个事务里追加：**状态改了而事件丢了**，订单就成了「完成了但福卡永远不发」，
+// 而不发福卡这件事没有任何人会察觉——那正是 outbox 存在的理由，不是「改完再发」。
+func (r *PostgresRepository) CompleteOrder(ctx context.Context, p CompleteOrderParams) (*OrderPaymentResult, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	order, err := lockedOrderByID(ctx, tx, p.OrderID)
+	if err != nil {
+		return nil, err
+	}
+	if order.Status != model.OrderStatusPaid {
+		// 判据是订单上的事实而不是请求，所以不在 service.ValidationErrors 里。
+		return nil, ErrOrderNotCompletable
+	}
+	// finished_at 由数据库给，并把落库后的那个值读回来：事件的流水时间必须与订单上写的
+	// 是同一个时刻，否则「订单完成于 X」会有两个说法（见 finished_at 那一列的用法）。
+	var finishedAt time.Time
+	if err := tx.QueryRow(ctx, `UPDATE orders
+		SET status='completed', finished_at=NOW(), updated_at=NOW()
+		WHERE id=$1 RETURNING finished_at`, order.ID).Scan(&finishedAt); err != nil {
+		return nil, mapPGError(err)
+	}
+	if err := recordTransition(ctx, tx, "order", order.ID, order.Status, "completed", "", p.TraceID, p.ActorType, p.ActorID, nil); err != nil {
+		return nil, err
+	}
+	grants := fortuneCardGrants(order.ID, order.FortuneCardsExpected, order.FortuneCardSnapshot)
+	if err := appendOutbox(ctx, tx, EventOrderCompleted, eventVersion, p.TraceID, dto.OrderCompletedEventPayload{
+		OrderNo:        order.OrderNo,
+		OrderID:        order.ID,
+		UserID:         order.UserID,
+		FinishedAtUnix: finishedAt.Unix(),
+		FortuneCards:   grants,
+	}); err != nil {
+		return nil, err
+	}
+	if err := r.recorder.Record(ctx, tx, audit.Entry{
+		Module: "orders", Action: "complete", Operation: "标记完成",
+		TargetType: "order", TargetID: order.ID, TargetName: order.OrderNo,
+		Before: audit.Snapshot(map[string]any{"status": order.Status}),
+		// 把发放的张数写进审计：这一栏是事后追「这几张福卡是谁放出去的」时唯一的入口
+		// （账户侧的流水只说「订单完成赠送」，不说谁点的完成）。
+		After: audit.Snapshot(map[string]any{
+			"status":              "completed",
+			"fortuneCardsGranted": grantedTotal(grants),
+		}),
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &OrderPaymentResult{OrderID: order.ID, OrderNo: order.OrderNo, Status: "completed", Applied: true}, nil
+}
+
+// grantedTotal 是一次发放的总张数，只用于审计那一栏。
+func grantedTotal(grants []dto.OrderFortuneGrant) int64 {
+	var total int64
+	for _, grant := range grants {
+		total += grant.Amount
+	}
+	return total
 }
 
 func lockedOrderByID(ctx context.Context, tx pgx.Tx, id string) (*lockedOrder, error) {

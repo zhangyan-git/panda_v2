@@ -7,7 +7,10 @@
 package v1
 
 import (
+	context "context"
 	grpc "google.golang.org/grpc"
+	codes "google.golang.org/grpc/codes"
+	status "google.golang.org/grpc/status"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -15,12 +18,27 @@ import (
 // Requires gRPC-Go v1.64.0 or later.
 const _ = grpc.SupportPackageIsVersion9
 
+const (
+	PaymentService_CreatePayment_FullMethodName = "/panda.payment.v1.PaymentService/CreatePayment"
+)
+
 // PaymentServiceClient is the client API for PaymentService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// Contract placeholder; domain methods are added only after business scope approval.
+// 支付服务的内部契约。调用方只有 order-service：发起支付这条链路不能走 MQ
+// （客户端要立刻拿到支付参数，方案 7.2），所以它是一次同步 RPC。
+//
+// 金额单位是分，用 int64。方案 13.1 要求的「金额在 JSON 传输里必须是字符串」是为了
+// 绕开 JS 的数字精度，protobuf 二进制里 int64 是精确的；真正回到客户端的那份是
+// pay_params，里面凡有金额一律是字符串。
 type PaymentServiceClient interface {
+	// 为一张订单发起一次支付。
+	//
+	// 调用方在锁内校验完归属、状态与应付金额之后才发过来，本服务按它给的金额建单，
+	// 不去读订单库——订单事实的归属方是订单服务，支付这边只拿一个值引用。反过来，
+	// 本服务建单成功后把渠道返回的支付参数原样交回，由调用方转给客户端。
+	CreatePayment(ctx context.Context, in *CreatePaymentRequest, opts ...grpc.CallOption) (*CreatePaymentResponse, error)
 }
 
 type paymentServiceClient struct {
@@ -31,12 +49,33 @@ func NewPaymentServiceClient(cc grpc.ClientConnInterface) PaymentServiceClient {
 	return &paymentServiceClient{cc}
 }
 
+func (c *paymentServiceClient) CreatePayment(ctx context.Context, in *CreatePaymentRequest, opts ...grpc.CallOption) (*CreatePaymentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreatePaymentResponse)
+	err := c.cc.Invoke(ctx, PaymentService_CreatePayment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PaymentServiceServer is the server API for PaymentService service.
 // All implementations must embed UnimplementedPaymentServiceServer
 // for forward compatibility.
 //
-// Contract placeholder; domain methods are added only after business scope approval.
+// 支付服务的内部契约。调用方只有 order-service：发起支付这条链路不能走 MQ
+// （客户端要立刻拿到支付参数，方案 7.2），所以它是一次同步 RPC。
+//
+// 金额单位是分，用 int64。方案 13.1 要求的「金额在 JSON 传输里必须是字符串」是为了
+// 绕开 JS 的数字精度，protobuf 二进制里 int64 是精确的；真正回到客户端的那份是
+// pay_params，里面凡有金额一律是字符串。
 type PaymentServiceServer interface {
+	// 为一张订单发起一次支付。
+	//
+	// 调用方在锁内校验完归属、状态与应付金额之后才发过来，本服务按它给的金额建单，
+	// 不去读订单库——订单事实的归属方是订单服务，支付这边只拿一个值引用。反过来，
+	// 本服务建单成功后把渠道返回的支付参数原样交回，由调用方转给客户端。
+	CreatePayment(context.Context, *CreatePaymentRequest) (*CreatePaymentResponse, error)
 	mustEmbedUnimplementedPaymentServiceServer()
 }
 
@@ -47,6 +86,9 @@ type PaymentServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedPaymentServiceServer struct{}
 
+func (UnimplementedPaymentServiceServer) CreatePayment(context.Context, *CreatePaymentRequest) (*CreatePaymentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreatePayment not implemented")
+}
 func (UnimplementedPaymentServiceServer) mustEmbedUnimplementedPaymentServiceServer() {}
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue()                        {}
 
@@ -68,13 +110,36 @@ func RegisterPaymentServiceServer(s grpc.ServiceRegistrar, srv PaymentServiceSer
 	s.RegisterService(&PaymentService_ServiceDesc, srv)
 }
 
+func _PaymentService_CreatePayment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreatePaymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).CreatePayment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_CreatePayment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).CreatePayment(ctx, req.(*CreatePaymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PaymentService_ServiceDesc is the grpc.ServiceDesc for PaymentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var PaymentService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "panda.payment.v1.PaymentService",
 	HandlerType: (*PaymentServiceServer)(nil),
-	Methods:     []grpc.MethodDesc{},
-	Streams:     []grpc.StreamDesc{},
-	Metadata:    "payment/v1/payment.proto",
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "CreatePayment",
+			Handler:    _PaymentService_CreatePayment_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "payment/v1/payment.proto",
 }

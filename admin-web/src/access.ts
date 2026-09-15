@@ -95,6 +95,27 @@ export default function access(initialState: {
     canViewOrders: has('order:read'),
     canCancelOrders: has('order:manage'),
     canReviewAfterSales: has('order:after-sale:audit'),
+    // 标记订单完成。与 canCancelOrders 是**同一个码**（order:manage），两个键是按键名
+    // 对应的**动作**起的名，不是按码起的。理由：这两个动作很可能分家（取消是替用户关单，
+    // 完成是让这一单的赠品发出去——后者会真的发福卡），到那天只需要改这一行，两个页面
+    // 的按钮不用动。合成一个键会逼着那天去改所有调用点。
+    canCompleteOrders: has('order:manage'),
+
+    // 福卡账户（account-service）。只有一个读码：福卡**仍然**没有人工发放/调整的接口，
+    // 所以这里**刻意没有** canManageFortuneCards——加一个勾了也没有接口认的键，
+    // 只会让下一个人以为存在调整能力。豆那一半已经落地了，见下面那两个键。
+    //
+    // 「能看订单」不等于「能看福卡」：余额与流水是账户库的事实，不随订单接口给出。
+    // 页面上因此是「订单详情多一个 tab」而不是拆出新页面（见 orders/detail/index.tsx）。
+    canViewFortuneCards: has('account:read'),
+
+    // 咖啡豆账户（同一个 account-service，另一半）。读与福卡共用 account:read——
+    // 同一个人同一句「他还有多少」，分开只会让客服要两个码才能回答一个问题。
+    // 写是**单独的** account:manage：调整能把余额凭空加大（充值就是正数），
+    // 没有审批、没有额度上限，所以「能看的人就能改别人余额」是不能接受的。
+    // 后端 routes/admin.go 把 GET 挂在 account:read、POST /adjustments 挂在 account:manage，
+    // 权限数据见 migrations/identity/021。只绑了 super_admin。
+    canAdjustCoffeeBeans: has('account:manage'),
 
     // 原始检查——当需要用权限码直接判断时
     can: (code: string) => has(code),

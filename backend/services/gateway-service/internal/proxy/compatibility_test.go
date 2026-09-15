@@ -76,6 +76,15 @@ func TestCompatibilityRouteMatrix(t *testing.T) {
 			{"/v1/admin/coffee-machines/devices/123/balance", ""},
 			{"/v1/admin/coffee-machines/manufacturers/123/status", ""},
 			{"/v1/admin/coffee-machines-extra/devices", ""},
+			// 资产账户域（福卡 + 咖啡豆）同理：testConfig() 不填 ACCOUNT_SERVICE_URL，
+			// 所以这几条锁的是「没配就保持 404」。小程序那两条尤其重要——它们没配时
+			// 必须在这里 404，而不是落到 /v1/miniapp 被转给 user-service（那样客户端
+			// 会以为用户服务没有这个接口）。配了上游时的两面带在 proxy_test.go 里测。
+			{"/v1/admin/fortune-cards/entries", ""},
+			{"/v1/miniapp/fortune-cards", ""},
+			{"/v1/admin/coffee-beans/entries", ""},
+			{"/v1/admin/coffee-beans/0c7f2c8e-6a1a-4d0e-9b8f-1f2a3b4c5d6e/adjustments", ""},
+			{"/v1/miniapp/coffee-beans", ""},
 			{"/v1/unknown", ""},
 			{"/v1/admin", ""},
 			{"//v1/admin/users", ""},

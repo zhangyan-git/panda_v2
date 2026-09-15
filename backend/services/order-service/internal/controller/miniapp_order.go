@@ -36,6 +36,10 @@ func (c *MiniappOrderController) Orders(w http.ResponseWriter, r *http.Request) 
 		c.list(w, r, userID)
 	case strings.HasSuffix(rest, "/cancel") && r.Method == http.MethodPost:
 		c.cancel(w, r, userID, strings.TrimSuffix(rest, "/cancel"))
+	// 发起支付。这里的 {orderNo} 与上面几个动作的 {id} 不是同一个键：支付这条链路的两端
+	// 手上只有订单号（见 miniapp_pay.go）。
+	case strings.HasSuffix(rest, "/pay") && r.Method == http.MethodPost:
+		c.pay(w, r, userID, strings.TrimSuffix(rest, "/pay"))
 	case strings.HasSuffix(rest, "/after-sales") && r.Method == http.MethodPost:
 		c.applyAfterSale(w, r, userID, strings.TrimSuffix(rest, "/after-sales"))
 	case r.Method == http.MethodGet:
@@ -179,7 +183,7 @@ func (c *MiniappOrderController) list(w http.ResponseWriter, r *http.Request, us
 }
 
 func (c *MiniappOrderController) detail(w http.ResponseWriter, r *http.Request, userID, orderID string) {
-	// 传 userID：service 会校验归属，并且只有这条路上才返回取杯码。
+	// 传 userID：service 会校验归属（别人的单回「不存在」）。
 	detail, err := c.orders.GetOrderDetail(r.Context(), orderID, userID)
 	if err != nil {
 		writeOrderError(w, err, "failed to get order")

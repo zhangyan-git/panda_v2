@@ -1,7 +1,7 @@
 // Package migrations embeds the SQL migration sets this repository ships.
 //
 // The SQL lives outside every Go module tree, so it is embedded here and handed
-// to platform/database/migrate as an fs.FS. Six sets exist:
+// to platform/database/migrate as an fs.FS. Eight sets exist:
 //
 //   - Legacy: the pre-split single-database chain (001…009). It is kept
 //     byte-for-byte as it was applied, so a database that predates the split can
@@ -11,10 +11,12 @@
 //   - Coupon: coupon-service's database.
 //   - CoffeeMachine: coffee-machine-service's database.
 //   - Order: order-service's database.
+//   - Payment: payment-service's database.
+//   - Account: account-service's database.
 //
-// Identity, Merchant, Coupon, CoffeeMachine, and Order each encode the state
-// their service owns. No migration set creates a foreign key into another
-// service's database.
+// Identity, Merchant, Coupon, CoffeeMachine, Order, Payment, and Account each
+// encode the state their service owns. No migration set creates a foreign key
+// into another service's database.
 //
 // Identity and Merchant each encode the state the legacy chain converges to for
 // their own domain — no cross-database foreign key, no table that moved to the
@@ -54,6 +56,12 @@ var coffeeMachineFiles embed.FS
 //go:embed order/*.sql
 var orderFiles embed.FS
 
+//go:embed payment/*.sql
+var paymentFiles embed.FS
+
+//go:embed account/*.sql
+var accountFiles embed.FS
+
 // Legacy is the pre-split single-database migration chain.
 var Legacy fs.FS = sub(legacyFiles, ".")
 
@@ -71,6 +79,12 @@ var CoffeeMachine fs.FS = sub(coffeeMachineFiles, "coffee_machine")
 
 // Order is order-service's migration set.
 var Order fs.FS = sub(orderFiles, "order")
+
+// Payment is payment-service's migration set.
+var Payment fs.FS = sub(paymentFiles, "payment")
+
+// Account is account-service's migration set.
+var Account fs.FS = sub(accountFiles, "account")
 
 // Versions lists a set's migration file names in the order the runner applies
 // them: top-level *.sql, sorted by name. It mirrors platform/database/migrate's

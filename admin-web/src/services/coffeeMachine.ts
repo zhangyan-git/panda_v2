@@ -131,16 +131,6 @@ export type DrinkInput = {
 /** 编辑入参比创建少掉 originId：那是同步的自然键，改了匹配不上。 */
 export type DrinkUpdateInput = Omit<DrinkInput, 'originId'>;
 
-export type BalanceAdjustInput = {
-  /** 有符号，正数加、负数减，0 不接受 */
-  amount: number;
-  /** 幂等键：同一个 requestId 重发只会记一次账 */
-  requestId: string;
-  remark?: string;
-};
-
-export type BalanceResult = { coffeeBalance: number };
-
 /**
  * 一条设备余额流水，对应后端 dto.DeviceBalanceEntrySummary。金额单位是分。
  *
@@ -273,23 +263,11 @@ export async function updateDeviceStatus(id: string, status: DeviceStatus) {
 }
 
 /**
- * 调整设备余额。返回调整后的余额，不必再查一次。
- *
- * 同一个 requestId 重复提交时后端回 409（而不是假装成功）：上一次多半已经记过账，
- * 只是响应没收到。到底记没记要自己去看流水，所以调用方要把 409 和普通失败分开处理。
- */
-export async function adjustDeviceBalance(id: string, data: BalanceAdjustInput) {
-  return request<BalanceResult>(`/api/v1/admin/coffee-machines/devices/${id}/balance`, {
-    method: 'POST',
-    data,
-  });
-}
-
-/**
  * 某台设备的余额流水，服务端分页，最近的在前。
  *
- * 权限与调整余额共用同一个码（后端这两个方法挂在同一条路由表项上）：能看流水的人就是
- * 能调余额的人，所以详情页那个 tab 用 access.canAdjustCoffeeBalance 控制，不另开权限码。
+ * 权限与后端的调整余额接口共用同一个码（后端这两个方法挂在同一条路由表项上；那个 POST
+ * 只留了路由，本应用不提供入口）：这个码管的就是「谁能动这台设备的钱」，所以详情页那个
+ * tab 用 access.canAdjustCoffeeBalance 控制，不另开权限码。
  *
  * 设备不存在时回 404，与「这台设备一次都没动过余额」的空列表是两回事——详情页上这两句
  * 话完全不同。

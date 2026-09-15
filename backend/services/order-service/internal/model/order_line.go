@@ -55,10 +55,12 @@ type OrderLine struct {
 	DeviceID          *string `db:"device_id"`
 	DeviceOrderNo     string  `db:"device_order_no"`
 	FulfillmentTaskNo string  `db:"fulfillment_task_no"`
-	// 取杯号：屏幕/取杯口上显示的短号（原型里的 C031），不唯一——是否按天或按机器复用还没定。
-	PickupNo string `db:"pickup_no"`
-	// 取杯码：取杯凭据。不许进日志、审计载荷、领域事件和后台列表接口，只在
-	// 「用户本人查自己的订单」时返回。
+	// 取杯号：屏幕/取杯口上显示的短号（原型里的 C031），支付成功时生成，全局唯一。
+	// 用户侧和后台都看得到——取杯口那块屏幕本来就把它大字摆着。
+	//
+	// 它曾经被拆成两列（pickup_no「显示的短号」+ pickup_code「唯一凭据」），并由此派生出一条
+	// 「后台不得展示取杯码」的规则。那个拆分是凭空造的：原型里只有一个 order.pickup 字段，
+	// 用户侧叫取杯号、屏幕上叫取杯码，是同一个值。order/004 已把 pickup_no 删掉合并回本列。
 	PickupCode *string   `db:"pickup_code"`
 	Remark     string    `db:"remark"`
 	CreatedAt  time.Time `db:"created_at"`

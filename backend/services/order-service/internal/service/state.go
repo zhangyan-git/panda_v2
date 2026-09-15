@@ -9,16 +9,20 @@ import "github.com/panda-dev/panda-v2/backend/services/order-service/internal/mo
 // 锁谁改，后到的看到的是 paid）。这张表的作用是让取消/支付这类入口在动手之前就能给出
 // 一句说得清的拒绝，并且让「这个状态还能不能动」只有一个地方可以读。
 //
-// 这一版能真正走到的转换（下单闭环）：
+// 这一版能真正走到的转换：
 //
 //	pending_payment → paid（支付成功事件）
 //	pending_payment → cancelled（用户或后台取消）
 //	pending_payment → expired（超时关单扫描）
+//	paid → completed（后台标记完成，见 service/complete.go）
 //
-// 其余箭头是状态机的完整形状，驱动的服务还没到位：paid → completed 要等履约完成事件
-// （fulfillment-service），paid → refunding → refunded 要等退款单（payment-service）。
-// 它们写在这里是为了让「为什么 paid 不能直接取消」有一处可查，而不是让后来的人以为
-// 这份状态机只有三条边。
+// 其余箭头是状态机的完整形状，驱动的服务还没到位：paid → refunding → refunded 要等
+// 退款单（payment-service）。它们写在这里是为了让「为什么 paid 不能直接取消」有一处可查，
+// 而不是让后来的人以为这份状态机只有四条边。
+//
+// paid → completed 那条边**本该**由履约完成事件驱动，而 fulfillment-service 还没建；
+// 在它到位之前，后台的「标记完成」是这条边唯一的触发源——两者发的是同一个
+// order.completed，所以履约接上来时下游一个字都不用改。
 var orderTransitions = map[string][]string{
 	model.OrderStatusPendingPayment: {
 		model.OrderStatusPaid,

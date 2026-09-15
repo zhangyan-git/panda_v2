@@ -43,9 +43,9 @@ describe('枚举文案表', () => {
     expect(Object.keys(ORDER_LINE_TYPE).sort()).toEqual(['addon', 'drink', 'membership']);
   });
 
-  it('覆盖 order_payment_lines.line_type 的六个出资方', () => {
+  it('覆盖 order_payment_lines.line_type 的五个出资方', () => {
     expect(Object.keys(PAYMENT_LINE_TYPE).sort()).toEqual([
-      'coffee_bean', 'fortune_card', 'other', 'unionpay', 'wallet', 'wechat',
+      'coffee_bean', 'other', 'unionpay', 'wallet', 'wechat',
     ]);
   });
 

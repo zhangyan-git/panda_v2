@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package panda.account.v1;
+option go_package = "github.com/panda-dev/panda-v2/contracts/proto/account/v1";
+
+// 咖啡豆账户的内部契约——方案 5.6 的 account-service 里，咖啡豆那一半（同目录的
+// fortune_card.proto 是另一半：福卡。两半同形，差别在币种与词表）。
+//
+// ⚠️ 同目录的 account.proto 是**登录账号**的草稿，与本文件无关，理由见 fortune_card.proto 的文件头。
+//
+// 调用方都是**服务**，不是客户端：纯豆出资（payment-service）扣减、退款冲正（本服务的
+// order.after_sale.reviewed 消费者）。小程序与后台读余额、流水走 HTTP
+// （`/v1/miniapp/coffee-beans`、`/v1/admin/coffee-beans/*`），不走这里。
+//
+// 金额一律是**分**（整数，无小数）——与 orders.payable_amount 同一个单位。这与福卡那边
+// 「金额是张数」不是笔误：福卡的币种是张，豆的币种是分。
+//
+// 这一半**没有**后台调整、也**没有**冻结：
+//   - 人工调整是真人在后台点的，走 HTTP（POST /v1/admin/coffee-beans/{userId}/adjustments），
+//     那条路上有权限码与审计；服务令牌面不该有一条能凭空造币的 RPC。
+//   - 豆在支付时就已经扣走，退款窗口里没有「冻着但还在」的东西，所以没有 Freeze/Release。
+//     只有两个方向：扣走、还回来。
+service CoffeeBeanService {
+  // 读一个用户的豆余额（单位分）。
+  //
+  // 支付在扣减之前先看一眼，好在余额不够时直接给出一句「咖啡豆余额不足」，而不是拿一次
+  // 失败去说同一件事。没有账户行就是 0——账户行是第一次调整或第一次扣减时懒创建的。
+  rpc GetCoffeeBeanBalance(GetCoffeeBeanBalanceRequest) returns (GetCoffeeBeanBalanceResponse);
+
+  // 扣减咖啡豆：一张订单用豆全额付掉了（payment-service 的 action=account 出资）。
+  //
+  // 入参给的是**订单**（order_id / order_no）而不是随调用方挑的 reference_*：幂等键由
+  // order_id 派生（`order:{orderId}`），退款冲正也要按它反查那笔扣减。让调用方自由填
+  // reference 的话，同一个订单重试两次就可能落在两个键上，扣两次。
+  //
+  // 余额不足是本服务**认识**的业务结果，回 FailedPrecondition：那是「用户没钱」，不是
+  // 「服务坏了」——调用方应当把它翻成一次发起即失败的支付结果（客户端可以换方式重试），
+  // 而不是当成故障去重试或告警。
+  rpc DeductCoffeeBeans(DeductCoffeeBeansRequest) returns (DeductCoffeeBeansResponse);
+
+  // 把一单扣掉的豆还回去（退款冲正，售后审核通过时由本服务自己发起）。
+  //
+  // 入参给订单与金额，不给流水 ID：调用方（事件消费者）手里只有订单，让账户域自己去反查
+  // 那笔扣减，比让订单域把账变 ID 塞进事件载荷少一层耦合。
+  //
+  // ⚠️ 与福卡那面的冲正不同，这个方法是**幂等且可能什么都不做**的：那笔订单不是用豆付的
+  // （绝大多数订单是渠道支付），就返回 reversed=false 且不报错；同一条售后重投由
+  // `after_sale:{afterSaleNo}` 的唯一索引挡住，也不会冲第二次。把它做成错误会让一条完全
+  // 正常的事件一路重试到死信。
+  rpc ReverseCoffeeBeanEntry(ReverseCoffeeBeanEntryRequest) returns (ReverseCoffeeBeanEntryResponse);
+}
+
+message GetCoffeeBeanBalanceRequest {
+  // 小程序用户 ID，值引用（身份服务的用户）。本服务不持有用户资料。
+  string user_id = 1;
+}
+
+message GetCoffeeBeanBalanceResponse {
+  // 余额，单位为分。
+  int64 balance = 1;
+}
+
+message DeductCoffeeBeansRequest {
+  string user_id = 1;
+  // 订单 ID，必填、UUID。幂等键由它派生，所以它是业务字段不是备注。
+  string order_id = 2;
+  // 订单号，给人看的号，落进流水的 reference_no。
+  string order_no = 3;
+  // 扣减金额，恒 > 0，单位为分。
+  int64 amount = 4;
+  // 流水上给用户看的文案，留空则用「咖啡豆支付」。
+  string title = 5;
+  string remark = 6;
+}
+
+message DeductCoffeeBeansResponse {
+  // 本次扣减后的余额，单位为分。重放时给的是**当时那笔**的 balance_after，不是此刻的余额。
+  int64 balance_after = 1;
+  // 这一笔流水的 ID。它会经 payment_fundings.account_entry_id 一路落到
+  // order_payment_lines.account_entry_id，也是将来对账/反查那笔扣减的入口。
+  string entry_id = 2;
+  // true = 这一笔之前就存在，本次没有新增行（重放）。
+  bool replayed = 3;
+}
+
+message ReverseCoffeeBeanEntryRequest {
+  // 要冲正的那张订单。本服务按 `order:{orderId}` 反查那笔扣减。
+  string order_id = 1;
+  // 售后单 ID，值引用，落进流水的 reference_id。
+  string after_sale_id = 2;
+  // 售后单号。它是幂等键（`after_sale:{afterSaleNo}`），必填——没有它就没有「只冲一次」。
+  string after_sale_no = 3;
+  // 本次要还回去的金额，恒 > 0，单位为分。允许小于那笔扣减：部分退款（先退加购行、再退
+  // 整单）由调用方按退款范围给，本服务不整单照抄。
+  int64 amount = 4;
+  string remark = 5;
+}
+
+message ReverseCoffeeBeanEntryResponse {
+  // true = 本次真的新增了一笔冲正。
+  //
+  // false 有两种成因，且**调用方不需要分辨**：这张订单不是用豆付的（没有可冲的扣减），
+  // 或者这条售后已经冲过了（重投）。两种情况下要做的都是同一件事：什么都不做。
+  //
+  // 不回冲正流水的 ID 与冲正后余额：今天唯一的调用方（本服务的售后事件消费者）两样都用
+  // 不到，而「当时那笔的 balance_after」在这里只会被误当成当前余额。将来退款单那一轮要反查
+  // 这笔冲正时，入口是 `after_sale:{afterSaleNo}` 的唯一索引，不是这个响应。
+  bool reversed = 1;
+}

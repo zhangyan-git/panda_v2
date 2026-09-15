@@ -10,10 +10,6 @@ import { ORDER_LINE_TYPE } from '../../../services/orderLabels';
  *
  * 用 antd 的 Table 而不是 ProTable：数据已经在手上（详情接口一次给全），这里没有请求、
  * 没有分页、没有筛选，上 ProTable 只会多一层它为「自己去取数」准备的东西。
- *
- * **取杯码不展示**：line.pickupCode 在后台端恒为 null，这是 service 层定的（取杯码是取杯
- * 凭据，进了后台列表或日志就等于把杯子交给任何看过的人）。字段还在响应里，但不是给这一页
- * 用的，所以连列都不摆——摆了就是邀请下一个人去填上它。
  */
 
 const money = (fen?: number | null) => `¥${formatYuan(fen)}`;
@@ -111,11 +107,12 @@ export default function LinesTab({ order }: { order: OrderDetail }) {
       render: (_, row) => dash(row.fulfillmentTaskNo),
     },
     {
-      // 取杯号（不是取杯码）是给用户看的排队/叫号标识，本身不是凭据，可以展示。
+      // 取杯号：支付成功时生成，取杯口屏幕上大字显示的也是它（那边叫取杯码，同一个值）。
+      // 它曾经被当成后台不该看的凭据，那建立在一次凭空的列拆分上（见 order/004）。
       title: '取杯号',
-      dataIndex: 'pickupNo',
+      dataIndex: 'pickupCode',
       width: 120,
-      render: (_, row) => dash(row.pickupNo),
+      render: (_, row) => dash(row.pickupCode),
     },
     {
       title: '备注',

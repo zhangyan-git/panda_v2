@@ -58,12 +58,15 @@ type OrderSummary struct {
 	// 只读的派生字段：这一单有没有饮品行 / 加购行 / 会员行。后台按这三样把订单分成
 	// 「咖啡订单 / 幸运杯套订单 / 会员订单」三个列表，而一张合并单会同时出现在几个列表里，
 	// 所以列表里必须能看出「这单还含什么」——这三个布尔值就是给那一列用的。
-	HasDrinkLine         bool      `json:"hasDrinkLine"`
-	HasAddonLine         bool      `json:"hasAddonLine"`
-	HasMembershipLine    bool      `json:"hasMembershipLine"`
-	FortuneCardsExpected int       `json:"fortuneCardsExpected"`
-	CreatedAt            time.Time `json:"createdAt"`
-	UpdatedAt            time.Time `json:"updatedAt"`
+	HasDrinkLine         bool `json:"hasDrinkLine"`
+	HasAddonLine         bool `json:"hasAddonLine"`
+	HasMembershipLine    bool `json:"hasMembershipLine"`
+	FortuneCardsExpected int  `json:"fortuneCardsExpected"`
+	// 取杯号：这一单饮品行的那个短号（同一单的饮品行共用一个），没付成功或没有饮品行时为 nil。
+	// 列表里带上它，是因为客服最常被问的就是「我的号是多少」——空着手让人再点进详情不好用。
+	PickupCode *string   `json:"pickupCode"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
 // OrderDetail 是订单详情：主表 + 行明细 + 出资分摊 + 状态流水。
@@ -83,8 +86,9 @@ type OrderDetail struct {
 
 // OrderLineView 是订单行对外的形状。
 //
-// PickupCode 只在「用户本人查自己的订单」时才有值（service 层决定）；后台端拿到的
-// 永远是 nil。取杯码是取杯凭据，进后台列表或日志就等于把杯子交给任何看过日志的人。
+// PickupCode 是取杯号（屏幕上叫取杯码，同一个值），用户侧与后台都看得到：它本来就是取杯口
+// 屏幕上大字显示的短号，不是凭据。曾经这里以「凭据」为由对后台端置 nil，那建立在一次凭空
+// 的列拆分上（order/004 已合并回一列）。
 type OrderLineView struct {
 	ID                     string    `json:"id"`
 	LineNo                 int       `json:"lineNo"`
@@ -109,7 +113,6 @@ type OrderLineView struct {
 	DeviceID               *string   `json:"deviceId"`
 	DeviceOrderNo          string    `json:"deviceOrderNo"`
 	FulfillmentTaskNo      string    `json:"fulfillmentTaskNo"`
-	PickupNo               string    `json:"pickupNo"`
 	PickupCode             *string   `json:"pickupCode"`
 	Remark                 string    `json:"remark"`
 	CreatedAt              time.Time `json:"createdAt"`

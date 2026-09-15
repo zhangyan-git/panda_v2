@@ -62,7 +62,7 @@ func (f *fakeAfterSaleRepo) CancelAfterSale(_ context.Context, p repository.Canc
 }
 
 func newAfterSaleService(repo *fakeAfterSaleRepo) *OrderService {
-	return New(repo, nil, Options{})
+	return New(repo, nil, nil, Options{})
 }
 
 // validApply 是一份能过形状校验的申请，用例各自改它关心的那一栏。

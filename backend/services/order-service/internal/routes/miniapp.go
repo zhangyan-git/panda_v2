@@ -35,6 +35,11 @@ func RegisterMiniapp(
 	// 申请退款挂在订单树上（申请的对象是这一单），路径比 /{id} 长，必须注册在它前面。
 	r.HandleFunc("/v1/miniapp/orders/{id}/after-sales", orders.ServeHTTP)
 	r.HandleFunc("/v1/miniapp/orders/{id}/cancel", orders.ServeHTTP)
+	// 发起支付也挂在订单树上，但它的 {orderNo} 与上面三个的 {id} **不是同一个键**：这条
+	// 链路的两端（小程序、支付服务）手上都只有订单号，内部 UUID 在这里没有用武之地。
+	// 两个键在同一棵树里并存是有意的——它不改变分发（handler 是同一个，路径是自己剥的），
+	// 只影响这一行读起来像不像笔误，所以写在这里说明白。
+	r.HandleFunc("/v1/miniapp/orders/{orderNo}/pay", orders.ServeHTTP)
 	r.HandleFunc("/v1/miniapp/orders/{id}", orders.ServeHTTP)
 	r.HandleFunc("/v1/miniapp/orders", orders.ServeHTTP)
 

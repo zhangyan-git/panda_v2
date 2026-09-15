@@ -10,12 +10,12 @@ import (
 
 // GetOrderDetail 读一张订单的全量。
 //
-// userID 非空表示这是终端用户在查自己的单：先确认归属，再决定要不要给取杯码。
-// 传空串是后台/内部查询，一律不给取杯码。
+// userID 非空表示这是终端用户在查自己的单：先确认归属。
 //
-// 取杯码的取舍写在这里而不是 controller 的响应映射里：它是**凭据**，谁拿到谁就能取走
-// 那杯咖啡。放在映射层意味着每新增一个返回订单的接口都要记得剥一次，而漏掉的那次不会
-// 报错、只会静静地把凭据发出去。放在这里，默认就是没有。
+// 这里曾经按「取杯码是凭据」剥掉后台视角的 PickupCode。那个定性建立在一次凭空的列拆分上
+// （order/004 已把 pickup_no/pickup_code 合并回一列）：原型里取杯口那块屏幕本来就把它大字
+// 摆着，用户侧叫取杯号、屏幕上叫取杯码，是同一个值，从来不是秘密。后台要看它，客服最常被
+// 问的就是「我的号是多少」。
 func (s *OrderService) GetOrderDetail(ctx context.Context, orderID, userID string) (*repository.OrderDetail, error) {
 	orderID = strings.TrimSpace(orderID)
 	if orderID == "" {
@@ -25,15 +25,9 @@ func (s *OrderService) GetOrderDetail(ctx context.Context, orderID, userID strin
 	if err != nil {
 		return nil, mapWriteError(err)
 	}
-	if userID != "" {
-		if detail.Order.UserID != userID {
-			// 同 CancelOrder：别人的单回「不存在」。
-			return nil, ErrOrderNotFound
-		}
-		return detail, nil
-	}
-	for _, line := range detail.Lines {
-		line.PickupCode = nil
+	if userID != "" && detail.Order.UserID != userID {
+		// 同 CancelOrder：别人的单回「不存在」。
+		return nil, ErrOrderNotFound
 	}
 	return detail, nil
 }

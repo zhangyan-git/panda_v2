@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -297,12 +298,56 @@ func TestRabbitRoutingKeyFollowsEventType(t *testing.T) {
 
 // 未配置订阅键时队列订阅全部：topic 交换机只投递有绑定匹配的消息，空绑定会把
 // 每一条事件都变成退回消息。
-func TestRabbitBindKeyDefaultsToEverything(t *testing.T) {
-	if got := (RabbitConfig{}).bindKey(); got != "#" {
-		t.Fatalf("bindKey without config = %q, want %q", got, "#")
+func TestRabbitBindKeysDefaultsToEverything(t *testing.T) {
+	if got := (RabbitConfig{}).bindKeys(); !slices.Equal(got, []string{"#"}) {
+		t.Fatalf("bindKeys without config = %q, want [%q]", got, "#")
 	}
-	if got := (RabbitConfig{RoutingKey: "configured"}).bindKey(); got != "configured" {
-		t.Fatalf("bindKey = %q, want the configured key", got)
+	if got := (RabbitConfig{RoutingKey: "configured"}).bindKeys(); !slices.Equal(got, []string{"configured"}) {
+		t.Fatalf("bindKeys = %q, want the configured key", got)
+	}
+	// 只有分隔符（`,`、`,,`、空白）与没配置等价：切完一个键都不剩，就该退到全订阅，
+	// 而不是留一个空绑定——空绑定会把每一条事件都变成退回消息。
+	if got := (RabbitConfig{RoutingKey: " , , "}).bindKeys(); !slices.Equal(got, []string{"#"}) {
+		t.Fatalf("bindKeys with only separators = %q, want [%q]", got, "#")
+	}
+}
+
+// 死信的去向键取的是**配置原文**，空就是空——尤其不能跟着 bindKeys 退到 `#`。
+//
+// 这条错起来没有任何声音：DLX 是 topic 交换机，`#` 匹配每一条，而「配了队列名、没配
+// 路由键」的服务若往 DLX 上绑一把 `#`，它就把别家的死信捞进自己的 DLQ——别人的失败
+// 消息从此查不到（DLQ 名字是可配的，defaultDLQ 只是恰好大家都用同一个）。空绑定只认
+// 路由键为空的那一条。
+//
+// 空值是有效的、不被当「没设」（实测 2026-09-15，本地 broker：空的
+// x-dead-letter-routing-key 让死信带着空 key 投出来，落到空绑定上，而不是退回原始
+// 路由键）。所以「配了 DLX 却没配键」不会让死信变成孤儿。
+func TestRabbitDeadLetterKeyStaysEmptyWhenUnconfigured(t *testing.T) {
+	if got := (RabbitConfig{}).deadLetterKey(); got != "" {
+		t.Fatalf("deadLetterKey without config = %q, want empty", got)
+	}
+	// 只有分隔符与没配置**不等价**：主队列照样全收（切成零个键就退到 `#`），而死信
+	// 键仍是那一串原文。两边各自自洽，不等才是对的。
+	if got := (RabbitConfig{RoutingKey: " , , "}).deadLetterKey(); got != " , , " {
+		t.Fatalf("deadLetterKey with only separators = %q, want the configured text", got)
+	}
+	// 通配与逗号都原样带走：这一串在 topic 交换机上是一整个 routing key，拆开与否不
+	// 重要，重要的是它与 DLQ 上那条绑定逐字相同。
+	for _, key := range []string{"payment.*", "order.completed,order.after_sale.applied"} {
+		if got := (RabbitConfig{RoutingKey: key}).deadLetterKey(); got != key {
+			t.Fatalf("deadLetterKey = %q, want %q", got, key)
+		}
+	}
+}
+
+// 一个队列可以同时订阅几件具体的事（account-service 收订单完成与售后的三种结果）。
+// 切分要吃掉每段两侧的空白、丢掉空段，顺序保持配置里的顺序——绑定的顺序不影响投递，
+// 但让断言与配置逐字对得上，读的人不必在脑子里排序。
+func TestRabbitBindKeysSplitsOnCommas(t *testing.T) {
+	cfg := RabbitConfig{RoutingKey: "order.completed, order.after_sale.applied ,,order.after_sale.cancelled"}
+	want := []string{"order.completed", "order.after_sale.applied", "order.after_sale.cancelled"}
+	if got := cfg.bindKeys(); !slices.Equal(got, want) {
+		t.Fatalf("bindKeys = %q, want %q", got, want)
 	}
 }
 

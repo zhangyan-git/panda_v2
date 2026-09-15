@@ -35,7 +35,11 @@ func RegisterAdmin(
 	detail := protect("order:read", http.HandlerFunc(handler.Orders))
 	// 取消是人工干预用户资产的动作，用 manage 而不是 read：能看订单不等于能替用户关单。
 	cancel := protect("order:manage", http.HandlerFunc(handler.Orders))
+	// 标记完成也是人工干预用户资产的动作（它按承诺把福卡发出去），同样用 manage：
+	// 能看订单不等于能替用户完成它。将来的履约完成事件不走这条 HTTP 路，见 service/complete.go。
+	complete := protect("order:manage", http.HandlerFunc(handler.Orders))
 
+	r.HandleFunc("/v1/admin/orders/{id}/complete", complete.ServeHTTP)
 	r.HandleFunc("/v1/admin/orders/{id}/cancel", cancel.ServeHTTP)
 	r.HandleFunc("/v1/admin/orders/{id}", detail.ServeHTTP)
 	r.HandleFunc("/v1/admin/orders", list.ServeHTTP)

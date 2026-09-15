@@ -6,7 +6,7 @@ import type { OrderDetail, OrderPaymentLine } from '../../../services/order';
 import { PAYMENT_LINE_STATUS, PAYMENT_LINE_TYPE } from '../../../services/orderLabels';
 
 /**
- * 订单详情 → 出资分摊：这一单的钱是哪几笔凑出来的（微信 / 咖啡豆 / 福卡 / 消费金）。
+ * 订单详情 → 出资分摊：这一单的钱是哪几笔凑出来的（微信 / 咖啡豆 / 消费金）。
  *
  * 老系统这一屏是「支付流水」，列的是渠道返回的一笔笔流水。本服务里没有那张表——渠道流水与
  * 退款单都属于 payment-service（还没建），这里有的是**出资分摊**：一笔支付按来源拆成的行。
@@ -60,7 +60,7 @@ export default function PaymentTab({ order }: { order: OrderDetail }) {
       render: (_, row) => dash(row.failureCode),
     },
     {
-      // 咖啡豆/福卡出资扣的是账户余额，冲正靠这笔账变。对账时要拿它去 account-service 查。
+      // 咖啡豆出资扣的是账户余额，冲正靠这笔账变。对账时要拿它去 account-service 查。
       title: '账变 ID',
       dataIndex: 'accountEntryId',
       width: 200,

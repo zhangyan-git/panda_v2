@@ -5,6 +5,12 @@
 // 事实**冻结**成订单（价格、套餐、券的归属都成为快照），支付结果经事件进来落单，其余
 // 服务需要订单事实时读这里。所以它对外只有两块入口——小程序端与后台端的 HTTP，加上一条
 // 支付结果的事件消费。
+//
+// 有一处**出网**的例外要记住：发起支付（`POST /v1/miniapp/orders/{orderNo}/pay`）由本服务
+// 编排——它读订单、判归属与状态、把权威金额同步交给 payment-service 去建支付单。编排放
+// 在这里的理由是那三个判据全是订单的事实（而且金额不能由客户端给），而支付域拿到的是一个
+// 值引用，它不读订单库。注意这**不是**「订单服务拥有支付事实」：本服务只发起，支付单、
+// 资金行、对账凭据全在 panda_payment 里。
 package main
 
 import (
@@ -39,6 +45,15 @@ const (
 	userServiceDialTimeout = 5 * time.Second
 	// coffeeMachineServiceDialTimeout 同理，这条连接给下单时的设备校验用。
 	coffeeMachineServiceDialTimeout = 5 * time.Second
+	// paymentServiceDialTimeout 同理，这条连接给发起支付用。
+	paymentServiceDialTimeout = 5 * time.Second
+	// paymentCreateTimeout 限制一次发起支付。
+	//
+	// 比 deviceLookupTimeout 长：这一次往返里支付服务还要同步去问渠道（一次第三方网络调用），
+	// 2 秒会把正常但稍慢的渠道误判成「结果不明」。5 秒是「用户按下支付按钮之后愿意等多久」的
+	// 上限，超时按「没问到」处理而不是「支付失败」——支付服务可能已经建好了支付单，重发会
+	// 命中同一个幂等号拿回那一张（见 client.ErrPaymentUncertain）。
+	paymentCreateTimeout = 5 * time.Second
 	// authorizationTimeout 限制单次实时鉴权查询，不是缓存 TTL：每个后台请求都重新查
 	// 一次调用方的授权。
 	authorizationTimeout = 5 * time.Second
@@ -96,10 +111,25 @@ func main() {
 		log.Fatalf("order-service: init device reader: %v", err)
 	}
 
+	// 第三条共享连接：发起支付时告诉支付域一个事实。config.Load 已经拒绝了空地址——
+	// 一个空地址的 Dial 会在第一次发起支付时才炸，而那一次请求正卡在用户的收银台上。
+	paymentConn, err := platformclient.Dial(context.Background(), "payment-service", cfg.PaymentGRPCAddress, paymentServiceDialTimeout, reg)
+	if err != nil {
+		log.Fatalf("order-service: dial payment-service: %v", err)
+	}
+	defer paymentConn.Close()
+	// 同样是共享服务令牌：这一次调用代表订单域去建支付单，不代表某个用户。发起支付那条路上
+	// 的用户身份在 service.InitiatePayment 里已经用过了（它判归属），到这里只剩一个 user_id
+	// 值引用——支付侧拿它记账，不拿它做授权。
+	payments, err := client.NewPaymentCreator(paymentConn, cfg.MerchantInternalToken, paymentCreateTimeout)
+	if err != nil {
+		log.Fatalf("order-service: init payment creator: %v", err)
+	}
+
 	// 仓储带 recorder：后台取消订单要留痕（方案 11.6 的人工干预必审清单），C 端用户
 	// 取消自己不需要——那不是一次需要追溯的越权。
 	orderRepo := repository.NewPostgresRepository(pool.Pool(), audit.NewRecorder())
-	orderService := service.New(orderRepo, devices, service.Options{})
+	orderService := service.New(orderRepo, devices, payments, service.Options{})
 	adminOrders := controller.NewAdminOrderController(orderService)
 	miniappOrders := controller.NewMiniappOrderController(orderService)
 	// 售后与订单是两个控制器：它们挂在两棵路径树上（订单号 vs 售后单号），共用同一个

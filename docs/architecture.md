@@ -13,11 +13,14 @@
 | `backend/services/merchant-service` | 商户域：商户、品牌、门店、审核记录 | `panda_merchant` |
 | `backend/services/coupon-service` | 券域：券类型、模板、批次、用户券 | `panda_coupon` |
 | `backend/services/coffee-machine-service` | 设备域：厂商与接入凭据、咖啡机设备与支付方式、饮品与供应关系、设备事件与余额流水 | `panda_coffee_machine` |
+| `backend/services/order-service` | 订单域：订单与订单行、支付分摊、售后单 | `panda_order` |
+| `backend/services/payment-service` | 支付域：渠道与支付方式配置、支付单与资金行、渠道回调、记账流水 | `panda_payment` |
+| `backend/services/account-service` | 资产账户域：福卡余额与不可变流水（发放 / 扣减 / 冲正） | `panda_account` |
 | `backend/services/gateway-service` | 全站唯一入口，单二进制单路由表 | 无 |
 | `contracts/` | proto 定义与已提交的生成代码 | — |
-| `migrations/` | 五套迁移：`Legacy`（单库时代 001–009，冻结）、`Identity`、`Merchant`、`Coupon`、`CoffeeMachine` | — |
+| `migrations/` | 八套迁移：`Legacy`（单库时代 001–009，冻结）、`Identity`、`Merchant`、`Coupon`、`CoffeeMachine`、`Order`、`Payment`、`Account` | — |
 
-嵌套的 `go.mod` 是**独立模块**：在 `backend/` 里跑 `go test ./...` 不会碰到三个
+嵌套的 `go.mod` 是**独立模块**：在 `backend/` 里跑 `go test ./...` 不会碰到八个
 服务模块。CI（`.github/workflows/check.yml`）对每个模块各跑一遍
 `gofmt` / `go build` / `go vet` / `go test`，就是为了不再出现「服务从未被构建过」。
 
@@ -85,6 +88,35 @@ DELETE），冲正走反向记录而不是原地改数，幂等靠 `request_id` 
 失败**保留旧令牌**而不是清空。**签名密钥也在交付之列**——出杯回调的验签在 fulfillment
 侧做，漏了它回调一律验不过。
 
+`panda_order`（order-service）
+: `orders` `order_lines` `order_payment_lines` `order_state_transitions`
+  `order_after_sales` `order_idempotency_keys` `message_outbox` `message_inbox`
+
+订单库里的用户 / 门店 / 设备 / 饮品 / 支付方式 ID 同样只存值不建外键。订单**不复制支付事实**：
+支付单号、出资行都落在支付库，订单侧只保留自己那几列（`orders.payment_no`、
+`order_payment_lines`），它们由 `payment.succeeded` / `payment.failed` 事件写进来——支付库那边
+改了什么，订单这边不镜像，只按事件结算一次。
+
+`panda_payment`（payment-service）
+: `payment_channels` `payment_methods` `payments` `payment_fundings` `payment_refunds`
+  `payment_refund_fundings` `payment_notifications` `payment_provider_calls`
+  `payment_transactions` `payment_state_transitions` `payment_idempotency_keys`
+  `payment_agreements` `payment_agreement_charges` `reconciliation_batches`
+  `reconciliation_records` `message_outbox` `message_inbox`
+
+资金的**真相只有一处**：`payments` 以及它下面的资金行。订单服务不复制它，只收两条结果事件；
+反过来支付服务也**不读订单库**（§5.9 给它的职责清单里没有「读订单」）——金额与归属由
+order-service 在锁内校验完，通过 gRPC 把权威金额交过来（见下面的服务间契约表）。
+渠道密钥不进库：`payment_channels` 只存 `secret_ref`（密钥在受控 Secret 或环境变量里的**键名**），
+`payment_provider_calls` 存的是脱敏摘要。这与 `manufacturer_credentials` 直接存密钥列的先例
+**有意不一致**：那张表先于 §18.3 存在，支付库是新建的，按 §18.3 建。
+
+`payment_methods.action` 是**数据**，不是代码里的分支：它描述「这条支付方式被选中之后怎么起
+支付」（跳对方小程序 / 小程序内 requestPayment / 直扣 / 扫码 / H5 / 账户出资），客户端只
+switch 它、不 switch 渠道代码。新接一家同形态的渠道 = 插一行 `payment_channels` + 一行
+`payment_methods` + 注册一个适配器，客户端与表约束都不用动。接真实渠道的差别被关在
+`internal/provider/` 的一个包里。
+
 两条边界值得单独说明：
 
 - **`merchant_users` 在身份库**，因为它是账号域（凭据、状态、范围），且所有写入方
@@ -93,6 +125,36 @@ DELETE），冲正走反向记录而不是原地改数，幂等靠 `request_id` 
 - **`admin_operation_logs` 在身份库**，审计由身份侧拥有。它刻意不对目标对象建外键，
   这样目标被删除后日志仍可查询；拆库前它指向 `merchants` 的那条外键已经去掉，列保留
   为软指针。
+
+`panda_account`（account-service）
+: `fortune_card_accounts` `fortune_card_entries` `fortune_card_freezes` `message_outbox`
+`message_inbox`
+
+福卡是**抽奖凭证**，不是出资渠道：账户域只有余额与流水两件事，没有「福卡价值多少元」这种
+列，也不参与任何一笔订单的金额计算。用户 ID 只存值不建外键（它在身份库）。
+
+这套表和 `panda_coffee_machine` 的 `device_balance_ledger` 是同一种东西——余额 + 只追加
+流水 + 幂等键 + 冲正——所以约束也照它建：`fortune_card_entries` 用触发器拦 UPDATE / DELETE，
+冲正写一条反向记录而不是原地改数（`reverses_entry_id` 自引用，部分唯一索引保证一笔只能被
+冲正一次），`entry_key` 唯一索引保证重投不重复发放。余额行**懒创建**：第一次发放时
+`INSERT ... ON CONFLICT DO NOTHING`，随后 `SELECT ... FOR UPDATE` 锁住再算余额——
+并发扣减靠这把锁串行化，不靠乐观重试。
+
+账户域**不持有发放规则**：订单承诺几张、拆成几条流水，都由 order-service 决定后随
+`order.completed` 事件传过来（见下面的服务间契约）。这正是 §5.6「Account 只拥有账户和账变
+数据」那条边界的落点——规则将来会变（加赠活动、会员权益），账户域不该跟着变。
+
+**冻结不是账变。** 用户提交退款申请的那一刻起，那一单送出的福卡不能拿去抽奖
+（`fortune_card_accounts.frozen_balance` + `fortune_card_freezes`，一张售后单一行，
+`after_sale_no` 是幂等键）。余额与流水一格不动——`balance_after` 记的是当时真实的余额，
+把冻结写进去反而会让明细页对不上账；能拿去抽奖的是 `available = balance - frozen_balance`，
+只有抽奖扣减看它。冻结是个**可改的状态行**，所以 `fortune_card_freezes` 是全库唯一一张
+不带只追加触发器的资产表。
+
+要冻哪几笔由 order-service 按退款范围拆好（退饮品行给 `base` 那张，退加购行给
+`bonus:{campaignId}` 那张，整单退给全部），账户域不猜「哪张卡是哪一行送的」。拆不动时
+**宁可多冻**：多冻可解冻，少冻则追不回——已经抽过奖的福卡是追不回来的，这条规则存在的
+全部理由就在这里。
 
 **不再有跨库外键。** 迁移里出现 `REFERENCES` 跨到另一个库的表，就是拆库没做完。
 
@@ -113,14 +175,54 @@ DELETE），冲正走反向记录而不是原地改数，幂等靠 `request_id` 
 | user-service → merchant-service `GetBrandMerchant` / `GetStoreMerchant` | 账号范围指向的实体归属 |
 | user-service → merchant-service `ResolveScopeNames` | 把 scope 上的 id 换成名字 |
 | coffee-machine-service → merchant-service `GetStore` | 设备挂点位前确认这个点位存在且可用 |
+| order-service → coffee-machine-service `GetDevice` | 下单前确认这台设备在不在、启没启用、点位对不对（§5.8 L454） |
+| order-service → payment-service `CreatePayment` | 发起支付：订单侧在锁内校验完归属、状态与金额，把**权威金额**交给支付域建支付单 |
 
-其余 proto（coupon、order、payment…）目前是占位服务，没有实现，不构成契约。
+除 gRPC 之外还有一类跨服务事实，它走的是消息而不是调用：**福卡的发放与退款冻结**。
 
-coffee-machine-service 两头各占一半。作为**调用方**它进了上表：设备要挂点位，而点位
-存不存在、还能不能用只有商户服务说了算。作为**被调方**它还没进：`GetDevice`（只读，
-供下单时校验设备状态，§5.8 L454）已经实现，但调用方 order-service 尚未落地——
-**被调的一方没进表不代表那条 RPC 没实现，只代表还没有人依赖它**，契约要等到真有调用方
-那一天才成立。写入、同步与出杯那几条链路同样还没实现。
+| 发布方 → 消费方 | 事件 | 用途 |
+| --- | --- | --- |
+| order-service → account-service | `order.completed` | 订单完成后发放福卡（`base` + 各加购活动的 `bonus`，每条带幂等键） |
+| order-service → account-service | `order.after_sale.applied` | 用户申请退款 ⇒ 冻结这一单的福卡，附上要冻的幂等键 |
+| order-service → account-service | `order.after_sale.reviewed` | 审核**驳回** ⇒ 解冻；通过不解冻（钱还没退） |
+| order-service → account-service | `order.after_sale.cancelled` | 用户撤销申请 ⇒ 解冻（放弃撤销入口之后唯一的解冻信号） |
+
+这四条挂在同一个队列上（订阅侧一个队列绑多个 routing key，逗号分隔）——它们都是
+account-service 与订单域之间的交接点，散到几个队列只会让「少绑了一条」变成一个安静少做的事。
+
+发放规则与账户分开是有意的：承诺几张、拆成几条，由 order-service 从订单自己的
+`fortune_cards_expected` 与快照里算出来随事件传过去；account-service 只记流水，不解析快照、
+不判断该发几张。快照缺失或算不平**不缩水**——退回一条 `base`，金额取订单承诺的总数，
+用户拿到的张数永远等于订单承诺的数，退化只发生在流水的构成粒度上。
+
+冻结时点是**申请**而不是审核通过：申请到审核之间有一个窗口，卡在这个窗口里被花掉就再也追
+不回来。`paid` 状态就允许申请退款，所以冻结可能早于发放到达——发放落库时会反查有没有覆盖
+这个键的冻结行并补冻，这条补齐路径是必需的，不是兜底。
+
+这条事件今天由后台的「标记完成」产生（`paid → completed` 那条边本该由履约完成事件驱动，
+而 fulfillment-service 还没建）。两者发的是同一个 `order.completed`，所以履约接上来时下游
+一个字都不用改。账户域**不发下游事件**：发放结果今天没有消费者（抽奖没建），发出去只会被
+静默丢弃。
+
+最后一条与其余几条有一点不同：它是一次**写**（建支付单）而不是读一个事实。它成立的前提是
+归属分得清——金额与「这单能不能付」的判据在订单库里，只有订单服务说得清；而支付单、渠道
+配置、回调验签在支付库里，只有支付服务碰得到。所以是订单侧编排、支付侧执行，不是反过来。
+它走同步 gRPC 而不是消息：客户端发起支付后要立刻拿到支付参数，异步那条路给不了。
+
+`order/v1` 与 `coupon/v1` 两个 proto 目前仍是空壳（`service X {}`，一个 rpc 都没有）。
+那不是「这两个域没实现」——它们的 HTTP 入口都已经在跑——而是**还没有一条需要固化成契约的
+内部调用**。空壳在这里只是「还没被依赖」，等第一个调用方出现再往里加 rpc；现在写了也没人验。
+`fulfillment` / `inventory` / `lottery` / `membership` / `partner` / `settlement`
+才是真的没有实现。
+
+`account/v1` 这个目录里有两个不相干的东西，别把它们当成一件事：`account.proto` 是后台与商户端
+**登录账号**的草稿，全仓没有一处 import；`fortune_card.proto` 是资产账户域，已经实现。
+后者的 `GetFortuneCardBalance` / `DeductFortuneCards` / `ReverseFortuneCardEntry`
+**今天没有调用方**（抽奖没建、退款单没建），它们不是死代码而是这个服务的对外契约——
+集成测试直接走 gRPC 客户端打这三个。
+
+coffee-machine-service 两头各占一半：作为**调用方**它问商户服务的点位，作为**被调方**它回答
+订单服务的设备查询。写入、同步与出杯那几条链路还没实现。
 
 `platform/client.Dial` 决定用静态地址还是服务发现：注册中心真的实现了
 `Resolver`+`Watcher` 就走 discovery，否则退回静态地址。**这不是「发现失败就退回静态
@@ -185,6 +287,12 @@ coffee-machine-service 两头各占一半。作为**调用方**它进了上表�
 `SetXForwarded` 是追加语义，会把客户端伪造的值留在链首；下游按「第一个」取来源时
 拿到的就是伪造值。同时所有身份相关头（`x-user*`、`x-tenant*`、`x-roles`、
 `x-service-token`）一律剥掉——没有任何下游还信任它们。
+
+转发面里**唯一一条从公网打进来的路径**是渠道回调 `POST /v1/payments/callback/{channelCode}`。
+它挂在 `/v1/payments` 这个独立前缀上，不站在 `/v1/miniapp` 那棵小程序树下：后者已经整段转给
+订单域与 user-service 了，而且回调来自渠道而不是来自小程序。这条路径**刻意不挂认证**——渠道
+没有我们的令牌，它的凭据是自己的签名，验签在支付服务里做，失败的回调一点都改不了支付状态。
+因为没有认证这一层，网关的限流就是它唯一的把关，所以别把它挪到限流链外面。
 
 ## 图片上传与区划
 
@@ -349,3 +457,35 @@ OTel 全局 provider；没配时返回全局的空实现，不建立任何网络
   上传就等于修好了」。
 - **不做图片删除与生命周期**：被拒的上传、放弃的表单都会在 bucket 里留下对象（md5
   去重只对**完全相同**的字节生效）。这属于 OSS 生命周期规则，不该由应用代码扫。
+- **支付只做「发起 → 回调 → 结算订单」这一条闭环**。退款、委托代扣、渠道对账三件事的表
+  已经在 `panda_payment` 里建好，但没有代码也没有 worker；真实渠道适配器（微信、银联、
+  丰选万联、优联、北方饭卡、首创饭卡）一个都没写——没有商户凭据时写出来只能验参数构造，
+  那不是验证，是猜。本轮只有手工渠道（`provider=manual`），它做**真的** HMAC 验签，所以
+  「验签失败不改支付状态」与「重放被唯一键挡住」是被真验到的。账户出资（咖啡豆走
+  `action=account`）**已落地一条纯豆全额的路**：豆账户在 account-service 里（§5.6 的
+  另一半，余额 + 只追加流水、单位分、永不过期、不冻结），后台人工调整是它唯一的来路
+  （`POST /v1/admin/coffee-beans/{userId}/adjustments`，`account:manage`），发起支付时同步
+  调用扣减、没有 `pending` 中间态（钱在自家库里，扣成功就是成功）。**这一条路目前只支持
+  「全额用豆付」**：混合出资（豆 + 渠道凑一单）没做；payment-service 的退款单也没做——纯豆
+  单的退款由 account-service 自己在售后审核通过时冲正，见下面福卡那一段。生产环境的咖啡豆
+  支付方式也还没有：只有 `deploy/dev-seed/payment_coffee_bean_method.sql` 一行，服务端没有
+  支付方式管理页，上线要人工配。福卡不在出资词表里——它是下单赠送的抽奖凭证，不是出资渠道
+  （order/003、payment/004 已收窄）。
+- **福卡到「发放 + 退款冻结」为止**：余额、不可变流水、发放/扣减/冲正、订单完成自动入账，
+  以及退款申请期间的冻结与驳回/撤销后的解冻。**退款成功后的追回没做**——那要等
+  payment-service 的退款单，届时是「解冻 + 冲正那两笔发放」两件事，先后顺序得先解冻
+  （否则撞 `frozen_balance <= balance`）；今天售后停在 `approved`，所以「通过不解冻」是
+  有意的，不是漏了。**豆那一半相反：审核通过（`approved`）就冲正**，两者不矛盾——福卡是
+  还没花出去的凭证，钱没离开账户，解冻等于放它回去继续花；豆是支付时就已经收下的钱，还
+  回去才是退款。渠道支付的订单走到豆的冲正这条路上会什么都不发生（找不到那笔扣减），那
+  是常态不是异常。抽奖（lottery-service 的活动、参与、开奖、中奖、核销）也没建，
+  `DeductFortuneCards` 仍然没有调用方——冻结落地后它判「够不够扣」看的第一次是**可用**
+  余额，这是冻结唯一的判据改动。服务端**不计算**承诺福卡——`fortuneCardsExpected` 仍采信
+  调用方，与「价格来自调用方」是同一个已知缺口；加购加赠活动的规则归属也仍未定，本轮只是
+  把它的快照原样记进流水。人工冻结/解冻没有后台入口（冻结只有「售后申请」一个触发源），
+  也没有补冻的定时兜底——事件丢了就是丢了，与发放同一条取舍。`miniapp/` 前端仍是空目录
+  （余额与冻结字段已经在接口里回来了，页面下一轮）。
+- **支付方式列表接口不做**：「这台设备能用哪几条方式」是设备域 `device_payment_methods`
+  的事实，归设备域；支付服务不为它开一条从支付库读咖啡机库的口子。
+- **后台/商户端的支付页面不做**：`/v1/admin/payments` 这类前缀留给后台切片，admin-web 与
+  merchant-web 一行都没改。

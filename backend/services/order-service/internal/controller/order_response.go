@@ -42,8 +42,29 @@ func writeOrderError(w http.ResponseWriter, err error, message string) {
 		// 问不到设备是我们这侧暂时答不上来，不是请求有错：回 503 而不是 400，
 		// 否则客户端会以为「这台机器不能下单」而不再重试。
 		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, err.Error())
-	case errors.Is(err, service.ErrOrderNotPending):
+	case errors.Is(err, service.ErrOrderNotPending), errors.Is(err, service.ErrOrderNotCompletable):
 		api.Error(w, http.StatusConflict, "CONFLICT", err.Error())
+	case errors.Is(err, service.ErrOrderNotPayable):
+		// 应付额为 0：这一单本来就不用付钱。它不是「请求写错了」，所以是 409 而不是 400。
+		api.Error(w, http.StatusConflict, "NOTHING_TO_PAY", err.Error())
+	// —— 发起支付：结论来自支付域 ——
+	//
+	// 这一组的判据是「调用方该做什么」，与支付侧 createPayment 的分法一一对应
+	// （见 client/mapPaymentError）。要分清的核心是**有结论**与**没结论**：
+	// 前者让用户改，后者让用户等，而把没结论的说成「支付失败」会让用户换一种方式再付一次，
+	// 而渠道那边那张预支付单可能仍然有效。
+	case errors.Is(err, service.ErrPaymentRejected):
+		// 这个支付方式现在用不了（不存在、被停用、依赖的服务没建）。重发一模一样的一次没用，
+		// 所以是 409 不是 503——客户端该做的是让用户换一种方式，不是重试。
+		api.Error(w, http.StatusConflict, "PAYMENT_REJECTED", err.Error())
+	case errors.Is(err, service.ErrPaymentConflict):
+		api.Error(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", err.Error())
+	case errors.Is(err, service.ErrPaymentUncertain):
+		// 渠道没给出确定的答复。回 503 而不是 5xx 里的「内部错误」：这不是我们崩了，是
+		// 这一笔暂时没有结论，稍后带着**同一把**幂等号重发就可能拿到那张支付单。
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, err.Error())
+	case errors.Is(err, service.ErrPaymentServiceUnavailable):
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, err.Error())
 	// —— 售后：判据在仓储的事务里，所以不经过 IsValidationError ——
 	//
 	// 这一组里有几个确实是「请求不合法」（按行退的那一行不是这一单的），但判不判得了要看
@@ -118,6 +139,7 @@ func orderSummaryResponses(rows []*repository.OrderRow) []dto.OrderSummary {
 		summary.HasDrinkLine = row.HasDrinkLine
 		summary.HasAddonLine = row.HasAddonLine
 		summary.HasMembershipLine = row.HasMembershipLine
+		summary.PickupCode = row.PickupCode
 		out = append(out, summary)
 	}
 	return out
@@ -128,10 +150,15 @@ func orderDetailResponse(detail *repository.OrderDetail) dto.OrderDetail {
 	lines := make([]dto.OrderLineView, 0, len(detail.Lines))
 	for _, line := range detail.Lines {
 		// 这三个标记是给「咖啡订单 / 幸运杯套订单 / 会员订单」这类分类用的，详情页已经从行里
-		// 读出来了，就地算，不必再为它多一条查询。
+		// 读出来了，就地算，不必再为它多一条查询。取杯号同理：列表靠一条标量子查询带出来
+		// （repository.orderRowPickupColumn），详情这边行就在手上。
 		switch line.LineType {
 		case model.LineTypeDrink:
 			summary.HasDrinkLine = true
+			if summary.PickupCode == nil {
+				// 饮品行共用同一个取杯号，取第一行即可；万一不一致也按行序稳定取第一条。
+				summary.PickupCode = line.PickupCode
+			}
 		case model.LineTypeAddon:
 			summary.HasAddonLine = true
 		case model.LineTypeMembership:
@@ -273,12 +300,10 @@ func orderLineView(line *model.OrderLine) dto.OrderLineView {
 		DeviceID:               line.DeviceID,
 		DeviceOrderNo:          line.DeviceOrderNo,
 		FulfillmentTaskNo:      line.FulfillmentTaskNo,
-		PickupNo:               line.PickupNo,
-		// 直接搬运：service 已经决定了给不给（后台端到这里的永远是 nil）。
-		PickupCode: line.PickupCode,
-		Remark:     line.Remark,
-		CreatedAt:  line.CreatedAt,
-		UpdatedAt:  line.UpdatedAt,
+		PickupCode:             line.PickupCode,
+		Remark:                 line.Remark,
+		CreatedAt:              line.CreatedAt,
+		UpdatedAt:              line.UpdatedAt,
 	}
 }
 

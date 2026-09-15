@@ -67,8 +67,8 @@ func TestStoreResolverMapping(t *testing.T) {
 		wantState string // 同上
 	}{
 		{
-			name:  "商户服务说没这个点位",
-			err:   status.Error(codes.NotFound, "merchant resource not found"),
+			name:      "商户服务说没这个点位",
+			err:       status.Error(codes.NotFound, "merchant resource not found"),
 			wantFound: false,
 		},
 		{
@@ -77,9 +77,9 @@ func TestStoreResolverMapping(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:      "应答里没有 store",
-			reply:     &merchantv1.GetStoreResponse{},
-			wantErr:   true,
+			name:    "应答里没有 store",
+			reply:   &merchantv1.GetStoreResponse{},
+			wantErr: true,
 		},
 		{
 			name:      "字符串形态 active",

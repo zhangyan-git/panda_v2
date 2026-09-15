@@ -199,9 +199,15 @@ CREATE TABLE order_lines (
     fulfillment_task_no TEXT NOT NULL DEFAULT '',
     -- 取杯号：屏幕/取杯口上显示的短号（原型里的 C031）。不建唯一约束——是否按天或按机器
     -- 复用还没定，定了之后再补，取杯码才是唯一凭据。
+    --
+    -- 这一列由 004 删掉、与下面的 pickup_code 合并（原型里本来就只有 order.pickup 一个字段，
+    -- 「取杯号」是用户侧叫法、「取杯码」是取杯口屏幕上叫法，是同一个值；拆出来的 pickup_no
+    -- 从来没有被任何代码写过）。**但它必须在这里建出来**：下面那条 order_lines_drink_only_fields
+    -- 引用了它，而迁移器是整文件一个事务——少这一列，001 整条失败并回滚，全新库连 orders 都
+    -- 拿不到；老库按文件名记账、从不重跑，所以这个断链在已经建好的库上完全看不出来。
     pickup_no TEXT NOT NULL DEFAULT '',
     -- 取杯码：取杯凭据。属于凭据类字段，不许进日志、审计载荷、领域事件和后台列表接口，
-    -- 只在「用户本人查自己的订单」时返回。
+    -- 只在「用户本人查自己的订单」时返回。——这条说法随 004 的合并一起作废，以 004 为准。
     pickup_code TEXT,
     remark TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -241,7 +247,8 @@ CREATE TABLE order_lines (
 -- 订单出资分摊
 -- ============================================================
 
--- 一个订单可能同时由微信、咖啡豆、福卡、家园消费金出资（方案 3.1）。退款要按来源分别
+-- 一个订单可能同时由微信、咖啡豆、家园消费金出资。福卡不在出资方之列：规划里只把它写成
+-- 「订单完成发放、用于参与抽奖」（§3.1），它的余额归 Account（§5.6），见 003。退款要按来源分别
 -- 冲正、分账要按来源拆分，所以逐笔留行，而不是在主表存一个支付方式了事。
 --
 -- 券不在这里：券是权益抵扣、不是资金出资。它抵掉的钱记在它作用的那一行
@@ -261,7 +268,7 @@ CREATE TABLE order_payment_lines (
     payment_no TEXT NOT NULL DEFAULT '',
     provider_transaction_id TEXT NOT NULL DEFAULT '',
     failure_code TEXT NOT NULL DEFAULT '',
-    -- account-service 的账变 ID：咖啡豆/福卡出资扣的是账户余额，退款要按这笔账变冲正。
+    -- account-service 的账变 ID：咖啡豆出资扣的是账户余额，退款要按这笔账变冲正。
     account_entry_id UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -426,7 +433,7 @@ CREATE INDEX order_lines_type_created_idx ON order_lines (line_type, created_at 
 -- 厂商单号在「同一台机器」内唯一。
 CREATE UNIQUE INDEX order_lines_device_order_no_key
     ON order_lines (device_id, device_order_no) WHERE device_order_no <> '';
--- 取杯码是取杯凭据，同一个码只能对应一个订单行。
+-- 取杯号（屏幕上叫取杯码，同一个值）全局唯一，一个号只能对应一个订单行。
 CREATE UNIQUE INDEX order_lines_pickup_code_key
     ON order_lines (pickup_code) WHERE pickup_code IS NOT NULL;
 

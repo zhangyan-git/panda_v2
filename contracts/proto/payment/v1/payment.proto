@@ -1,6 +1,67 @@
 syntax = "proto3";
+
 package panda.payment.v1;
 option go_package = "github.com/panda-dev/panda-v2/contracts/proto/payment/v1";
 
-// Contract placeholder; domain methods are added only after business scope approval.
-service PaymentService {}
+// 支付服务的内部契约。调用方只有 order-service：发起支付这条链路不能走 MQ
+// （客户端要立刻拿到支付参数，方案 7.2），所以它是一次同步 RPC。
+//
+// 金额单位是分，用 int64。方案 13.1 要求的「金额在 JSON 传输里必须是字符串」是为了
+// 绕开 JS 的数字精度，protobuf 二进制里 int64 是精确的；真正回到客户端的那份是
+// pay_params，里面凡有金额一律是字符串。
+service PaymentService {
+  // 为一张订单发起一次支付。
+  //
+  // 调用方在锁内校验完归属、状态与应付金额之后才发过来，本服务按它给的金额建单，
+  // 不去读订单库——订单事实的归属方是订单服务，支付这边只拿一个值引用。反过来，
+  // 本服务建单成功后把渠道返回的支付参数原样交回，由调用方转给客户端。
+  rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
+}
+
+message CreatePaymentRequest {
+  // 订单号，值引用（orders.order_no）。
+  string order_no = 1;
+  // 付款用户，值引用。
+  string user_id = 2;
+  // 应付总额，单位为分。由 order-service 权威给出，本服务不对着订单库复核。
+  int64 amount = 3;
+  // 用户选的支付方式（payment_methods.id）。本服务按它的 action 决定怎么起支付。
+  string payment_method_id = 4;
+  // 渠道收银台与账单上显示的商品描述。
+  string subject = 5;
+  // 幂等号：同一次提交重试要拿到同一张支付单，不新建。
+  string request_id = 6;
+  // 渠道附加参数里需要用户身份的那一项（微信小程序支付要 openid）。
+  string wallet_open_id = 7;
+  // 其余渠道附加数据（设备号等）。不放密钥。
+  map<string, string> attach = 8;
+  // 订单 ID，值引用（orders.id），必填、UUID。
+  //
+  // order_no 已经能指回订单了，为什么还要 ID：账户出资（action=account）扣的是咖啡豆，
+  // 而账户域的幂等键由**订单 ID** 派生（`order:{orderId}`，见 coffee_bean.proto）。用订单
+  // ID 而不是支付单号做那把键，重试（用户第一次发起超时、又发起一次，那是两张支付单）
+  // 才不会把同一张订单的豆扣两遍。渠道支付用不到它，但一样必填——一个「只在某种支付方式
+  // 下才必填」的字段，缺失时被砸到的是选了豆支付的用户，而不是调用方的测试。
+  string order_id = 9;
+}
+
+message CreatePaymentResponse {
+  string payment_no = 1;
+  // created   = 已建单、还没向渠道发起
+  // pending   = 已向渠道发起，等回调或轮询
+  // succeeded = 已经收妥，不需要客户端再做任何动作（账户出资：扣豆成功就是成功，
+  //             没有第三方要等，见 payment-service 的 createAccountPayment）
+  // failed    = 发起即失败（渠道拒绝、余额不足、参数不全），客户端可以换方式重试
+  string status = 2;
+  // 这条支付方式的行为：jump_miniapp / native_pay / direct_pay / qrcode / h5 /
+  // account。客户端只认它决定怎么调起支付，不认 code——同形态的新渠道是插一行
+  // 数据，客户端零改动。
+  string action = 3;
+  // 渠道返回的支付参数，扁平字符串键值：native_pay 的 timeStamp/nonceStr/package/
+  // signType/paySign，jump_miniapp 的 path 与附加 query，qrcode 与 h5 的 URL。
+  map<string, string> pay_params = 4;
+  // 待支付超时时间（Unix 秒）；0 表示没有超时。
+  int64 expires_at_unix = 5;
+  string failure_code = 6;
+  string failure_message = 7;
+}

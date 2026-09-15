@@ -44,8 +44,9 @@ type CreateOrderRequest struct {
 // CouponDiscountAmount 算出来（discount = price + coupon，payable = 目录单价 × 数量 −
 // 优惠），收进来就等于给了同一笔钱两个来源。
 //
-// 也没有 pickupCode / deviceOrderNo / fulfillmentTaskNo：取杯码是凭据，由服务端在
-// 支付成功时生成；厂商单号与履约任务号属于履约侧，不从小程序收。
+// 也没有 pickupCode / deviceOrderNo / fulfillmentTaskNo：取杯号由服务端在支付成功时生成
+// （客户端挑号等于让用户自己决定屏幕上显示什么）；厂商单号与履约任务号属于履约侧，
+// 不从小程序收。
 type CreateOrderLine struct {
 	// drink / addon / membership。
 	LineType  string  `json:"lineType"`

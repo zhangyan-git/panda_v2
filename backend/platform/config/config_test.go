@@ -131,27 +131,31 @@ func TestLoadReadsDotEnv(t *testing.T) {
 
 func TestResolveDatabasePrefersTheServiceOwnedURL(t *testing.T) {
 	for _, tc := range []struct {
-		name                                                          string
-		service, shared, user, merchant, coupon, coffeeMachine, order string
-		want                                                          string
+		name                                                                            string
+		service, shared, user, merchant, coupon, coffeeMachine, order, payment, account string
+		want                                                                            string
 	}{
-		{"user service reads its own database", "user-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "identity"},
-		{"merchant service reads its own database", "merchant-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "merchant"},
-		{"coupon service reads its own database", "coupon-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "coupon"},
-		{"coffee machine service reads its own database", "coffee-machine-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "coffee"},
-		{"order service reads its own database", "order-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "order"},
-		{"user service falls back when unset", "user-service", "shared", "", "merchant", "coupon", "coffee", "order", "shared"},
-		{"merchant service falls back when unset", "merchant-service", "shared", "identity", "", "coupon", "coffee", "order", "shared"},
-		{"coupon service falls back when unset", "coupon-service", "shared", "identity", "merchant", "", "coffee", "order", "shared"},
-		{"coffee machine service falls back when unset", "coffee-machine-service", "shared", "identity", "merchant", "coupon", "", "order", "shared"},
-		{"order service falls back when unset", "order-service", "shared", "identity", "merchant", "coupon", "coffee", "", "shared"},
-		{"blank override is not an override", "user-service", "shared", "  ", "", "", "", "", "shared"},
-		{"a service without an owned database stays shared", "gateway-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "shared"},
+		{"user service reads its own database", "user-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "identity"},
+		{"merchant service reads its own database", "merchant-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "merchant"},
+		{"coupon service reads its own database", "coupon-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "coupon"},
+		{"coffee machine service reads its own database", "coffee-machine-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "coffee"},
+		{"order service reads its own database", "order-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "order"},
+		{"payment service reads its own database", "payment-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "payment"},
+		{"account service reads its own database", "account-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "account"},
+		{"user service falls back when unset", "user-service", "shared", "", "merchant", "coupon", "coffee", "order", "payment", "account", "shared"},
+		{"merchant service falls back when unset", "merchant-service", "shared", "identity", "", "coupon", "coffee", "order", "payment", "account", "shared"},
+		{"coupon service falls back when unset", "coupon-service", "shared", "identity", "merchant", "", "coffee", "order", "payment", "account", "shared"},
+		{"coffee machine service falls back when unset", "coffee-machine-service", "shared", "identity", "merchant", "coupon", "", "order", "payment", "account", "shared"},
+		{"order service falls back when unset", "order-service", "shared", "identity", "merchant", "coupon", "coffee", "", "payment", "account", "shared"},
+		{"payment service falls back when unset", "payment-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "", "account", "shared"},
+		{"account service falls back when unset", "account-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "", "shared"},
+		{"blank override is not an override", "user-service", "shared", "  ", "", "", "", "", "", "", "shared"},
+		{"a service without an owned database stays shared", "gateway-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "shared"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := resolveDatabase(tc.service, tc.shared, tc.user, tc.merchant, tc.coupon, tc.coffeeMachine, tc.order); got != tc.want {
-				t.Fatalf("resolveDatabase(%q, %q, %q, %q, %q, %q, %q) = %q, want %q",
-					tc.service, tc.shared, tc.user, tc.merchant, tc.coupon, tc.coffeeMachine, tc.order, got, tc.want)
+			if got := resolveDatabase(tc.service, tc.shared, tc.user, tc.merchant, tc.coupon, tc.coffeeMachine, tc.order, tc.payment, tc.account); got != tc.want {
+				t.Fatalf("resolveDatabase(%q, %q, %q, %q, %q, %q, %q, %q, %q) = %q, want %q",
+					tc.service, tc.shared, tc.user, tc.merchant, tc.coupon, tc.coffeeMachine, tc.order, tc.payment, tc.account, got, tc.want)
 			}
 		})
 	}

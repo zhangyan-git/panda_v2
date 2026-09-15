@@ -10,6 +10,7 @@ import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
+	sync "sync"
 	unsafe "unsafe"
 )
 
@@ -20,20 +21,298 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type CreatePaymentRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 订单号，值引用（orders.order_no）。
+	OrderNo string `protobuf:"bytes,1,opt,name=order_no,json=orderNo,proto3" json:"order_no,omitempty"`
+	// 付款用户，值引用。
+	UserId string `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// 应付总额，单位为分。由 order-service 权威给出，本服务不对着订单库复核。
+	Amount int64 `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	// 用户选的支付方式（payment_methods.id）。本服务按它的 action 决定怎么起支付。
+	PaymentMethodId string `protobuf:"bytes,4,opt,name=payment_method_id,json=paymentMethodId,proto3" json:"payment_method_id,omitempty"`
+	// 渠道收银台与账单上显示的商品描述。
+	Subject string `protobuf:"bytes,5,opt,name=subject,proto3" json:"subject,omitempty"`
+	// 幂等号：同一次提交重试要拿到同一张支付单，不新建。
+	RequestId string `protobuf:"bytes,6,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// 渠道附加参数里需要用户身份的那一项（微信小程序支付要 openid）。
+	WalletOpenId string `protobuf:"bytes,7,opt,name=wallet_open_id,json=walletOpenId,proto3" json:"wallet_open_id,omitempty"`
+	// 其余渠道附加数据（设备号等）。不放密钥。
+	Attach map[string]string `protobuf:"bytes,8,rep,name=attach,proto3" json:"attach,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// 订单 ID，值引用（orders.id），必填、UUID。
+	//
+	// order_no 已经能指回订单了，为什么还要 ID：账户出资（action=account）扣的是咖啡豆，
+	// 而账户域的幂等键由**订单 ID** 派生（`order:{orderId}`，见 coffee_bean.proto）。用订单
+	// ID 而不是支付单号做那把键，重试（用户第一次发起超时、又发起一次，那是两张支付单）
+	// 才不会把同一张订单的豆扣两遍。渠道支付用不到它，但一样必填——一个「只在某种支付方式
+	// 下才必填」的字段，缺失时被砸到的是选了豆支付的用户，而不是调用方的测试。
+	OrderId       string `protobuf:"bytes,9,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreatePaymentRequest) Reset() {
+	*x = CreatePaymentRequest{}
+	mi := &file_payment_v1_payment_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreatePaymentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreatePaymentRequest) ProtoMessage() {}
+
+func (x *CreatePaymentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreatePaymentRequest.ProtoReflect.Descriptor instead.
+func (*CreatePaymentRequest) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *CreatePaymentRequest) GetOrderNo() string {
+	if x != nil {
+		return x.OrderNo
+	}
+	return ""
+}
+
+func (x *CreatePaymentRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *CreatePaymentRequest) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *CreatePaymentRequest) GetPaymentMethodId() string {
+	if x != nil {
+		return x.PaymentMethodId
+	}
+	return ""
+}
+
+func (x *CreatePaymentRequest) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *CreatePaymentRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *CreatePaymentRequest) GetWalletOpenId() string {
+	if x != nil {
+		return x.WalletOpenId
+	}
+	return ""
+}
+
+func (x *CreatePaymentRequest) GetAttach() map[string]string {
+	if x != nil {
+		return x.Attach
+	}
+	return nil
+}
+
+func (x *CreatePaymentRequest) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+type CreatePaymentResponse struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	PaymentNo string                 `protobuf:"bytes,1,opt,name=payment_no,json=paymentNo,proto3" json:"payment_no,omitempty"`
+	// created   = 已建单、还没向渠道发起
+	// pending   = 已向渠道发起，等回调或轮询
+	// succeeded = 已经收妥，不需要客户端再做任何动作（账户出资：扣豆成功就是成功，
+	//
+	//	没有第三方要等，见 payment-service 的 createAccountPayment）
+	//
+	// failed    = 发起即失败（渠道拒绝、余额不足、参数不全），客户端可以换方式重试
+	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// 这条支付方式的行为：jump_miniapp / native_pay / direct_pay / qrcode / h5 /
+	// account。客户端只认它决定怎么调起支付，不认 code——同形态的新渠道是插一行
+	// 数据，客户端零改动。
+	Action string `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"`
+	// 渠道返回的支付参数，扁平字符串键值：native_pay 的 timeStamp/nonceStr/package/
+	// signType/paySign，jump_miniapp 的 path 与附加 query，qrcode 与 h5 的 URL。
+	PayParams map[string]string `protobuf:"bytes,4,rep,name=pay_params,json=payParams,proto3" json:"pay_params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// 待支付超时时间（Unix 秒）；0 表示没有超时。
+	ExpiresAtUnix  int64  `protobuf:"varint,5,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
+	FailureCode    string `protobuf:"bytes,6,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
+	FailureMessage string `protobuf:"bytes,7,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *CreatePaymentResponse) Reset() {
+	*x = CreatePaymentResponse{}
+	mi := &file_payment_v1_payment_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreatePaymentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreatePaymentResponse) ProtoMessage() {}
+
+func (x *CreatePaymentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreatePaymentResponse.ProtoReflect.Descriptor instead.
+func (*CreatePaymentResponse) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *CreatePaymentResponse) GetPaymentNo() string {
+	if x != nil {
+		return x.PaymentNo
+	}
+	return ""
+}
+
+func (x *CreatePaymentResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *CreatePaymentResponse) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *CreatePaymentResponse) GetPayParams() map[string]string {
+	if x != nil {
+		return x.PayParams
+	}
+	return nil
+}
+
+func (x *CreatePaymentResponse) GetExpiresAtUnix() int64 {
+	if x != nil {
+		return x.ExpiresAtUnix
+	}
+	return 0
+}
+
+func (x *CreatePaymentResponse) GetFailureCode() string {
+	if x != nil {
+		return x.FailureCode
+	}
+	return ""
+}
+
+func (x *CreatePaymentResponse) GetFailureMessage() string {
+	if x != nil {
+		return x.FailureMessage
+	}
+	return ""
+}
+
 var File_payment_v1_payment_proto protoreflect.FileDescriptor
 
 const file_payment_v1_payment_proto_rawDesc = "" +
 	"\n" +
-	"\x18payment/v1/payment.proto\x12\x10panda.payment.v12\x10\n" +
-	"\x0ePaymentServiceB:Z8github.com/panda-dev/panda-v2/contracts/proto/payment/v1b\x06proto3"
+	"\x18payment/v1/payment.proto\x12\x10panda.payment.v1\"\x8f\x03\n" +
+	"\x14CreatePaymentRequest\x12\x19\n" +
+	"\border_no\x18\x01 \x01(\tR\aorderNo\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\x03R\x06amount\x12*\n" +
+	"\x11payment_method_id\x18\x04 \x01(\tR\x0fpaymentMethodId\x12\x18\n" +
+	"\asubject\x18\x05 \x01(\tR\asubject\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x06 \x01(\tR\trequestId\x12$\n" +
+	"\x0ewallet_open_id\x18\a \x01(\tR\fwalletOpenId\x12J\n" +
+	"\x06attach\x18\b \x03(\v22.panda.payment.v1.CreatePaymentRequest.AttachEntryR\x06attach\x12\x19\n" +
+	"\border_id\x18\t \x01(\tR\aorderId\x1a9\n" +
+	"\vAttachEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xef\x02\n" +
+	"\x15CreatePaymentResponse\x12\x1d\n" +
+	"\n" +
+	"payment_no\x18\x01 \x01(\tR\tpaymentNo\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x16\n" +
+	"\x06action\x18\x03 \x01(\tR\x06action\x12U\n" +
+	"\n" +
+	"pay_params\x18\x04 \x03(\v26.panda.payment.v1.CreatePaymentResponse.PayParamsEntryR\tpayParams\x12&\n" +
+	"\x0fexpires_at_unix\x18\x05 \x01(\x03R\rexpiresAtUnix\x12!\n" +
+	"\ffailure_code\x18\x06 \x01(\tR\vfailureCode\x12'\n" +
+	"\x0ffailure_message\x18\a \x01(\tR\x0efailureMessage\x1a<\n" +
+	"\x0ePayParamsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012r\n" +
+	"\x0ePaymentService\x12`\n" +
+	"\rCreatePayment\x12&.panda.payment.v1.CreatePaymentRequest\x1a'.panda.payment.v1.CreatePaymentResponseB:Z8github.com/panda-dev/panda-v2/contracts/proto/payment/v1b\x06proto3"
 
-var file_payment_v1_payment_proto_goTypes = []any{}
+var (
+	file_payment_v1_payment_proto_rawDescOnce sync.Once
+	file_payment_v1_payment_proto_rawDescData []byte
+)
+
+func file_payment_v1_payment_proto_rawDescGZIP() []byte {
+	file_payment_v1_payment_proto_rawDescOnce.Do(func() {
+		file_payment_v1_payment_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_payment_v1_payment_proto_rawDesc), len(file_payment_v1_payment_proto_rawDesc)))
+	})
+	return file_payment_v1_payment_proto_rawDescData
+}
+
+var file_payment_v1_payment_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_payment_v1_payment_proto_goTypes = []any{
+	(*CreatePaymentRequest)(nil),  // 0: panda.payment.v1.CreatePaymentRequest
+	(*CreatePaymentResponse)(nil), // 1: panda.payment.v1.CreatePaymentResponse
+	nil,                           // 2: panda.payment.v1.CreatePaymentRequest.AttachEntry
+	nil,                           // 3: panda.payment.v1.CreatePaymentResponse.PayParamsEntry
+}
 var file_payment_v1_payment_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	2, // 0: panda.payment.v1.CreatePaymentRequest.attach:type_name -> panda.payment.v1.CreatePaymentRequest.AttachEntry
+	3, // 1: panda.payment.v1.CreatePaymentResponse.pay_params:type_name -> panda.payment.v1.CreatePaymentResponse.PayParamsEntry
+	0, // 2: panda.payment.v1.PaymentService.CreatePayment:input_type -> panda.payment.v1.CreatePaymentRequest
+	1, // 3: panda.payment.v1.PaymentService.CreatePayment:output_type -> panda.payment.v1.CreatePaymentResponse
+	3, // [3:4] is the sub-list for method output_type
+	2, // [2:3] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_payment_v1_payment_proto_init() }
@@ -47,12 +326,13 @@ func file_payment_v1_payment_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_payment_v1_payment_proto_rawDesc), len(file_payment_v1_payment_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   0,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_payment_v1_payment_proto_goTypes,
 		DependencyIndexes: file_payment_v1_payment_proto_depIdxs,
+		MessageInfos:      file_payment_v1_payment_proto_msgTypes,
 	}.Build()
 	File_payment_v1_payment_proto = out.File
 	file_payment_v1_payment_proto_goTypes = nil

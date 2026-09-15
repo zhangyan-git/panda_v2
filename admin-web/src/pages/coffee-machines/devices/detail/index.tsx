@@ -54,9 +54,10 @@ export default function DeviceDetailPage() {
     void load();
   }, [load]);
 
-  // 账变记录那一屏的接口与「调整余额」共用一个权限码（后端 GET/POST 同一条路由表项）：
-  // 没有这个码的人打开它只会收到一串 403，所以干脆不摆。其余三个 tab 跟页面的
-  // canViewCoffeeMachines 同权限，能进这个页面就都能看。
+  // 账变记录那一屏的接口与后端的「调整余额」共用一个权限码（后端 GET/POST 挂在同一条
+  // 路由表项上；那个 POST 只留了路由，本应用不提供入口）：没有这个码的人打开它只会收到
+  // 一串 403，所以干脆不摆。其余三个 tab 跟页面的 canViewCoffeeMachines 同权限，能进
+  // 这个页面就都能看。
   const tabList = [
     { key: 'basic', tab: '基本信息' },
     { key: 'logs', tab: '操作日志' },

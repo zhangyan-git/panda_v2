@@ -392,10 +392,18 @@ func (r *PostgresRepository) ApplyAfterSale(ctx context.Context, p ApplyAfterSal
 		}); err != nil {
 		return nil, false, err
 	}
+	// 福卡冻结要冻哪几笔发放，在这里（锁内、与那一行订单同一个时刻）拆出来随事件带走：
+	// 承诺快照是订单的事实，账户域不解析它、也不持有发放规则（方案 5.6）。按 scope 分层，
+	// 退加购行只冻加赠那张；快照拆不动时整单全冻，理由见 fortuneCardFreezeKeys。
+	//
+	// 这一单没承诺福卡时是空数组，不是缺字段：消费方开着 DisallowUnknownFields，
+	// 少一个字段整条消息就进死信——退款申请跟着一起丢，那比不冻卡严重得多。
+	freezeKeys := fortuneCardFreezeKeys(order.ID, order.FortuneCardsExpected, order.FortuneCardSnapshot, p.Scope)
 	if err := appendOutbox(ctx, tx, EventAfterSaleApplied, eventVersion, p.TraceID, map[string]any{
 		"afterSaleId": id, "afterSaleNo": p.AfterSaleNo, "orderId": order.ID,
 		"orderNo": order.OrderNo, "userId": order.UserID, "scope": p.Scope,
 		"orderLineId": p.OrderLineID, "refundAmount": amount,
+		"fortuneCardEntryKeys": freezeKeys,
 	}); err != nil {
 		return nil, false, err
 	}
@@ -545,7 +553,11 @@ type CancelAfterSaleParams struct {
 // CancelAfterSale 撤销一张还没被审核的售后单。
 //
 // 只能撤 pending：审核通过之后钱已经在路上了，撤销不再由用户发起（那条边留给退款单）。
-// 不发领域事件：这一刻还没有任何下游动作可撤——申请阶段没有退款单，payments 侧什么都没做过。
+//
+// 发 order.after_sale.cancelled。这里曾经不发事件，理由是「申请阶段没有退款单，payments 侧
+// 什么都没做过，没有下游动作可撤」——福卡冻结让那句话不再成立：申请即冻，撤销是把这个动作
+// 撤掉，冻着的卡得放回去。而且撤销之后用户手上再没有任何能解开它的动作了，所以这条事件
+// 不是通知，是唯一的解冻信号。
 func (r *PostgresRepository) CancelAfterSale(ctx context.Context, p CancelAfterSaleParams) (*AfterSaleRow, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -578,6 +590,16 @@ func (r *PostgresRepository) CancelAfterSale(ctx context.Context, p CancelAfterS
 	}
 	if err := recordTransition(ctx, tx, model.AggregateAfterSale, item.ID, item.Status,
 		model.AfterSaleStatusCancelled, p.Reason, p.RequestID, actorType, actorID, nil); err != nil {
+		return nil, err
+	}
+
+	// 与 reviewed 同形，少一个 action（撤销不是一次审核动作）。解冻只认 afterSaleNo，
+	// 其余字段是给下一个消费者（payment 侧的退款单）准备的同一份上下文。
+	if err := appendOutbox(ctx, tx, EventAfterSaleCancelled, eventVersion, p.TraceID, map[string]any{
+		"afterSaleId": item.ID, "afterSaleNo": item.AfterSaleNo, "orderId": item.OrderID,
+		"orderNo": item.OrderNo, "userId": item.UserID, "status": model.AfterSaleStatusCancelled,
+		"reason": p.Reason,
+	}); err != nil {
 		return nil, err
 	}
 

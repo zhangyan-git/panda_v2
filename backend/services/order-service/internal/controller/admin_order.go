@@ -50,6 +50,12 @@ func (c *AdminOrderController) Orders(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.cancel(w, r, strings.TrimSuffix(rest, "/cancel"), identity)
+	case strings.HasSuffix(rest, "/complete"):
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		c.complete(w, r, strings.TrimSuffix(rest, "/complete"), identity)
 	default:
 		if r.Method != http.MethodGet {
 			http.NotFound(w, r)
@@ -126,7 +132,7 @@ func (c *AdminOrderController) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *AdminOrderController) detail(w http.ResponseWriter, r *http.Request, orderID string) {
-	// userID 传空串：后台查询不校验归属，也不返回取杯码（service 层决定的）。
+	// userID 传空串：后台查询不校验归属（取杯号两端都返回，客服要答「我的号是多少」）。
 	detail, err := c.orders.GetOrderDetail(r.Context(), orderID, "")
 	if err != nil {
 		writeOrderError(w, err, "failed to get order")
@@ -155,6 +161,32 @@ func (c *AdminOrderController) cancel(w http.ResponseWriter, r *http.Request, or
 	})
 	if err != nil {
 		writeOrderError(w, err, "failed to cancel order")
+		return
+	}
+	api.Success(w, map[string]any{
+		"orderId": result.OrderID,
+		"status":  result.Status,
+	})
+}
+
+// complete 把一笔已付款的订单标记为完成。
+//
+// 不收请求体，也不需要理由：取消要写清「为什么关掉用户这一单」，完成是一次**放行**
+// ——它只推进订单、按承诺发福卡，没有任何东西被拒。要一个理由只会催生「无」这样的填充。
+//
+// 完成人取自令牌，不取自请求体（同取消）：让被审计的人自己填审计字段，等于没有审计。
+func (c *AdminOrderController) complete(w http.ResponseWriter, r *http.Request, orderID string, identity auth.Identity) {
+	actorID := identity.UserID
+	if actorID == "" {
+		actorID = identity.Subject
+	}
+	result, err := c.orders.CompleteOrder(r.Context(), service.CompleteOrderInput{
+		OrderID: orderID,
+		ActorID: actorID,
+		TraceID: traceID(r),
+	})
+	if err != nil {
+		writeOrderError(w, err, "failed to complete order")
 		return
 	}
 	api.Success(w, map[string]any{

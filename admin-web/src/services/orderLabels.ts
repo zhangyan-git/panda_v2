@@ -54,12 +54,17 @@ export const ORDER_LINE_TYPE: Record<string, EnumMeta> = {
   membership: { text: '会员套餐', color: 'purple' },
 };
 
-/** order_payment_lines.line_type：这一块钱是谁出的 */
+/**
+ * order_payment_lines.line_type：这一块钱是谁出的。
+ *
+ * **没有福卡**：福卡是下单赠送的抽奖凭证，不是出资渠道（余额归 account-service、消耗只有
+ * 抽奖一条路）。规划里没有这一项，是词表凭空写上了它；order/003 与 payment/004 已把两侧
+ * CHECK 收窄。别把它加回来。
+ */
 export const PAYMENT_LINE_TYPE: Record<string, EnumMeta> = {
   wechat: { text: '微信支付', color: 'green' },
   unionpay: { text: '银联', color: 'blue' },
   coffee_bean: { text: '咖啡豆', color: 'orange' },
-  fortune_card: { text: '福卡', color: 'purple' },
   wallet: { text: '消费金', color: 'cyan' },
   other: { text: '其他', color: 'default' },
 };
@@ -130,7 +135,6 @@ const PAYMENT_METHOD_TEXT: Record<string, string> = {
   wechat_pay: '微信支付',
   unionpay: '银联',
   coffee_bean: '咖啡豆',
-  fortune_card: '福卡',
   wallet: '消费金',
   balance: '余额',
   cash: '现金',

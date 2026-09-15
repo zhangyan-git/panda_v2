@@ -590,7 +590,7 @@ func TestUpdateDrinkKeepsNaturalKey(t *testing.T) {
 //   - device_id 为 NULL 的行互不相撞：唯一索引把 NULL 当作彼此不同，所以没有设备的
 //     历史行（迁移 003 之前建的那批）可以同 origin 并存。这是可接受的——设备维度的读
 //     接口根本看不到它们，而新写入路径已经被服务层挡在 ErrDrinkDeviceRequired 上。
-//   - origin_id 为空的行也不相撞：索引是 WHERE origin_id <> '' 的部分索引，后台手工
+//   - origin_id 为空的行也不相撞：索引只收 origin_id 非空的行（部分索引），后台手工
 //     新建的饮品全是空 origin，同一台设备上可以有任意多行。
 //
 // 「同一台设备上的同款被拒」在 TestDrinkOriginIsUniquePerDeviceNotPerManufacturer 里。

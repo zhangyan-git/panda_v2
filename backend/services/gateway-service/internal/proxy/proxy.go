@@ -41,7 +41,19 @@ type Config struct {
 	// user-service 的 /v1/miniapp 前缀里——顺序和「留空时不许落到 user-service」
 	// 这两件事都在 NewHandler 的那条 case 上，见那里的注释。
 	OrderServiceURL string
-	RequestTimeout  time.Duration
+	// PaymentServiceURL 同上：可留空，留空时 /v1/payments 保持 404。
+	//
+	// 支付域与上面几个不一样的地方是：它这条路径**必须**能从公网到达。渠道的回调是从公网
+	// 打进来的（它签得了名，但进不了内网），所以这一条不是「给前端用的转发」，而是支付域
+	// 唯一的对外入口。发起支付走的是另一条路（order-service 同步 gRPC 调支付域），过不了
+	// 网关，也不需要过。
+	PaymentServiceURL string
+	// AccountServiceURL 同上：可留空，留空时资产账户域的路径保持 404（资产账户域是
+	// 最后加的服务）。它接的是福卡与咖啡豆两棵树：/v1/admin/{fortune-cards,coffee-beans}
+	// 与 /v1/miniapp/{fortune-cards,coffee-beans}——后两条落在 user-service 的
+	// /v1/miniapp 前缀里，顺序见 NewHandler 的那条 case。
+	AccountServiceURL string
+	RequestTimeout    time.Duration
 	// UploadTimeout replaces RequestTimeout for the upload path only, so one slow
 	// route does not buy every other route a two-minute hang.
 	UploadTimeout time.Duration
@@ -94,6 +106,24 @@ func NewHandler(cfg Config) (http.Handler, error) {
 			return nil, fmt.Errorf("order service URL: %w", err)
 		}
 	}
+	// 支付域同样后加。它挂在 /v1/payments 这个**独立前缀**上，与订单域刻意分开：渠道回调
+	// 不该长在小程序的路径树下（那个前缀已经整个转给订单域与 user-service 了）。
+	var payment http.Handler
+	if strings.TrimSpace(cfg.PaymentServiceURL) != "" {
+		payment, err = newProxy(cfg.PaymentServiceURL, cfg.HTTPClient)
+		if err != nil {
+			return nil, fmt.Errorf("payment service URL: %w", err)
+		}
+	}
+	// 资产账户域（福卡 + 咖啡豆两棵树）同样后加。它接的两条 /v1/miniapp/* 都落在
+	// user-service 的 /v1/miniapp 前缀里，所以构造完之后还要看下面那条 case 的位置。
+	var account http.Handler
+	if strings.TrimSpace(cfg.AccountServiceURL) != "" {
+		account, err = newProxy(cfg.AccountServiceURL, cfg.HTTPClient)
+		if err != nil {
+			return nil, fmt.Errorf("account service URL: %w", err)
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := normalizePath(r.URL.Path)
 		r.URL.Path = path
@@ -103,6 +133,34 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		var upstream http.Handler
 		timeout := cfg.RequestTimeout
 		switch {
+		// 资产账户域的两棵树的四条路径：福卡与咖啡豆。它们必须排在下面那条
+		// /v1/miniapp → user-service 之前，理由与订单域一样：/v1/miniapp/fortune-cards
+		// 与 /v1/miniapp/coffee-beans 都落在那个前缀里，写在它后面就永远轮不到，
+		// 小程序拿到的会是一句「用户服务没有这个接口」。
+		//
+		// 咖啡豆那两条是后补的，补之前它们分别落在这里的两处坏地方：/v1/admin/coffee-beans
+		// 落到 default 是网关自己的 404，/v1/miniapp/coffee-beans 被转给 user-service。
+		// 两者在界面上都是「接口不存在」，而真正的原因是**网关不认识这条路径**——
+		// account-service 里那几条路由一直是好的。
+		//
+		// 两条后台路径也与 user-service 的 /v1/admin/* 都不冲突，放同一条 case 只是因为
+		// 它们属于同一个上游。写前缀而不是写整条路径：一棵树上有多条子路径
+		// （/coffee-beans/entries、/coffee-beans/{userId}/adjustments），逐个列举漏一个
+		// 就是一个静默的 404。
+		//
+		// 与 order/coupon 那几条一样，这里**不把 account == nil 合进 case 条件**：
+		// 没配上游时落到 /v1/miniapp，同样会被转给 user-service，而真正的原因是账户
+		// 服务没接上。写在这里显式 404，客户端才不会把「账户域没部署」读成「用户服务
+		// 没这个接口」。
+		case hasPathPrefix(path, "/v1/admin/fortune-cards"),
+			hasPathPrefix(path, "/v1/admin/coffee-beans"),
+			hasPathPrefix(path, "/v1/miniapp/fortune-cards"),
+			hasPathPrefix(path, "/v1/miniapp/coffee-beans"):
+			if account == nil {
+				http.NotFound(w, r)
+				return
+			}
+			upstream = account
 		// 订单域的四条路径必须先于 user-service 那一条：/v1/miniapp/orders 与
 		// /v1/miniapp/after-sales 同时落在「/v1/miniapp →user-service」这个前缀里，
 		// 而 Go 的 switch 取第一个成立的 case，写在它后面就永远轮不到。放到前面的
@@ -164,6 +222,20 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		// default 就是 404，而 404 在页面上表现为「接口不存在」，看着像后端没部署。
 		case coffeeMachine != nil && hasPathPrefix(path, "/v1/admin/coffee-machines"):
 			upstream = coffeeMachine
+		// 支付域：目前只有渠道回调一条（POST /v1/payments/callback/{channelCode}）。
+		//
+		// 与上面两条不同，这里**不把 payment == nil 合进 case 条件**：没配上游时落到
+		// default 也是一句 404，但那样通道号、签名这些都没了上下文，看着像「渠道调错了
+		// 地址」。在这里显式 404 与订单、优惠券、设备域是同一条约定。
+		//
+		// 这条路径**不挂认证是有意的**（渠道的凭据是它自己的签名，验签在支付服务里做），
+		// 所以网关这一层就是它唯一的把关：限流在 newMux 那条链上，别把它绕过去。
+		case hasPathPrefix(path, "/v1/payments"):
+			if payment == nil {
+				http.NotFound(w, r)
+				return
+			}
+			upstream = payment
 		default:
 			http.NotFound(w, r)
 			return

@@ -51,11 +51,11 @@ type DeviceInput struct {
 type DrinkInput struct {
 	// DeviceID 是这杯饮品挂在哪台设备上。新建饮品时必填——饮品行就是「某台设备上的
 	// 一杯」，没有设备的行卖不出去，界面上只会显示成「未分配设备」。
-	DeviceID       *string `json:"deviceId"`
-	OriginID       string  `json:"originId"`
-	ProductNum     string `json:"productNum"`
-	ProductName    string `json:"productName"`
-	EnName         string `json:"enName"`
+	DeviceID    *string `json:"deviceId"`
+	OriginID    string  `json:"originId"`
+	ProductNum  string  `json:"productNum"`
+	ProductName string  `json:"productName"`
+	EnName      string  `json:"enName"`
 	// DrinkType 为 null 或空串都表示不限。
 	DrinkType       *string `json:"drinkType"`
 	ProductImg      string  `json:"productImg"`

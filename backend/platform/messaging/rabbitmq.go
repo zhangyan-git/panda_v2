@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,9 +80,9 @@ func (c RabbitConfig) routeKey(eventType string) string {
 	return c.RoutingKey
 }
 
-// bindKey is the pattern this service's queue subscribes to. With no configured
-// key the queue takes everything: a topic exchange delivers only what a binding
-// matches, so an empty binding would strand every event.
+// bindKeys are the patterns this service's queue subscribes to, split on commas.
+// With no configured key the queue takes everything: a topic exchange delivers
+// only what a binding matches, so an empty binding would strand every event.
 //
 // 「strand 了也不会静默」这句原先写在这里，是错的，实测推翻（2026-09-14，本地
 // broker）：路由键没有任何绑定时，broker 确实回了 basic.return / NO_ROUTE，发布
@@ -93,12 +94,42 @@ func (c RabbitConfig) routeKey(eventType string) string {
 // 实际语义因此是：**消息投到交易所即算成功，没人订阅就等于没人要，安静丢弃、不重试**
 // —— 对扇出型事件这多半正是想要的（没有消费者时无限重试更糟），但要有别的意思就得
 // 另外做。判断有没有人收，看交易所的绑定，别指望 Publish 回错。
-func (c RabbitConfig) bindKey() string {
-	if c.RoutingKey != "" {
-		return c.RoutingKey
+//
+// 多个键用逗号分隔（`RABBITMQ_ROUTING_KEY=order.completed,order.after_sale.applied`）：
+// 一个服务往往同时关心几件**具体**的事，而 `order.*` 这种放开的写法会把整个域的每一条
+// 都收进来——收进来只为 ack 掉。收窄到列出来的这几个，队列里剩下的每一条都是要处理的，
+// 「队列积压」才重新等于「消费跟不上了」。
+//
+// 逗号而不是别的分隔符：它不出现在 AMQP 的 routing key 里（keys 以点分段，段内是
+// 字母数字连字符下划线），所以切分没有歧义。
+func (c RabbitConfig) bindKeys() []string {
+	keys := make([]string, 0, 1)
+	for _, key := range strings.Split(c.RoutingKey, ",") {
+		if trimmed := strings.TrimSpace(key); trimmed != "" {
+			keys = append(keys, trimmed)
+		}
 	}
-	return "#"
+	if len(keys) == 0 {
+		return []string{"#"}
+	}
+	return keys
 }
+
+// deadLetterKey 是死信投出去时**带**的那个 routing key，也是 DLQ 在 DLX 上的那一条
+// 绑定。两处必须取同一个值：不一样的话死信投出去就没有家（topic 交换机只投有绑定匹配
+// 的那一条），而这件事不会有任何报错——失败的消息只是不见了。
+//
+// 取的是配置原文，**空就是空**，不跟着 bindKeys 退到 `#`：`#` 在 topic 交换机上匹配
+// 每一条（上面 bindKeys 的注释就是靠这个「全收」的），而一个「配了队列名、没配路由键」
+// 的服务若往 DLX 上绑一把 `#`，它就把**别家**的死信也捞进自己的 DLQ——别人的失败消息
+// 从此查不到。空绑定只认路由键为空的那一条，也就是只有它自己那台队列发出来的死信。
+// 实测（2026-09-15，本地 broker）：空的 x-dead-letter-routing-key 是被当真的，死信带着
+// 空 routing key 投出来，落到空绑定上——不是「没设」退回原始路由键。
+//
+// 原文而不是切分后的某一个键：队列参数一旦声明就不能改，而原文是稳定的、与键的条数
+// 无关。那个 `*`（如果配的是通配）在这一串里是个普通字符——它在词的中间，topic 交换机
+// 的通配只认整段，所以它既不会被当匹配到别处，也不会漏掉自己。
+func (c RabbitConfig) deadLetterKey() string { return c.RoutingKey }
 
 func (c RabbitConfig) validate() error {
 	if c.URL == "" { // Noop is deliberately valid without any Rabbit settings.
@@ -166,23 +197,25 @@ func declareTopology(ch *amqp.Channel, cfg RabbitConfig) error {
 			return err
 		}
 	}
-	key := cfg.bindKey()
+	keys := cfg.bindKeys()
 	args := amqp.Table{}
 	if cfg.DLX != "" {
 		args["x-dead-letter-exchange"] = cfg.DLX
-		args["x-dead-letter-routing-key"] = key
+		args["x-dead-letter-routing-key"] = cfg.deadLetterKey()
 	}
 	if _, err := ch.QueueDeclare(cfg.Queue, true, false, false, false, args); err != nil {
 		return err
 	}
-	if err := ch.QueueBind(cfg.Queue, key, cfg.Exchange, false, nil); err != nil {
-		return err
+	for _, key := range keys {
+		if err := ch.QueueBind(cfg.Queue, key, cfg.Exchange, false, nil); err != nil {
+			return err
+		}
 	}
 	if cfg.DLQ != "" {
 		if _, err := ch.QueueDeclare(cfg.DLQ, true, false, false, false, nil); err != nil {
 			return err
 		}
-		if err := ch.QueueBind(cfg.DLQ, key, cfg.DLX, false, nil); err != nil {
+		if err := ch.QueueBind(cfg.DLQ, cfg.deadLetterKey(), cfg.DLX, false, nil); err != nil {
 			return err
 		}
 	}
@@ -648,7 +681,7 @@ func (r *rabbitClient) waitConfirmation(ctx context.Context, confirmation *amqp.
 		case returned := <-returnedCh:
 			// 正常不会走到这条：退回要过 dispatchReturns 才送到这里，而确认通常先到、
 			// 上面那个 defer 已经把登记清掉，派发时就找不到等待者了。留着是因为这不
-			// 是**保证**——broker 回确认慢、退回先派发时这里仍然接得住。详见 bindKey
+			// 是**保证**——broker 回确认慢、退回先派发时这里仍然接得住。详见 bindKeys
 			// 的注释和 2026-09-14 的实测。
 			return false, fmt.Errorf("messaging: message returned: %s", returned.ReplyText)
 		case <-ctx.Done():

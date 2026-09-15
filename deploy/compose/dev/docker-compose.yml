@@ -225,6 +225,173 @@ services:
       etcd:
         condition: service_healthy
 
+  coffee-machine-service:
+    profiles: ["app"]
+    build:
+      context: ../../..
+      dockerfile: deploy/docker/Dockerfile.backend
+      args:
+        SERVICE: coffee-machine-service
+        # 这个服务和 coupon-service 一样，main 包在 cmd/api 而不是 cmd：CMD 传错
+        # 会在构建期以 "main module does not contain package" 失败，读起来像打错了
+        # 目录名。
+        CMD: ./cmd/api
+    env_file: ["../../../.env"]
+    environment:
+      PANDA_ENV: dev
+      SERVICE_NAME: coffee-machine-service
+      HTTP_ADDR: ":8080"
+      GRPC_ADDR: ":9090"
+      COFFEE_MACHINE_DATABASE_URL: postgres://${POSTGRES_USER:-panda}:${POSTGRES_PASSWORD:-replace-me}@postgres:5432/panda_coffee_machine?sslmode=disable
+      # 挂载点位前要问点位存不存在，所以要商户服务；device 域的读接口还要问用户库
+      # 拿账号身份。两个都是 config 里必填的（少了直接拒绝启动）。
+      MERCHANT_GRPC_ADDR: merchant-service:9090
+      USER_GRPC_ADDR: user-service:9090
+      # 和 user-service 同理：.env 里的 RABBITMQ_URL 指向 localhost，容器里到不了，
+      # 而「配了但连不上」是启动失败、不是退化成 Noop。设备域的变更事件走 outbox。
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-user}:${RABBITMQ_PASSWORD:-replace-me}@rabbitmq:5672/
+      REGISTRY_ENDPOINT: http://etcd:2379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      DB_MIGRATE_ON_START: "false"
+      # 与 merchant-service 一样刻意不设 REDIS_ADDR：这个服务不用 Redis。
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+
+  payment-service:
+    profiles: ["app"]
+    build:
+      context: ../../..
+      dockerfile: deploy/docker/Dockerfile.backend
+      args:
+        SERVICE: payment-service
+        CMD: ./cmd
+    env_file: ["../../../.env"]
+    environment:
+      PANDA_ENV: dev
+      SERVICE_NAME: payment-service
+      HTTP_ADDR: ":8080"
+      GRPC_ADDR: ":9090"
+      PAYMENT_DATABASE_URL: postgres://${POSTGRES_USER:-panda}:${POSTGRES_PASSWORD:-replace-me}@postgres:5432/panda_payment?sslmode=disable
+      # 交回给渠道的回调基址（见 config.PaymentNotifyBaseURL）。这里**刻意不是**容器
+      # 服务名：渠道在集群外面，它解析不了 payment-service 这个名字，也到不了 9090/8080
+      # 那两个容器端口。渠道能到达的是网关在宿主上暴露的那一个地址——本地就是它。
+      # 填成 http://payment-service:8080 的后果是回调永远到不了，而渠道那边以为通知成功了。
+      PAYMENT_NOTIFY_BASE_URL: http://localhost:8080
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-user}:${RABBITMQ_PASSWORD:-replace-me}@rabbitmq:5672/
+      REGISTRY_ENDPOINT: http://etcd:2379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      DB_MIGRATE_ON_START: "false"
+      # 手工渠道的验签密钥。渠道行只存键名（secret_ref），值是这一个。compose 里给个
+      # 能跑通的占位值：留空的话服务照常起来，但每一笔回调都会被拒（那是设计——见
+      # cmd/main.go 的 secretResolver），本地联调会看到「验签失败」而不是清晰的配置错误。
+      PAYMENT_MANUAL_SECRET: ${PAYMENT_MANUAL_SECRET:-replace-me}
+      # 账户域（咖啡豆）。这一行**必须显式写**，不能指望 env_file 带进来：.env 里那行是给
+      # 宿主上手工起的服务用的回环地址（127.0.0.1:19098），容器里 19098 什么都没有。
+      # 而 config 的校验只要求非空（见 config.go:237），所以漏了这一行的表现是**服务照常
+      # 启动、每一笔豆支付在用户点下去那一刻 5xx**——与「下游挂了」长得一样，但下游没挂。
+      ACCOUNT_GRPC_ADDR: account-service:9090
+      # 和 merchant-service 一样刻意不设 REDIS_ADDR：这个服务不用 Redis。
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+
+  order-service:
+    profiles: ["app"]
+    build:
+      context: ../../..
+      dockerfile: deploy/docker/Dockerfile.backend
+      args:
+        SERVICE: order-service
+        CMD: ./cmd
+    env_file: ["../../../.env"]
+    environment:
+      PANDA_ENV: dev
+      SERVICE_NAME: order-service
+      HTTP_ADDR: ":8080"
+      GRPC_ADDR: ":9090"
+      ORDER_DATABASE_URL: postgres://${POSTGRES_USER:-panda}:${POSTGRES_PASSWORD:-replace-me}@postgres:5432/panda_order?sslmode=disable
+      # 三个人下游：下单要问设备事实（coffee-machine），发起支付要把权威金额交给
+      # payment，下单与售后都要问用户身份。三个都是 config 里必填的：少任何一个是
+      # 拒绝启动，不是一个降级模式。
+      USER_GRPC_ADDR: user-service:9090
+      COFFEE_MACHINE_GRPC_ADDR: coffee-machine-service:9090
+      PAYMENT_GRPC_ADDR: payment-service:9090
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-user}:${RABBITMQ_PASSWORD:-replace-me}@rabbitmq:5672/
+      # 这两行必须覆盖，不能沿用 .env 的值（那也是 user-service 的审计队列）。照抄的
+      # 后果有两个，而且都不报错：审计事件被两个消费者对半分；以及 payment.succeeded
+      # 根本不会投过来，订单永远停在待支付。绑定见 order.payment.dev ← payment.*。
+      RABBITMQ_QUEUE: order.payment.dev
+      RABBITMQ_ROUTING_KEY: "payment.*"
+      REGISTRY_ENDPOINT: http://etcd:2379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      DB_MIGRATE_ON_START: "false"
+      # 与 merchant-service 一样刻意不设 REDIS_ADDR：这个服务不用 Redis。
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+
+  account-service:
+    profiles: ["app"]
+    build:
+      context: ../../..
+      dockerfile: deploy/docker/Dockerfile.backend
+      args:
+        SERVICE: account-service
+        CMD: ./cmd
+    env_file: ["../../../.env"]
+    environment:
+      PANDA_ENV: dev
+      SERVICE_NAME: account-service
+      HTTP_ADDR: ":8080"
+      GRPC_ADDR: ":9090"
+      ACCOUNT_DATABASE_URL: postgres://${POSTGRES_USER:-panda}:${POSTGRES_PASSWORD:-replace-me}@postgres:5432/panda_account?sslmode=disable
+      # 后台的福卡查询要走实时授权（认证 → adminOnly → 授权 → 权限码），授权关系住在
+      # 身份库，所以这个服务也要问用户服务。它是 config 里必填的：少了直接拒绝启动。
+      USER_GRPC_ADDR: user-service:9090
+      # 和 user-service 同理：.env 里的 RABBITMQ_URL 指向 localhost，容器里到不了，
+      # 而「配了但连不上」是启动失败、不是退化成 Noop。
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-user}:${RABBITMQ_PASSWORD:-replace-me}@rabbitmq:5672/
+      # 这两行必须覆盖，不能沿用 .env 的值（那也是 user-service 的审计队列）：照抄的
+      # 后果是福卡账户跟着去消费审计事件，永远收不到 order.completed，订单完成了福卡
+      # 却一张不到账，而且两边都不报错。
+      # 升级注意：改为多键之后队列参数（x-dead-letter-routing-key）也变了，已存在的
+      # account.order.dev 无法被重新声明。本地验证前先
+      # `rabbitmqadmin delete queue name=account.order.dev` 让它按新参数重建。
+      RABBITMQ_QUEUE: account.order.dev
+      # 比整段更窄：这个服务只关心订单完成与售后这两件事。写成 order.* 也能跑（处理器会
+      # ack 掉其余几种），但那几种进这个队列只为了被丢弃——收窄到这四条，队列里剩下的
+      # 每一条都是要处理的。
+      #
+      # 四条（逗号分隔，订阅侧按逗号切开各绑一次，见 messaging.RabbitConfig.bindKeys）：
+      # 完成 ⇒ 发福卡；申请退款 ⇒ 冻结这一单的卡；审核驳回 ⇒ 解冻；用户撤销 ⇒ 解冻。
+      # 少了任何一条都不会报错——只会安静地少做一件事，所以这一段要和
+      # service/event.go 的 switch 一起看。
+      RABBITMQ_ROUTING_KEY: "order.completed,order.after_sale.applied,order.after_sale.reviewed,order.after_sale.cancelled"
+      REGISTRY_ENDPOINT: http://etcd:2379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      DB_MIGRATE_ON_START: "false"
+      # 与 merchant-service 一样刻意不设 REDIS_ADDR：这个服务不用 Redis。
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+
   gateway-service:
     profiles: ["app"]
     build:
@@ -240,6 +407,19 @@ services:
       GATEWAY_ADDR: ":8080"
       USER_SERVICE_URL: http://user-service:8080
       MERCHANT_SERVICE_URL: http://merchant-service:8080
+      # 设备域与订单域。少了这两行，/v1/admin/coffee-machines 和 /v1/miniapp/orders、
+      # /v1/admin/orders 在网关这一层就是 404（见 proxy.go 里那几条 case），而 404 在
+      # 界面上表现为「接口不存在」，看着像后端没部署；真正的原因是上游没接上。
+      COFFEE_MACHINE_SERVICE_URL: http://coffee-machine-service:8080
+      ORDER_SERVICE_URL: http://order-service:8080
+      # 渠道回调要从公网经网关打进来，所以网关必须知道支付域在哪——少了这一行，
+      # /v1/payments/callback/{channelCode} 在网关这一层就是 404，而渠道收到 404 会
+      # 按自己的策略重试一阵然后放弃，支付单永远停在 pending。
+      PAYMENT_SERVICE_URL: http://payment-service:8080
+      # 资产账户域（福卡）。少了这一行，/v1/miniapp/fortune-cards 会落到
+      # /v1/miniapp → user-service，小程序拿到的 404 看着像「用户服务没有这个接口」；
+      # /v1/admin/fortune-cards 则是网关自己的 404。两者都在页面上表现为接口不存在。
+      ACCOUNT_SERVICE_URL: http://account-service:8080
       REGISTRY_ENDPOINT: http://etcd:2379
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       # Without this the gateway keys rate limits on nginx's container address,

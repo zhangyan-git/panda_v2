@@ -98,7 +98,7 @@ export default function LogsTab({ deviceId }: { deviceId: string }) {
                   <Typography.Text type="secondary">
                     {/* 审计事件先落各服务自己的 outbox，再由 relay 送过来，所以刚做完的
                         操作会晚一两秒出现。 */}
-                    （新建、改名、上下架、调余额都会记在这里，事件送达有一两秒延迟）
+                    （新建、改名、上下架都会记在这里，事件送达有一两秒延迟）
                   </Typography.Text>
                 </span>
               }

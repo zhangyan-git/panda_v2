@@ -38,12 +38,16 @@ export type OrderLineType = 'drink' | 'addon' | 'membership';
 /** order_payment_lines.status：一次出资分摊走到哪一步了 */
 export type PaymentLineStatus = 'reserved' | 'succeeded' | 'failed' | 'released' | 'reversed';
 
-/** order_payment_lines.line_type：这块钱是谁出的 */
+/**
+ * order_payment_lines.line_type：这块钱是谁出的。
+ *
+ * **没有 fortune_card**：福卡是抽奖凭证不是出资渠道，order/003 与 payment/004 已收窄两侧
+ * CHECK，SDK 词表随之。见 orderLabels.PAYMENT_LINE_TYPE 的注释。
+ */
 export type FundingType =
   | 'wechat'
   | 'unionpay'
   | 'coffee_bean'
-  | 'fortune_card'
   | 'wallet'
   | 'other';
 
@@ -104,11 +108,18 @@ export type OrderSummary = {
   hasMembershipLine: boolean;
   /** 下单时承诺赠送的福卡张数。审核退款申请时要看它（>0 就得让人确认没抽过奖）。 */
   fortuneCardsExpected: number;
+  /**
+   * 取杯号：这一单饮品行那个短号。没付成功或没有饮品行时为 null。
+   *
+   * 列表带上它是因为客服最常被问的就是「我的号是多少」；详情里同一份值也从行上给了一次。
+   * 用户侧叫取杯号，取杯口屏幕上叫取杯码，是同一个值——不是凭据（见 order/004）。
+   */
+  pickupCode: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
-/** 订单行。取杯码的规矩见下面 pickupCode 的注释。 */
+/** 订单行。 */
 export type OrderLine = {
   id: string;
   lineNo: number;
@@ -133,11 +144,7 @@ export type OrderLine = {
   deviceId: string | null;
   deviceOrderNo: string;
   fulfillmentTaskNo: string;
-  pickupNo: string;
-  /**
-   * 取杯码（取杯凭据）。后端 service 层决定给不给：**后台端拿到的永远是 null**，
-   * 字段留在响应里只是形状统一。所以页面不要展示它，也不要去别处要一份。
-   */
+  /** 取杯号，只有饮品行有，支付成功时生成。屏幕上人们也叫它取杯码，是同一个东西。 */
   pickupCode: string | null;
   remark: string;
   createdAt: string;
@@ -313,6 +320,26 @@ export async function cancelOrder(id: string, reason: string) {
   return request<{ orderId: string; status: OrderStatus }>(
     `/api/v1/admin/orders/${id}/cancel`,
     { method: 'POST', data: { reason } },
+  );
+}
+
+/**
+ * 后台把订单标记为完成（paid → completed）。
+ *
+ * 不带请求体，也不像取消那样要理由：取消是**拒绝**一件事（要能回答「为什么关了」），完成是
+ * **放行**（要求填理由只会催生一堆「无」）。这一下同样会写平台审计与订单状态流水，操作人
+ * 取自令牌。
+ *
+ * 它有一个立刻发生的副作用：订单完成会发 `order.completed`，福卡账户域据此**真的给用户
+ * 加福卡**（这一单承诺了几张就加几张）。所以这个按钮的确认文案要讲清楚，别做成「顺手点一下」。
+ *
+ * 不带 Idempotency-Key：同 cancelOrder，重复请求打到的是同一个状态机迁移，第二次回
+ * CONFLICT。
+ */
+export async function completeOrder(id: string) {
+  return request<{ orderId: string; status: OrderStatus }>(
+    `/api/v1/admin/orders/${id}/complete`,
+    { method: 'POST' },
   );
 }
 

@@ -61,11 +61,12 @@ func TestOwnershipConfiguration(t *testing.T) {
 	const userGRPC = "127.0.0.1:19081"
 	const merchantGRPC = "127.0.0.1:19082"
 	const coffeeMachineGRPC = "127.0.0.1:19085"
+	const paymentGRPC = "127.0.0.1:19086"
 	// MERCHANT_SERVICE_URL is intentionally never set below: user-service reaches
 	// merchant-service over gRPC now, so the HTTP URL belongs to the gateway only.
 	tests := []struct {
-		name, service, env, timeout, userGRPC, merchantGRPC, coffeeMachineGRPC, token string
-		wantErr                                                                       bool
+		name, service, env, timeout, userGRPC, merchantGRPC, coffeeMachineGRPC, paymentGRPC, token string
+		wantErr                                                                                    bool
 	}{
 		{name: "remote default", service: "user-service", env: "production", merchantGRPC: merchantGRPC, token: token},
 		{name: "remote missing gRPC address", service: "user-service", env: "production", token: token, wantErr: true},
@@ -87,12 +88,27 @@ func TestOwnershipConfiguration(t *testing.T) {
 		{name: "coupon needs no service token", service: "coupon-service", env: "production", userGRPC: userGRPC},
 		// order-service asks user-service for live grants (like coupon-service) and
 		// coffee-machine-service for the device facts a drink order is validated
-		// against, presenting the shared service token for the second one. Both
-		// addresses and the token are required, and each case below omits exactly one.
-		{name: "order needs user gRPC address", service: "order-service", env: "production", coffeeMachineGRPC: coffeeMachineGRPC, token: token, wantErr: true},
-		{name: "order needs coffee machine gRPC address", service: "order-service", env: "production", userGRPC: userGRPC, token: token, wantErr: true},
-		{name: "order needs the service token", service: "order-service", env: "production", userGRPC: userGRPC, coffeeMachineGRPC: coffeeMachineGRPC, wantErr: true},
-		{name: "order is fully configured", service: "order-service", env: "production", userGRPC: userGRPC, coffeeMachineGRPC: coffeeMachineGRPC, token: token},
+		// against, presenting the shared service token for the second one. It also
+		// orchestrates the pay flow (plan 7.2), so it dials payment-service as well.
+		// Every address and the token are required, and each case below omits exactly one.
+		{name: "order needs user gRPC address", service: "order-service", env: "production", coffeeMachineGRPC: coffeeMachineGRPC, paymentGRPC: paymentGRPC, token: token, wantErr: true},
+		{name: "order needs coffee machine gRPC address", service: "order-service", env: "production", userGRPC: userGRPC, paymentGRPC: paymentGRPC, token: token, wantErr: true},
+		{name: "order needs payment gRPC address", service: "order-service", env: "production", userGRPC: userGRPC, coffeeMachineGRPC: coffeeMachineGRPC, token: token, wantErr: true},
+		{name: "order needs the service token", service: "order-service", env: "production", userGRPC: userGRPC, coffeeMachineGRPC: coffeeMachineGRPC, paymentGRPC: paymentGRPC, wantErr: true},
+		{name: "order is fully configured", service: "order-service", env: "production", userGRPC: userGRPC, coffeeMachineGRPC: coffeeMachineGRPC, paymentGRPC: paymentGRPC, token: token},
+		// payment-service presents the shared service token when verifying the pay
+		// request order-service sends it, and dials nothing of its own: the callback
+		// is inbound HTTP and the create path is an inbound RPC.
+		{name: "payment needs the service token", service: "payment-service", env: "production", wantErr: true},
+		{name: "payment needs nothing else", service: "payment-service", env: "production", token: token},
+		// account-service asks user-service for live grants on every admin request
+		// (reading 福卡账户与流水 is behind account:read), so it needs that address.
+		// It also verifies the shared service token on its gRPC face — the 扣减/冲正
+		// RPCs that 抽奖 and 退款 will call — so a token it could never match is a
+		// startup error too, exactly like payment-service.
+		{name: "account needs user gRPC address", service: "account-service", env: "production", token: token, wantErr: true},
+		{name: "account needs the service token", service: "account-service", env: "production", userGRPC: userGRPC, wantErr: true},
+		{name: "account is fully configured", service: "account-service", env: "production", userGRPC: userGRPC, token: token},
 		// gateway-service is the stand-in for "a service with no special settings":
 		// it owns no database and dials nothing. Do not reuse a domain service name
 		// here — each one acquires requirements over time and stops being unrelated.
@@ -106,6 +122,7 @@ func TestOwnershipConfiguration(t *testing.T) {
 			t.Setenv("USER_GRPC_ADDR", tt.userGRPC)
 			t.Setenv("MERCHANT_GRPC_ADDR", tt.merchantGRPC)
 			t.Setenv("COFFEE_MACHINE_GRPC_ADDR", tt.coffeeMachineGRPC)
+			t.Setenv("PAYMENT_GRPC_ADDR", tt.paymentGRPC)
 			t.Setenv("MERCHANT_INTERNAL_TOKEN", tt.token)
 			cfg, err := Load(tt.service)
 			if (err != nil) != tt.wantErr {

@@ -59,8 +59,13 @@ func main() {
 		CoffeeMachineServiceURL: os.Getenv("COFFEE_MACHINE_SERVICE_URL"),
 		// 订单域同理。
 		OrderServiceURL: os.Getenv("ORDER_SERVICE_URL"),
-		RequestTimeout:  timeout,
-		UploadTimeout:   uploadTimeout,
+		// 支付域同理。它这条路径是渠道从公网打进来的回调用，所以这个值必须是渠道能到达的
+		// 地址（生产是公网域名，本地是网关自己的地址）。
+		PaymentServiceURL: os.Getenv("PAYMENT_SERVICE_URL"),
+		// 资产账户域（福卡）同理。
+		AccountServiceURL: os.Getenv("ACCOUNT_SERVICE_URL"),
+		RequestTimeout:    timeout,
+		UploadTimeout:     uploadTimeout,
 	})
 	if err != nil {
 		log.Fatalf("gateway-service: configure proxy: %v", err)

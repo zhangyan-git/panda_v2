@@ -24,7 +24,7 @@ type PaymentEventPayload struct {
 	// 主渠道，写进 orders.payment_method 用于列表展示与对账归类。
 	PaymentMethod string `json:"paymentMethod"`
 	// 逐笔出资分摊。为空时按「单笔、渠道 = PaymentMethod、金额 = Amount」落一行，
-	// 覆盖纯微信支付这个最常见的情况；混合出资（咖啡豆 + 福卡 + 微信）必须逐笔给全，
+	// 覆盖纯微信支付这个最常见的情况；混合出资（咖啡豆 + 微信）必须逐笔给全，
 	// 否则退款时按来源冲正就没有依据。
 	Fundings              []PaymentFunding `json:"fundings"`
 	ProviderTransactionID string           `json:"providerTransactionId"`
@@ -34,7 +34,7 @@ type PaymentEventPayload struct {
 	FailureMessage string `json:"failureMessage"`
 }
 
-// PaymentFunding 是一笔出资：渠道支付，或者账户余额（咖啡豆/福卡）。
+// PaymentFunding 是一笔出资：渠道支付，或者账户余额（咖啡豆）。
 type PaymentFunding struct {
 	LineType  string `json:"lineType"`
 	Amount    int64  `json:"amount"`

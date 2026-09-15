@@ -32,7 +32,7 @@ func TestLegacySetIsFrozen(t *testing.T) {
 }
 
 func TestSetsAreUsable(t *testing.T) {
-	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "legacy": Legacy} {
+	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "payment": Payment, "account": Account, "legacy": Legacy} {
 		t.Run(name, func(t *testing.T) {
 			versions, err := Versions(set)
 			if err != nil {
@@ -74,8 +74,24 @@ func TestSetsDoNotCrossTheDatabaseBoundary(t *testing.T) {
 		// tables — order_lines and order_after_sales — are deliberately absent
 		// from this list, because those references are inside the database.
 		"order": regexp.MustCompile(`REFERENCES\s+(merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule|coupon_\w+|user_coupons|coupon_templates|coupon_batches|payment_methods|devices|drinks|device_drinks|manufacturers|memberships|membership_plans|users|user_accounts)\s*\(`),
+		// payment-service owns no other service's state either: the order it pays
+		// for, the user paying, the account entry an 咖啡豆 payment debits, the
+		// coupon and membership a refund restores, and the admin who clicked 人工退款
+		// all appear as values (order_no, user_id, account_entry_id…). Its own
+		// tables — payments, payment_fundings and the rest — are deliberately absent
+		// from this list, because those references are inside the database.
+		"payment": regexp.MustCompile(`REFERENCES\s+(orders|order_\w+|merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule|coupon_\w+|user_coupons|coupon_templates|coupon_batches|devices|drinks|device_drinks|manufacturers|manufacturer_credentials|memberships|membership_plans|users|miniapp_users|user_accounts|account_\w+)\s*\(`),
+		// account-service holds a user's 福卡 balance, their 咖啡豆 balance and the
+		// two ledgers behind them. The user whose balance it is, the order that
+		// granted or was paid for with it, and the after-sale that froze or reversed
+		// it appear as values (user_id, reference_no, after_sale_no); its own five
+		// tables — fortune_card_accounts, fortune_card_entries, fortune_card_freezes,
+		// coffee_bean_accounts and coffee_bean_entries — are deliberately absent from
+		// this list, because their references point at each other inside the
+		// database.
+		"account": regexp.MustCompile(`REFERENCES\s+(orders|order_\w+|merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule|coupon_\w+|user_coupons|coupon_templates|coupon_batches|payment_methods|payments|payment_\w+|devices|drinks|device_drinks|manufacturers|manufacturer_credentials|memberships|membership_plans|users|miniapp_users|user_accounts)\s*\(`),
 	}
-	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order} {
+	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "payment": Payment, "account": Account} {
 		t.Run(name, func(t *testing.T) {
 			versions, err := Versions(set)
 			if err != nil {
@@ -96,7 +112,7 @@ func TestSetsDoNotCrossTheDatabaseBoundary(t *testing.T) {
 
 // Every database needs its own pair of message tables — the outbox is written in
 // the same transaction as the business row, so it cannot be a shared table. That
-// makes five copies of the same DDL, and five places to forget.
+// makes seven copies of the same DDL, and seven places to forget.
 //
 // The copies are compared on their CREATE TABLE column lists, in order. Comments,
 // formatting, and the ALTER block the identity and merchant sets carry (it exists
@@ -115,6 +131,8 @@ var messageTableCopies = []struct {
 	{Coupon, "001_coupon_core.sql", "coupon"},
 	{CoffeeMachine, "001_coffee_machine_core.sql", "coffee_machine"},
 	{Order, "001_order_core.sql", "order"},
+	{Payment, "001_payment_core.sql", "payment"},
+	{Account, "001_account_core.sql", "account"},
 }
 
 func TestMessageTablesStayInSyncAcrossSets(t *testing.T) {

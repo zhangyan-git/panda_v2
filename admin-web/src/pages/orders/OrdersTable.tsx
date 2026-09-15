@@ -195,6 +195,19 @@ export default function OrdersTable({ category }: { category: OrderCategory }) {
       fieldProps: { placeholder: '完整订单号' },
     },
     {
+      // 取杯号紧挨着订单号：客服接电话时手上要的就是这两个——「我的号是多少」是最高频的问题，
+      // 让人点进详情才看得到不好用。取杯口屏幕上叫它取杯码，是同一个值，不是凭据。
+      //
+      // 150 是按内容留的：号本身是 12 位大写字母数字（去掉 I/O/0/1 的字母表），14px 下约 120px，
+      // 加左右各 8px 内边距。给窄了这一格会溢出到隔壁列，表格真实宽度跟着涨、与 scroll.x 对不上。
+      title: '取杯号',
+      dataIndex: 'pickupCode',
+      search: false,
+      ellipsis: true,
+      width: 150,
+      render: (_, row) => dash(row.pickupCode),
+    },
+    {
       title: '状态',
       dataIndex: 'status',
       valueType: 'select',
@@ -292,6 +305,19 @@ export default function OrdersTable({ category }: { category: OrderCategory }) {
       render: (_, row) => paymentMethodLabel(row.paymentMethod),
     },
     {
+      // 这一单承诺赠送的福卡张数。售后审核要看它（>0 就得让人确认没抽过奖），列表里提前
+      // 摆出来，审核的人不必先去订单详情翻一遍。
+      //
+      // 0 显示成「—」而不是「0 张」：福卡规则（方案 §3.1 的基础赠送 + 加购加赠）还没有任何
+      // 服务拥有它，眼下几乎每单都是 0，一列 0 会让人以为「福卡功能没配」。与详情页
+      // BasicTab 的「承诺福卡」同一口径。
+      title: '承诺福卡',
+      dataIndex: 'fortuneCardsExpected',
+      search: false,
+      width: 90,
+      render: (_, row) => (row.fortuneCardsExpected > 0 ? `${row.fortuneCardsExpected} 张` : '—'),
+    },
+    {
       title: '创建时间',
       dataIndex: 'createdAt',
       valueType: 'dateTime',
@@ -337,9 +363,10 @@ export default function OrdersTable({ category }: { category: OrderCategory }) {
         actionRef={actionRef}
         rowKey="id"
         columns={columns}
-        // 1610 = 190+90+90+90+200+150+160+100+100+110+170+160，各列 width 之和。钉右列必须有它，
-        // 而且每一列的宽度都要装得下自己的内容（量过的，见上面「构成」与「操作」两列的注释）。
-        scroll={{ x: 1610 }}
+        // 1850 = 190+150+90+90+90+200+150+160+100+100+110+90+170+160，各列 width 之和。
+        // 钉右列必须有它，而且每一列的宽度都要装得下自己的内容（见上面「构成」「操作」
+        // 「取杯号」三列的注释）。
+        scroll={{ x: 1850 }}
         search={{ labelWidth: 'auto' }}
         request={async (params) => {
           const createdFrom = params.createdFrom;

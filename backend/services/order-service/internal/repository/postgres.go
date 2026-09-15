@@ -38,6 +38,10 @@ var (
 	ErrPaymentAmountMismatch = errors.New("payment amount does not match the order")
 	// ErrDuplicateRequest：同一个 request_id 已经落过一张订单。
 	ErrDuplicateRequest = errors.New("order request id is already used")
+	// ErrOrderNotCompletable：订单不在可完成的状态（还没付钱、已经退过、关过了）。
+	// 与 ErrOrderNotPending 分开：前者说的是「这单付过款了吗」，后者是「这单还没付吗」，
+	// 合并成一个会让调用方分不清自己该去催付款还是该去查退款。
+	ErrOrderNotCompletable = errors.New("order is not awaiting completion")
 	// ErrCouponAlreadyUsed：这张券已经落在别的订单行上了。
 	ErrCouponAlreadyUsed = errors.New("coupon is already attached to another order line")
 )
@@ -64,7 +68,7 @@ const orderLineColumns = `id::text, order_id::text, line_no, line_type, legacy_i
 	item_id::text, item_code, item_name, item_image, quantity, original_unit_price, unit_price,
 	price_discount_amount, discount_amount, payable_amount, coupon_id::text,
 	coupon_discount_amount, specs, selection_snapshot, campaign_id::text, campaign_snapshot,
-	membership_plan_snapshot, device_id::text, device_order_no, fulfillment_task_no, pickup_no,
+	membership_plan_snapshot, device_id::text, device_order_no, fulfillment_task_no,
 	pickup_code, remark, created_at, updated_at`
 
 const paymentLineColumns = `id::text, order_id::text, line_no, line_type, amount, status,
@@ -125,7 +129,7 @@ func scanOrderLine(row scanner) (*model.OrderLine, error) {
 		&line.PayableAmount, &line.CouponID, &line.CouponDiscountAmount, &line.Specs,
 		&line.SelectionSnapshot, &line.CampaignID, &line.CampaignSnapshot,
 		&line.MembershipPlanSnapshot, &line.DeviceID, &line.DeviceOrderNo,
-		&line.FulfillmentTaskNo, &line.PickupNo, &line.PickupCode, &line.Remark,
+		&line.FulfillmentTaskNo, &line.PickupCode, &line.Remark,
 		&line.CreatedAt, &line.UpdatedAt)
 	if err != nil {
 		return nil, err

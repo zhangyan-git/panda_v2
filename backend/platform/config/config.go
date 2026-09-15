@@ -47,7 +47,23 @@ type Config struct {
 	// CoffeeMachineGRPCAddress 是 order-service 问设备事实的地址（下单时校验设备状态，
 	// 方案 5.8）。缺了它 order-service 无法启动：那一版里它是唯一一条服务端校验，
 	// 没有它，「这台机器能不能出杯」就只剩调用方说了算。
-	CoffeeMachineGRPCAddress   string
+	CoffeeMachineGRPCAddress string
+	// PaymentGRPCAddress 是 order-service 发起支付时问 payment-service 的地址。
+	// 创建支付不能走 MQ（客户端要立刻拿到支付参数，方案 7.2），所以它是一条同步
+	// RPC；缺了它 order-service 就没法把订单金额交给支付服务，下单之后只能停在
+	// pending_payment。
+	PaymentGRPCAddress string
+	// PaymentNotifyBaseURL 是渠道回调 payment-service 的公开基址，拼在
+	// /v1/payments/callback/{channelCode} 前面交给渠道。缺了它 payment-service 拒绝启动：
+	// 空串会拼出一个相对路径，而相对路径发给渠道的后果是**回调永远到不了**——钱收了、
+	// 支付单停在 pending，直到超时关单，用户被扣了款而订单被关掉。这个错误不会在任何
+	// 一次本地测试里露头，只会在第一次上真渠道时炸，所以在这里就拦住。
+	PaymentNotifyBaseURL string
+	// AccountGRPCAddress 是 account-service 的 gRPC 地址。今天有两个方向的调用方：
+	// 抽奖问它扣福卡/读余额（lottery 还没建，所以那个方向还没有代码），以及 payment-service
+	// 在账户出资（纯咖啡豆）时问它扣豆——后者已经在跑，也是 payment-service 拒绝空地址的
+	// 那一条（见下面 required-address 那一段）。
+	AccountGRPCAddress         string
 	MerchantInternalToken      string
 	MerchantOwnershipTimeoutMS int
 	// AuthorizationTimeoutMS bounds one live authorization lookup. It is a
@@ -160,18 +176,23 @@ func Load(service string) (Config, error) {
 	}
 	merchantToken := os.Getenv("MERCHANT_INTERNAL_TOKEN")
 	// merchant-service 自己要用它验内部调用；coffee-machine-service 要用它去问点位；
-	// order-service 要用它去读设备（下单时校验设备状态）。
+	// order-service 要用它去读设备（下单时校验设备状态）；payment-service 要用它验
+	// order-service 发起支付的那次调用；account-service 要用它验将来扣减福卡的那次
+	// 调用（今天没有调用方，但契约已经在 fortune_card.proto 里定了）。
 	//
-	// 发送方和服务方一个标准：服务方（merchant-service、coffee-machine-service）拒绝
-	// 短于 32 字节的配置，所以任何一个能通过校验的令牌都至少是 32 字节。发送方这边配
-	// 短了不是「一个更弱的令牌」——它压根匹配不上，每一次调用都会被判 401。在启动时
-	// 拦下来，比让每一单饮品都回 503 好。
-	if (service == "merchant-service" || service == "coffee-machine-service" || service == "order-service") && len([]byte(merchantToken)) < 32 {
+	// 发送方和服务方一个标准：服务方（merchant-service、coffee-machine-service、
+	// payment-service、account-service）拒绝短于 32 字节的配置，所以任何一个能通过
+	// 校验的令牌都至少是 32 字节。发送方这边配短了不是「一个更弱的令牌」——它压根
+	// 匹配不上，每一次调用都会被判 401。在启动时拦下来，比让每一单饮品都回 503 好。
+	if (service == "merchant-service" || service == "coffee-machine-service" || service == "order-service" || service == "payment-service" || service == "account-service") && len([]byte(merchantToken)) < 32 {
 		return Config{}, fmt.Errorf("MERCHANT_INTERNAL_TOKEN must be at least 32 bytes for %s", service)
 	}
 	userGRPCAddr := strings.TrimSpace(os.Getenv("USER_GRPC_ADDR"))
 	merchantGRPCAddr := strings.TrimSpace(os.Getenv("MERCHANT_GRPC_ADDR"))
 	coffeeMachineGRPCAddr := strings.TrimSpace(os.Getenv("COFFEE_MACHINE_GRPC_ADDR"))
+	paymentGRPCAddr := strings.TrimSpace(os.Getenv("PAYMENT_GRPC_ADDR"))
+	accountGRPCAddr := strings.TrimSpace(os.Getenv("ACCOUNT_GRPC_ADDR"))
+	paymentNotifyBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PAYMENT_NOTIFY_BASE_URL")), "/")
 	// Each service now reaches its peer over gRPC, so it needs that peer's
 	// address rather than its own. MERCHANT_SERVICE_URL is deliberately no longer
 	// required here: user-service stopped calling merchant-service over HTTP, and
@@ -185,7 +206,9 @@ func Load(service string) (Config, error) {
 		}
 	}
 	// 这几个服务都按请求调用 user-service 取实时授权，所以都要地址。
-	if (service == "merchant-service" || service == "coupon-service" || service == "coffee-machine-service" || service == "order-service") && userGRPCAddr == "" {
+	// account-service 在其中：后台查福卡账户与流水是要权限码的（account:read），
+	// 授权在每个请求上现取，没有缓存可依赖。
+	if (service == "merchant-service" || service == "coupon-service" || service == "coffee-machine-service" || service == "order-service" || service == "account-service") && userGRPCAddr == "" {
 		return Config{}, fmt.Errorf("USER_GRPC_ADDR is required for %s", service)
 	}
 	// order-service 还要 coffee-machine-service：下单时校验设备（在不在、启没启用、
@@ -193,6 +216,25 @@ func Load(service string) (Config, error) {
 	// 校验会整条失效，所以在这里拒绝启动，而不是等到第一次下单。
 	if service == "order-service" && coffeeMachineGRPCAddr == "" {
 		return Config{}, fmt.Errorf("COFFEE_MACHINE_GRPC_ADDR is required for order-service")
+	}
+	// order-service 还要 payment-service：发起支付那条链路（方案 7.2）是它编排的，
+	// 金额与归属在订单侧校验完再交给支付服务建单。地址缺席不是「少个可选依赖」——
+	// 缺了它订单建得出来却付不了款，只能停在 pending_payment，所以在这里拒绝启动。
+	if service == "order-service" && paymentGRPCAddr == "" {
+		return Config{}, fmt.Errorf("PAYMENT_GRPC_ADDR is required for order-service")
+	}
+	// payment-service 要的是自己的**回调基址**而不是谁的地址：它得把这个 URL 交给渠道，
+	// 渠道照着它回调。缺了它支付单建得出来、钱也可能收得到，但结果永远回不到我们这边
+	// （见 PaymentNotifyBaseURL 的注释），所以在这里拒绝启动。
+	if service == "payment-service" && paymentNotifyBaseURL == "" {
+		return Config{}, fmt.Errorf("PAYMENT_NOTIFY_BASE_URL is required for payment-service")
+	}
+	// payment-service 还要 account-service：账户出资（纯咖啡豆）那条路要当场扣余额，扣不了
+	// 就不能把支付单推进成功。地址缺席不是「少个可选依赖」——空地址会在**用户选了豆支付
+	// 那一刻**才炸（连不上账户域，5xx），而不是在启动时；那正是 account-service 对
+	// USER_GRPC_ADDR 的那条理由，所以同样在这里拒绝启动。
+	if service == "payment-service" && accountGRPCAddr == "" {
+		return Config{}, fmt.Errorf("ACCOUNT_GRPC_ADDR is required for payment-service")
 	}
 	// coffee-machine-service 还要 merchant-service：设备挂点位之前，这个点位存不存在、
 	// 还能不能用，只有商户服务说了算（见 client.StoreResolver）。地址缺席不是「少个
@@ -206,6 +248,8 @@ func Load(service string) (Config, error) {
 	couponDatabaseURL := os.Getenv("COUPON_DATABASE_URL")
 	coffeeMachineDatabaseURL := os.Getenv("COFFEE_MACHINE_DATABASE_URL")
 	orderDatabaseURL := os.Getenv("ORDER_DATABASE_URL")
+	paymentDatabaseURL := os.Getenv("PAYMENT_DATABASE_URL")
+	accountDatabaseURL := os.Getenv("ACCOUNT_DATABASE_URL")
 	return Config{
 		ServiceName:                service,
 		Version:                    version,
@@ -217,7 +261,7 @@ func Load(service string) (Config, error) {
 		UserDatabaseURL:            userDatabaseURL,
 		MerchantDatabaseURL:        merchantDatabaseURL,
 		OrderDatabaseURL:           orderDatabaseURL,
-		ServiceDatabaseURL:         resolveDatabase(service, databaseURL, userDatabaseURL, merchantDatabaseURL, couponDatabaseURL, coffeeMachineDatabaseURL, orderDatabaseURL),
+		ServiceDatabaseURL:         resolveDatabase(service, databaseURL, userDatabaseURL, merchantDatabaseURL, couponDatabaseURL, coffeeMachineDatabaseURL, orderDatabaseURL, paymentDatabaseURL, accountDatabaseURL),
 		MigrateOnStart:             parseBoolEnv("DB_MIGRATE_ON_START"),
 		RedisAddress:               os.Getenv("REDIS_ADDR"),
 		RedisPassword:              os.Getenv("REDIS_PASSWORD"),
@@ -230,6 +274,9 @@ func Load(service string) (Config, error) {
 		UserGRPCAddress:            userGRPCAddr,
 		MerchantGRPCAddress:        merchantGRPCAddr,
 		CoffeeMachineGRPCAddress:   coffeeMachineGRPCAddr,
+		PaymentGRPCAddress:         paymentGRPCAddr,
+		PaymentNotifyBaseURL:       paymentNotifyBaseURL,
+		AccountGRPCAddress:         strings.TrimSpace(os.Getenv("ACCOUNT_GRPC_ADDR")),
 		MerchantInternalToken:      merchantToken,
 		MerchantOwnershipTimeoutMS: ownershipTimeout,
 		AuthorizationTimeoutMS:     authorizationTimeout,
@@ -260,14 +307,14 @@ func Load(service string) (Config, error) {
 // resolveDatabase picks the database a service owns after the split. Each
 // per-service variable falls back to the shared DATABASE_URL, so a stack that
 // still runs on one database keeps working; user-service, merchant-service,
-// coupon-service, coffee-machine-service and order-service have an owned
-// database today.
+// coupon-service, coffee-machine-service, order-service, payment-service and
+// account-service have an owned database today.
 //
 // A service missing from this switch silently reads DATABASE_URL — that is the
 // identity database in the dev stack, so the failure looks like working code
 // writing to the wrong database, not like a misconfiguration. Add the case in
 // the same change that adds the service.
-func resolveDatabase(service, shared, user, merchant, coupon, coffeeMachine, order string) string {
+func resolveDatabase(service, shared, user, merchant, coupon, coffeeMachine, order, payment, account string) string {
 	var owned string
 	switch service {
 	case "user-service":
@@ -280,6 +327,10 @@ func resolveDatabase(service, shared, user, merchant, coupon, coffeeMachine, ord
 		owned = coffeeMachine
 	case "order-service":
 		owned = order
+	case "payment-service":
+		owned = payment
+	case "account-service":
+		owned = account
 	}
 	if strings.TrimSpace(owned) == "" {
 		return shared
