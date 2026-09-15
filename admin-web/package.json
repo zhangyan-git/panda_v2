@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "max dev",
     "build": "max build",
+    "setup": "max setup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "max lint"

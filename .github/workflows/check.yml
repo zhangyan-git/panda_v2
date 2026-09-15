@@ -92,6 +92,15 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # 两个 app 的 tsconfig.json 全文只有一行 extends ./src/.umi/tsconfig.json，而
+      # src/.umi/ 是 umi 生成的临时目录，被 .gitignore 忽略——干净检出里它不存在，
+      # tsc 于是拿不到任何 compilerOptions（TS5083），接着满屏都是它的连带症状：
+      # "Cannot use JSX unless the '--jsx' flag is provided"、'@umijs/max' has no
+      # exported member 'useModel'。生成它的 max dev / max build 排在 typecheck
+      # **之后**，所以必须是独立的一步，不能指望后面的 build 顺手补上。
+      # 必须写 `run setup`：pnpm 自己有一个内置的 `setup` 子命令（配置 pnpm 的家目录），
+      # 裸写 `pnpm -r setup` 会被它吃掉并报 Unknown option: 'recursive'。
+      - run: pnpm -r --filter ./admin-web --filter ./merchant-web run setup
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
