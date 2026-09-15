@@ -27,7 +27,7 @@ func TestLoadHTTPTimeout(t *testing.T) {
 		wantErr              bool
 	}{
 		{name: "user default", service: "user-service", want: 5000},
-		{name: "gateway default", service: "gateway", want: 5000},
+		{name: "gateway default", service: "gateway-service", want: 5000},
 		// merchant-service 的默认值要装得下一次 10MB 上传，所以它和其他服务不同。
 		{name: "merchant default is the upload budget", service: "merchant-service", want: 90000},
 		{name: "explicit value wins", service: "merchant-service", value: "120000", want: 120000},

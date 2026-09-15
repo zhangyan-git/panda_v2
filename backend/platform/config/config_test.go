@@ -3,8 +3,16 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// 本文件里凡是「只想测某一项配置」的用例都拿 gateway-service 当服务名：它是唯一一个
+// 既不拥有数据库、也不要求任何地址或令牌的服务名，因此 Load 只会因为那条用例真正关心的
+// 东西失败。编一个 "test" 之类的名字不行——Load 对不认识的服务名直接报错。
+//
+// 这一点每次给某个域服务加必填项时都会被踩到（order-service 加过、lottery-service 加过），
+// 所以宁可在这里写死。
 
 func TestLoadRedisDB(t *testing.T) {
 	t.Setenv("PANDA_ENV", "test")
@@ -22,7 +30,7 @@ func TestLoadRedisDB(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("REDIS_DB", tt.value)
-			cfg, err := Load("test")
+			cfg, err := Load("gateway-service")
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected configuration error")
@@ -43,7 +51,7 @@ func TestLoadReadsMerchantServiceURL(t *testing.T) {
 	t.Setenv("PANDA_ENV", "test")
 	t.Setenv("MERCHANT_INTERNAL_TOKEN", "test-token-which-is-at-least-32-bytes-long")
 	t.Setenv("MERCHANT_SERVICE_URL", "http://merchant.test:8080")
-	cfg, err := Load("test")
+	cfg, err := Load("gateway-service")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +85,7 @@ func TestLoadResolvesRegistryEndpoint(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("REGISTRY_ENDPOINT", tt.registry)
 			t.Setenv("ETCD_ENDPOINTS", tt.legacyEtcd)
-			cfg, err := Load("test")
+			cfg, err := Load("gateway-service")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -92,7 +100,7 @@ func TestLoadReadsDotEnv(t *testing.T) {
 	t.Setenv("PANDA_ENV", "test")
 	t.Setenv("MERCHANT_INTERNAL_TOKEN", "test-token-which-is-at-least-32-bytes-long")
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("PANDA_ENV=test\nDATABASE_URL='postgres://localhost/panda'\nREDIS_DB=3\n# comment\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("PANDA_ENV=test\nREDIS_ADDR='127.0.0.1:6379'\nREDIS_DB=3\n# comment\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	oldDir, err := os.Getwd()
@@ -103,15 +111,15 @@ func TestLoadReadsDotEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldDir) })
-	previousDatabaseURL, hadDatabaseURL := os.LookupEnv("DATABASE_URL")
+	previousRedisAddr, hadRedisAddr := os.LookupEnv("REDIS_ADDR")
 	previousRedisDB, hadRedisDB := os.LookupEnv("REDIS_DB")
-	_ = os.Unsetenv("DATABASE_URL")
+	_ = os.Unsetenv("REDIS_ADDR")
 	_ = os.Unsetenv("REDIS_DB")
 	t.Cleanup(func() {
-		if hadDatabaseURL {
-			_ = os.Setenv("DATABASE_URL", previousDatabaseURL)
+		if hadRedisAddr {
+			_ = os.Setenv("REDIS_ADDR", previousRedisAddr)
 		} else {
-			_ = os.Unsetenv("DATABASE_URL")
+			_ = os.Unsetenv("REDIS_ADDR")
 		}
 		if hadRedisDB {
 			_ = os.Setenv("REDIS_DB", previousRedisDB)
@@ -120,44 +128,121 @@ func TestLoadReadsDotEnv(t *testing.T) {
 		}
 	})
 
-	cfg, err := Load("test")
+	// gateway-service 是唯一一个「不认识就报错」的规则放它过去、又不需要任何别的
+	// 必填变量的服务（它不拥有数据库）。这几条用例查的是 .env 的读取本身，
+	// 不该被别的必填项挡住。
+	cfg, err := Load("gateway-service")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DatabaseURL != "postgres://localhost/panda" || cfg.RedisDB != 3 {
+	// 断言的两个值都来自上面那个临时 .env。这里原本断言的是 cfg.DatabaseURL，而那个
+	// 字段已经删了（Config 上不再有共享库这一说）——但这条用例查的从来不是那个字段，
+	// 是「.env 里的值有没有被读进来」，换成 REDIS_ADDR 一样成立。
+	if cfg.RedisAddress != "127.0.0.1:6379" || cfg.RedisDB != 3 {
 		t.Fatalf("config = %#v", cfg)
 	}
 }
 
-func TestResolveDatabasePrefersTheServiceOwnedURL(t *testing.T) {
+func TestResolveDatabaseReadsTheServiceOwnedURL(t *testing.T) {
 	for _, tc := range []struct {
-		name                                                                            string
-		service, shared, user, merchant, coupon, coffeeMachine, order, payment, account string
-		want                                                                            string
+		name    string
+		service string
+		envName string
 	}{
-		{"user service reads its own database", "user-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "identity"},
-		{"merchant service reads its own database", "merchant-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "merchant"},
-		{"coupon service reads its own database", "coupon-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "coupon"},
-		{"coffee machine service reads its own database", "coffee-machine-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "coffee"},
-		{"order service reads its own database", "order-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "order"},
-		{"payment service reads its own database", "payment-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "payment"},
-		{"account service reads its own database", "account-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "account"},
-		{"user service falls back when unset", "user-service", "shared", "", "merchant", "coupon", "coffee", "order", "payment", "account", "shared"},
-		{"merchant service falls back when unset", "merchant-service", "shared", "identity", "", "coupon", "coffee", "order", "payment", "account", "shared"},
-		{"coupon service falls back when unset", "coupon-service", "shared", "identity", "merchant", "", "coffee", "order", "payment", "account", "shared"},
-		{"coffee machine service falls back when unset", "coffee-machine-service", "shared", "identity", "merchant", "coupon", "", "order", "payment", "account", "shared"},
-		{"order service falls back when unset", "order-service", "shared", "identity", "merchant", "coupon", "coffee", "", "payment", "account", "shared"},
-		{"payment service falls back when unset", "payment-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "", "account", "shared"},
-		{"account service falls back when unset", "account-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "", "shared"},
-		{"blank override is not an override", "user-service", "shared", "  ", "", "", "", "", "", "", "shared"},
-		{"a service without an owned database stays shared", "gateway-service", "shared", "identity", "merchant", "coupon", "coffee", "order", "payment", "account", "shared"},
+		{"user service reads the identity database", "user-service", "USER_DATABASE_URL"},
+		{"merchant service reads its own database", "merchant-service", "MERCHANT_DATABASE_URL"},
+		{"coupon service reads its own database", "coupon-service", "COUPON_DATABASE_URL"},
+		{"coffee machine service reads its own database", "coffee-machine-service", "COFFEE_MACHINE_DATABASE_URL"},
+		{"order service reads its own database", "order-service", "ORDER_DATABASE_URL"},
+		{"payment service reads its own database", "payment-service", "PAYMENT_DATABASE_URL"},
+		{"account service reads its own database", "account-service", "ACCOUNT_DATABASE_URL"},
+		{"lottery service reads its own database", "lottery-service", "LOTTERY_DATABASE_URL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := resolveDatabase(tc.service, tc.shared, tc.user, tc.merchant, tc.coupon, tc.coffeeMachine, tc.order, tc.payment, tc.account); got != tc.want {
-				t.Fatalf("resolveDatabase(%q, %q, %q, %q, %q, %q, %q, %q, %q) = %q, want %q",
-					tc.service, tc.shared, tc.user, tc.merchant, tc.coupon, tc.coffeeMachine, tc.order, tc.payment, tc.account, got, tc.want)
+			// 共享的那个变量同时设着，且刻意设成另一个值：这条用例要证的就是
+			// **它不参与**。以前它会兜住所有缺失的服务，正是要修掉的行为。
+			t.Setenv("DATABASE_URL", "shared-that-must-not-be-read")
+			t.Setenv(tc.envName, "owned")
+			got, err := resolveDatabase(tc.service)
+			if err != nil {
+				t.Fatalf("resolveDatabase(%q) returned error: %v", tc.service, err)
+			}
+			if got != "owned" {
+				t.Fatalf("resolveDatabase(%q) = %q, want %q", tc.service, got, "owned")
 			}
 		})
+	}
+}
+
+// 缺变量必须让 Load 失败，而不是回退。回退到共享 DATABASE_URL 的后果不是「服务起不来」，
+// 而是它把自有的表建到身份库里、再从那里读——一个看起来完全正常的错误。
+func TestResolveDatabaseRefusesToFallBack(t *testing.T) {
+	t.Setenv("DATABASE_URL", "shared-that-must-not-be-read")
+	t.Setenv("LOTTERY_DATABASE_URL", "")
+	if _, err := resolveDatabase("lottery-service"); err == nil {
+		t.Fatal("resolveDatabase(lottery-service) with no LOTTERY_DATABASE_URL returned no error")
+	} else if !strings.Contains(err.Error(), "LOTTERY_DATABASE_URL") {
+		t.Fatalf("error should name the variable to set, got: %v", err)
+	}
+
+	// 全是空白等同于没设：一个只由空格组成的连接串不是连接串。
+	t.Setenv("LOTTERY_DATABASE_URL", "   ")
+	if _, err := resolveDatabase("lottery-service"); err == nil {
+		t.Fatal("a blank LOTTERY_DATABASE_URL was accepted")
+	}
+}
+
+// 不在表里的服务名报错。新增服务却忘了登记时，这条是唯一的拦网——旧行为是
+// 悄悄读共享变量，而那个既不会失败也不会有人发现。
+func TestResolveDatabaseRejectsUnknownServices(t *testing.T) {
+	if _, err := resolveDatabase("brand-new-service"); err == nil {
+		t.Fatal("an unregistered service name was accepted")
+	}
+}
+
+// Load 这一层也要拦住，而不只是 resolveDatabase：这段逻辑存在的全部意义就是
+// 「进程起不来」，一个只测到内部函数的用例证明不了这件事。
+//
+// 用的就是现实里出过的那种配置：lottery-service 的必填项全配齐，只有
+// LOTTERY_DATABASE_URL 没设（本机 .env 到今天就是这个样子）。
+func TestLoadRefusesAServiceWithNoDatabase(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("REDIS_DB", "")
+	t.Setenv("PANDA_ENV", "test")
+	t.Setenv("USER_GRPC_ADDR", "127.0.0.1:19081")
+	t.Setenv("ACCOUNT_GRPC_ADDR", "127.0.0.1:19098")
+	t.Setenv("MERCHANT_INTERNAL_TOKEN", "test-only-internal-credential-32-bytes")
+	t.Setenv("LOTTERY_DATABASE_URL", "")
+	// 共享的那份设着：它正是以前会兜住这个缺口的东西。
+	t.Setenv("DATABASE_URL", "postgres://localhost/panda_identity")
+
+	_, err := Load("lottery-service")
+	if err == nil {
+		t.Fatal("lottery-service started with no LOTTERY_DATABASE_URL")
+	}
+	if !strings.Contains(err.Error(), "LOTTERY_DATABASE_URL") {
+		t.Fatalf("the error should name the variable to set, got: %v", err)
+	}
+
+	// 补上就能起来——否则上面那条通过的可能是别的原因。
+	t.Setenv("LOTTERY_DATABASE_URL", "postgres://localhost/panda_lottery")
+	cfg, err := Load("lottery-service")
+	if err != nil {
+		t.Fatalf("lottery-service should start once its database is set: %v", err)
+	}
+	if cfg.ServiceDatabaseURL != "postgres://localhost/panda_lottery" {
+		t.Fatalf("ServiceDatabaseURL = %q", cfg.ServiceDatabaseURL)
+	}
+}
+
+// 不拥有数据库的服务是**列出来**的，不是「不在表里」推出来的。
+func TestResolveDatabaseAllowsServicesThatOwnNoDatabase(t *testing.T) {
+	got, err := resolveDatabase("gateway-service")
+	if err != nil {
+		t.Fatalf("gateway-service should be allowed to own no database: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("gateway-service = %q, want empty", got)
 	}
 }
 
@@ -166,7 +251,10 @@ func TestLoadEnvironmentOverridesDotEnv(t *testing.T) {
 	t.Setenv("MERCHANT_INTERNAL_TOKEN", "test-token-which-is-at-least-32-bytes-long")
 	t.Setenv("MERCHANT_SERVICE_URL", "http://merchant.test:8080")
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("DATABASE_URL=file-value\n"), 0o600); err != nil {
+	// .env 与进程环境给**同一个键**不同的值，读到的必须是环境里那个。这里原本用的是
+	// DATABASE_URL，字段删掉之后换 MERCHANT_SERVICE_URL：上面那条 t.Setenv 本来就在设它，
+	// 只是从来没被断言过，等于白设。
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("MERCHANT_SERVICE_URL=http://file-value:8080\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	oldDir, err := os.Getwd()
@@ -177,14 +265,13 @@ func TestLoadEnvironmentOverridesDotEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldDir) })
-	t.Setenv("DATABASE_URL", "environment-value")
 
-	cfg, err := Load("test")
+	cfg, err := Load("gateway-service")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DatabaseURL != "environment-value" {
-		t.Fatalf("DatabaseURL = %q", cfg.DatabaseURL)
+	if cfg.MerchantServiceURL != "http://merchant.test:8080" {
+		t.Fatalf("MerchantServiceURL = %q, .env 把进程环境里的值盖掉了", cfg.MerchantServiceURL)
 	}
 }
 
@@ -202,7 +289,9 @@ func TestLoadRejectsInvalidDotEnv(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldDir) })
 
-	if _, err := Load("test"); err == nil {
+	// 同样用 gateway-service：这条要证的失败**只能**来自 .env 的解析，
+	// 用一个不认识的服务名会让它因为别的原因通过。
+	if _, err := Load("gateway-service"); err == nil {
 		t.Fatal("expected .env parsing error")
 	}
 }

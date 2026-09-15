@@ -18,23 +18,23 @@ type Config struct {
 	ServiceName, Version, Environment                                              string
 	HTTPAddress, GRPCAddress                                                       string
 	RegistryEndpoint                                                               string
-	DatabaseURL, RedisAddress                                                      string
+	RedisAddress                                                                   string
 	RedisPassword                                                                  string
 	RedisDB                                                                        int
 	JWTSecret, JWTIssuer                                                           string
 	AccountServiceURL, UserServiceURL, MerchantServiceURL, CoffeeMachineServiceURL string
-	// UserDatabaseURL and MerchantDatabaseURL are the per-service databases
-	// introduced by the split. Each falls back to DatabaseURL, so a stack that
-	// still runs on one database starts unchanged.
-	UserDatabaseURL, MerchantDatabaseURL string
-	// OrderDatabaseURL is order-service's database, kept alongside the two above
-	// for the callers that read a specific service's database rather than their
-	// own. A service that owns a database reads ServiceDatabaseURL.
-	OrderDatabaseURL string
-	// ServiceDatabaseURL is the database this service owns: user-service reads
-	// UserDatabaseURL, merchant-service reads MerchantDatabaseURL, order-service
-	// reads OrderDatabaseURL, and every other service (including the gateway,
-	// which owns none) reads DatabaseURL.
+	// ServiceDatabaseURL is the database this service owns, and it is required:
+	// each owning service reads its own variable (see databaseEnvNames). A service
+	// whose variable is missing fails Load rather than falling back to anything —
+	// see resolveDatabase for why. Only a service that owns no database at all
+	// (gateway-service) leaves this empty.
+	//
+	// **这里刻意没有** DatabaseURL / UserDatabaseURL / MerchantDatabaseURL /
+	// OrderDatabaseURL 那四个字段。它们曾经存在，但从来没有一个调用方读过：服务一律读
+	// 这一份，而那四个是「反正都在同一个库上」时代的残留。留着它们最坏的地方不是占内存，
+	// 而是它们让「共享 DATABASE_URL」看起来像一份约定——回退的入口正是从那儿长出来的。
+	// DATABASE_URL 这个**环境变量**仍然要留着：user-service/cmd/verify、cmd/seed 与
+	// merchant-service/cmd/backfill-region 直接读它连身份库，它们不是服务，不在这条规则里。
 	ServiceDatabaseURL string
 	// MigrateOnStart applies this service's migration set during startup. It is
 	// off by default and stays off in production, where the release process
@@ -59,10 +59,9 @@ type Config struct {
 	// 支付单停在 pending，直到超时关单，用户被扣了款而订单被关掉。这个错误不会在任何
 	// 一次本地测试里露头，只会在第一次上真渠道时炸，所以在这里就拦住。
 	PaymentNotifyBaseURL string
-	// AccountGRPCAddress 是 account-service 的 gRPC 地址。今天有两个方向的调用方：
-	// 抽奖问它扣福卡/读余额（lottery 还没建，所以那个方向还没有代码），以及 payment-service
-	// 在账户出资（纯咖啡豆）时问它扣豆——后者已经在跑，也是 payment-service 拒绝空地址的
-	// 那一条（见下面 required-address 那一段）。
+	// AccountGRPCAddress 是 account-service 的 gRPC 地址。两个调用方：lottery-service 问它
+	// 扣福卡/冲正/读余额，payment-service 在账户出资（纯咖啡豆）时问它扣豆。两个都在下面
+	// required-address 那一段里拒绝空地址。
 	AccountGRPCAddress         string
 	MerchantInternalToken      string
 	MerchantOwnershipTimeoutMS int
@@ -178,13 +177,14 @@ func Load(service string) (Config, error) {
 	// merchant-service 自己要用它验内部调用；coffee-machine-service 要用它去问点位；
 	// order-service 要用它去读设备（下单时校验设备状态）；payment-service 要用它验
 	// order-service 发起支付的那次调用；account-service 要用它验将来扣减福卡的那次
-	// 调用（今天没有调用方，但契约已经在 fortune_card.proto 里定了）。
+	// 调用（那个调用方现在是 lottery-service，见下）。
 	//
 	// 发送方和服务方一个标准：服务方（merchant-service、coffee-machine-service、
 	// payment-service、account-service）拒绝短于 32 字节的配置，所以任何一个能通过
 	// 校验的令牌都至少是 32 字节。发送方这边配短了不是「一个更弱的令牌」——它压根
 	// 匹配不上，每一次调用都会被判 401。在启动时拦下来，比让每一单饮品都回 503 好。
-	if (service == "merchant-service" || service == "coffee-machine-service" || service == "order-service" || service == "payment-service" || service == "account-service") && len([]byte(merchantToken)) < 32 {
+	// lottery-service 也在发送方这一列：它带着这个令牌去调 account-service 扣福卡。
+	if (service == "merchant-service" || service == "coffee-machine-service" || service == "order-service" || service == "payment-service" || service == "account-service" || service == "lottery-service") && len([]byte(merchantToken)) < 32 {
 		return Config{}, fmt.Errorf("MERCHANT_INTERNAL_TOKEN must be at least 32 bytes for %s", service)
 	}
 	userGRPCAddr := strings.TrimSpace(os.Getenv("USER_GRPC_ADDR"))
@@ -208,7 +208,7 @@ func Load(service string) (Config, error) {
 	// 这几个服务都按请求调用 user-service 取实时授权，所以都要地址。
 	// account-service 在其中：后台查福卡账户与流水是要权限码的（account:read），
 	// 授权在每个请求上现取，没有缓存可依赖。
-	if (service == "merchant-service" || service == "coupon-service" || service == "coffee-machine-service" || service == "order-service" || service == "account-service") && userGRPCAddr == "" {
+	if (service == "merchant-service" || service == "coupon-service" || service == "coffee-machine-service" || service == "order-service" || service == "account-service" || service == "lottery-service") && userGRPCAddr == "" {
 		return Config{}, fmt.Errorf("USER_GRPC_ADDR is required for %s", service)
 	}
 	// order-service 还要 coffee-machine-service：下单时校验设备（在不在、启没启用、
@@ -236,20 +236,26 @@ func Load(service string) (Config, error) {
 	if service == "payment-service" && accountGRPCAddr == "" {
 		return Config{}, fmt.Errorf("ACCOUNT_GRPC_ADDR is required for payment-service")
 	}
+	// lottery-service 还要 account-service：一次参与就是当场扣一张福卡，扣不了就不能把这次
+	// 参与计进期次。地址缺席不是「少个可选依赖」——空地址会在**用户点「参与抽奖」那一刻**
+	// 才炸（连不上账户域，5xx），而不是在启动时；这正是上面 account-service 对 USER_GRPC_ADDR、
+	// payment-service 对它自己的那份理由，所以同样在这里拒绝启动。
+	if service == "lottery-service" && accountGRPCAddr == "" {
+		return Config{}, fmt.Errorf("ACCOUNT_GRPC_ADDR is required for lottery-service")
+	}
 	// coffee-machine-service 还要 merchant-service：设备挂点位之前，这个点位存不存在、
 	// 还能不能用，只有商户服务说了算（见 client.StoreResolver）。地址缺席不是「少个
 	// 可选依赖」——校验会整条失效，所以在这里就拒绝启动，而不是等到第一次保存设备。
 	if service == "coffee-machine-service" && merchantGRPCAddr == "" {
 		return Config{}, fmt.Errorf("MERCHANT_GRPC_ADDR is required for coffee-machine-service")
 	}
-	databaseURL := os.Getenv("DATABASE_URL")
-	userDatabaseURL := os.Getenv("USER_DATABASE_URL")
-	merchantDatabaseURL := os.Getenv("MERCHANT_DATABASE_URL")
-	couponDatabaseURL := os.Getenv("COUPON_DATABASE_URL")
-	coffeeMachineDatabaseURL := os.Getenv("COFFEE_MACHINE_DATABASE_URL")
-	orderDatabaseURL := os.Getenv("ORDER_DATABASE_URL")
-	paymentDatabaseURL := os.Getenv("PAYMENT_DATABASE_URL")
-	accountDatabaseURL := os.Getenv("ACCOUNT_DATABASE_URL")
+	// 自有库在这里定下来。**不回退**：读不到就拒绝启动，而不是悄悄连上别人那个库。
+	// 因此这里不再逐个读那五个 *_DATABASE_URL：谁读哪一份由 resolveDatabase 那张
+	// 表说了算，多一处平行读取就多一处能跟它走偏的地方。
+	serviceDatabaseURL, err := resolveDatabase(service)
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		ServiceName:                service,
 		Version:                    version,
@@ -257,11 +263,7 @@ func Load(service string) (Config, error) {
 		HTTPAddress:                addr,
 		GRPCAddress:                grpcAddr,
 		RegistryEndpoint:           registryEndpoint,
-		DatabaseURL:                databaseURL,
-		UserDatabaseURL:            userDatabaseURL,
-		MerchantDatabaseURL:        merchantDatabaseURL,
-		OrderDatabaseURL:           orderDatabaseURL,
-		ServiceDatabaseURL:         resolveDatabase(service, databaseURL, userDatabaseURL, merchantDatabaseURL, couponDatabaseURL, coffeeMachineDatabaseURL, orderDatabaseURL, paymentDatabaseURL, accountDatabaseURL),
+		ServiceDatabaseURL:         serviceDatabaseURL,
 		MigrateOnStart:             parseBoolEnv("DB_MIGRATE_ON_START"),
 		RedisAddress:               os.Getenv("REDIS_ADDR"),
 		RedisPassword:              os.Getenv("REDIS_PASSWORD"),
@@ -304,38 +306,60 @@ func Load(service string) (Config, error) {
 	}, nil
 }
 
-// resolveDatabase picks the database a service owns after the split. Each
-// per-service variable falls back to the shared DATABASE_URL, so a stack that
-// still runs on one database keeps working; user-service, merchant-service,
-// coupon-service, coffee-machine-service, order-service, payment-service and
-// account-service have an owned database today.
+// databaseEnvNames maps a service to the environment variable holding the
+// database it owns. user-service owns the identity database, which is why its
+// entry points at USER_DATABASE_URL and not at something named "identity".
 //
-// A service missing from this switch silently reads DATABASE_URL — that is the
-// identity database in the dev stack, so the failure looks like working code
-// writing to the wrong database, not like a misconfiguration. Add the case in
-// the same change that adds the service.
-func resolveDatabase(service, shared, user, merchant, coupon, coffeeMachine, order, payment, account string) string {
-	var owned string
-	switch service {
-	case "user-service":
-		owned = user
-	case "merchant-service":
-		owned = merchant
-	case "coupon-service":
-		owned = coupon
-	case "coffee-machine-service":
-		owned = coffeeMachine
-	case "order-service":
-		owned = order
-	case "payment-service":
-		owned = payment
-	case "account-service":
-		owned = account
+// The table is exhaustive on purpose: a service that is not in it and not in
+// servicesWithoutDatabase fails to start. It used to fall back to the shared
+// DATABASE_URL instead, and in the dev stack that is the identity database —
+// so the failure looked like working code writing to the wrong database rather
+// than like a misconfiguration. That is the shape of bug this table exists to
+// make impossible; register the service in the same change that adds it.
+var databaseEnvNames = map[string]string{
+	"user-service":           "USER_DATABASE_URL",
+	"merchant-service":       "MERCHANT_DATABASE_URL",
+	"coupon-service":         "COUPON_DATABASE_URL",
+	"coffee-machine-service": "COFFEE_MACHINE_DATABASE_URL",
+	"order-service":          "ORDER_DATABASE_URL",
+	"payment-service":        "PAYMENT_DATABASE_URL",
+	"account-service":        "ACCOUNT_DATABASE_URL",
+	"lottery-service":        "LOTTERY_DATABASE_URL",
+}
+
+// servicesWithoutDatabase is the explicit allowlist of services that own no
+// database, so leaving ServiceDatabaseURL empty for them is the correct answer
+// and not a missing configuration.
+//
+// Deliberately an allowlist rather than "absent from databaseEnvNames means no
+// database": the latter passes silently the moment someone adds a service and
+// forgets to register it, which is exactly the failure being fixed here.
+var servicesWithoutDatabase = map[string]bool{
+	"gateway-service": true,
+}
+
+// resolveDatabase returns the database this service owns: the value of its own
+// variable, or the empty string for a service that owns no database.
+//
+// There is no fallback. A missing or blank variable is an error rather than a
+// shared default, because a service silently pointed at another service's
+// database does not fail — it migrates its tables into the wrong database and
+// serves reads and writes from it, and nothing surfaces until someone notices
+// the data is in the wrong place. Refusing to start turns that into a message
+// naming the variable, at the only moment it is cheap to fix.
+func resolveDatabase(service string) (string, error) {
+	if servicesWithoutDatabase[service] {
+		return "", nil
 	}
-	if strings.TrimSpace(owned) == "" {
-		return shared
+	envName, ok := databaseEnvNames[service]
+	if !ok {
+		return "", fmt.Errorf("unknown service %q: register its database in databaseEnvNames", service)
 	}
-	return owned
+	value := strings.TrimSpace(os.Getenv(envName))
+	if value == "" {
+		return "", fmt.Errorf("%s is required for %s", envName, service)
+	}
+	return value, nil
 }
 
 // loadDotEnv loads the first .env found from the current directory upward.

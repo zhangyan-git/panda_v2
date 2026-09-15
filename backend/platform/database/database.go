@@ -34,12 +34,6 @@ type Noop struct{}
 func (Noop) Ping(context.Context) error { return nil }
 func (Noop) Close()                     {}
 
-// NewFromEnv creates a PostgreSQL pool when DATABASE_URL is configured.
-// An empty URL returns a no-op adapter so local services need no database.
-func NewFromEnv(ctx context.Context) (Pool, error) {
-	return New(ctx, os.Getenv("DATABASE_URL"))
-}
-
 // New creates a PostgreSQL pgx v5 pool, or a no-op adapter for an empty URL.
 func New(ctx context.Context, rawURL string) (Pool, error) {
 	if rawURL == "" {

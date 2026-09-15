@@ -5,6 +5,20 @@ import (
 	"testing"
 )
 
+// setOwnedDatabaseURLs gives a value to the variable of every service that owns a
+// database. resolveDatabase has no fallback — a service whose variable is missing
+// refuses to start — so a case that wants to reach some *other* startup guard has
+// to satisfy this one first, or it passes for the wrong reason.
+//
+// Leaving one blank on purpose is a test of its own: see
+// TestLoadRefusesAServiceWithNoDatabase.
+func setOwnedDatabaseURLs(t *testing.T) {
+	t.Helper()
+	for _, prefix := range []string{"USER", "MERCHANT", "COUPON", "COFFEE_MACHINE", "ORDER", "PAYMENT", "ACCOUNT", "LOTTERY"} {
+		t.Setenv(prefix+"_DATABASE_URL", "postgres://localhost/test-"+strings.ToLower(prefix))
+	}
+}
+
 // TestAuthorizationTimeoutConfiguration covers AUTHZ_TIMEOUT_MS. The value is
 // only read by the services that authorize live, and it must stay bounded: too
 // short turns a blip into an outage, too long leaves a stuck lookup holding the
@@ -36,6 +50,7 @@ func TestAuthorizationTimeoutConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("PANDA_ENV", tt.env)
 			t.Setenv("AUTHZ_TIMEOUT_MS", tt.timeout)
+			setOwnedDatabaseURLs(t)
 			if tt.service == "coupon-service" {
 				t.Setenv("USER_GRPC_ADDR", "127.0.0.1:19081")
 			}
@@ -62,11 +77,12 @@ func TestOwnershipConfiguration(t *testing.T) {
 	const merchantGRPC = "127.0.0.1:19082"
 	const coffeeMachineGRPC = "127.0.0.1:19085"
 	const paymentGRPC = "127.0.0.1:19086"
+	const accountGRPC = "127.0.0.1:19087"
 	// MERCHANT_SERVICE_URL is intentionally never set below: user-service reaches
 	// merchant-service over gRPC now, so the HTTP URL belongs to the gateway only.
 	tests := []struct {
-		name, service, env, timeout, userGRPC, merchantGRPC, coffeeMachineGRPC, paymentGRPC, token string
-		wantErr                                                                                    bool
+		name, service, env, timeout, userGRPC, merchantGRPC, coffeeMachineGRPC, paymentGRPC, accountGRPC, token string
+		wantErr                                                                                                 bool
 	}{
 		{name: "remote default", service: "user-service", env: "production", merchantGRPC: merchantGRPC, token: token},
 		{name: "remote missing gRPC address", service: "user-service", env: "production", token: token, wantErr: true},
@@ -99,8 +115,9 @@ func TestOwnershipConfiguration(t *testing.T) {
 		// payment-service presents the shared service token when verifying the pay
 		// request order-service sends it, and dials nothing of its own: the callback
 		// is inbound HTTP and the create path is an inbound RPC.
-		{name: "payment needs the service token", service: "payment-service", env: "production", wantErr: true},
-		{name: "payment needs nothing else", service: "payment-service", env: "production", token: token},
+		{name: "payment needs the service token", service: "payment-service", env: "production", accountGRPC: accountGRPC, wantErr: true},
+		{name: "payment needs account gRPC address", service: "payment-service", env: "production", token: token, wantErr: true},
+		{name: "payment needs nothing else", service: "payment-service", env: "production", accountGRPC: accountGRPC, token: token},
 		// account-service asks user-service for live grants on every admin request
 		// (reading 福卡账户与流水 is behind account:read), so it needs that address.
 		// It also verifies the shared service token on its gRPC face — the 扣减/冲正
@@ -109,6 +126,14 @@ func TestOwnershipConfiguration(t *testing.T) {
 		{name: "account needs user gRPC address", service: "account-service", env: "production", token: token, wantErr: true},
 		{name: "account needs the service token", service: "account-service", env: "production", userGRPC: userGRPC, wantErr: true},
 		{name: "account is fully configured", service: "account-service", env: "production", userGRPC: userGRPC, token: token},
+		// lottery-service is the first caller account-service's 扣减/冲正 RPCs ever had
+		// (fortune_card.proto sat unused until now): every 参与 deducts a 福卡 inside
+		// the request, so both the address and the token are required, and the admin
+		// face authorizes live like every other console-backed service.
+		{name: "lottery needs user gRPC address", service: "lottery-service", env: "production", accountGRPC: accountGRPC, token: token, wantErr: true},
+		{name: "lottery needs account gRPC address", service: "lottery-service", env: "production", userGRPC: userGRPC, token: token, wantErr: true},
+		{name: "lottery needs the service token", service: "lottery-service", env: "production", userGRPC: userGRPC, accountGRPC: accountGRPC, wantErr: true},
+		{name: "lottery is fully configured", service: "lottery-service", env: "production", userGRPC: userGRPC, accountGRPC: accountGRPC, token: token},
 		// gateway-service is the stand-in for "a service with no special settings":
 		// it owns no database and dials nothing. Do not reuse a domain service name
 		// here — each one acquires requirements over time and stops being unrelated.
@@ -119,10 +144,12 @@ func TestOwnershipConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("PANDA_ENV", tt.env)
 			t.Setenv("MERCHANT_OWNERSHIP_TIMEOUT_MS", tt.timeout)
+			setOwnedDatabaseURLs(t)
 			t.Setenv("USER_GRPC_ADDR", tt.userGRPC)
 			t.Setenv("MERCHANT_GRPC_ADDR", tt.merchantGRPC)
 			t.Setenv("COFFEE_MACHINE_GRPC_ADDR", tt.coffeeMachineGRPC)
 			t.Setenv("PAYMENT_GRPC_ADDR", tt.paymentGRPC)
+			t.Setenv("ACCOUNT_GRPC_ADDR", tt.accountGRPC)
 			t.Setenv("MERCHANT_INTERNAL_TOKEN", tt.token)
 			cfg, err := Load(tt.service)
 			if (err != nil) != tt.wantErr {
