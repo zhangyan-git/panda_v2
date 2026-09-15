@@ -1,11 +1,41 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestMain 先把 cwd 挪到一个空目录，再跑整个包。
+//
+// 起因是一个真实发生过的「本机绿、CI 红」，就在这个包上：Load 会从 cwd 向上找 .env
+// （loadDotEnv），把读到的键写进**进程环境**——只写那些还没设过的。于是任何一个没先
+// chdir 就调 Load 的用例，都会把开发者本机 panda_v2/.env 里的东西（包括每一份
+// *_DATABASE_URL）永久留在这个测试进程里，它后面所有用例都跟着沾光，而它们自己
+// chdir 得再干净也晚了，值已经在环境里。包内用例的结果因此取决于这台机器上有没有
+// 那个文件、以及谁先跑：
+//
+//	go test -run TestLoadHTTPTimeout ./platform/config/   → FAIL（本机也是）
+//	go test ./platform/config/                            → ok（前面有用例替它读了 .env）
+//
+// CI 上没有 .env，所以那里一直是后一种对照里的红那一半。把 cwd 钉在空目录里，
+// 这两种跑法就一致了；用例缺什么变量就自己 t.Setenv 什么——这是它们本来就该有的样子。
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "panda-config-test")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config tests: cannot create a scratch working directory:", err)
+		os.Exit(1)
+	}
+	if err := os.Chdir(dir); err != nil {
+		fmt.Fprintln(os.Stderr, "config tests: cannot move out of the repository:", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // 本文件里凡是「只想测某一项配置」的用例都拿 gateway-service 当服务名：它是唯一一个
 // 既不拥有数据库、也不要求任何地址或令牌的服务名，因此 Load 只会因为那条用例真正关心的

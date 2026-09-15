@@ -15,6 +15,10 @@ func setServiceEnv(t *testing.T) {
 	t.Setenv("MERCHANT_GRPC_ADDR", "127.0.0.1:19082")
 	t.Setenv("MERCHANT_INTERNAL_TOKEN", "test-only-internal-credential-32-bytes")
 	t.Setenv("MERCHANT_OWNERSHIP_TIMEOUT_MS", "")
+	// user-service / merchant-service 都有各自的库，resolveDatabase 没有回退，
+	// 少了哪一份就起不来。这两个用例要测的是 HTTP 超时和上传设置，不补齐的话它们
+	// 会因为「缺 USER_DATABASE_URL」而红，红得跟它们要测的东西毫无关系。
+	setOwnedDatabaseURLs(t)
 }
 
 func TestLoadHTTPTimeout(t *testing.T) {

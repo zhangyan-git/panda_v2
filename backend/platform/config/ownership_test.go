@@ -72,6 +72,11 @@ func TestOwnershipConfiguration(t *testing.T) {
 	// Do not discover the developer's .env or depend on service credentials.
 	t.Chdir(t.TempDir())
 	t.Setenv("REDIS_DB", "")
+	// payment-service also refuses to start without its own public callback base, and
+	// that guard has nothing to do with ownership. Left unset, every payment row below
+	// fails on it instead of on the thing it names — "payment needs account gRPC
+	// address" would pass while testing nothing. Same reasoning as setOwnedDatabaseURLs.
+	t.Setenv("PAYMENT_NOTIFY_BASE_URL", "http://gateway.test:8080")
 	const token = "test-only-internal-credential-32-bytes"
 	const userGRPC = "127.0.0.1:19081"
 	const merchantGRPC = "127.0.0.1:19082"
