@@ -35,6 +35,10 @@ func (s *OpenAPIService) CreatePickupOrder(ctx context.Context, request dto.Pick
 	if _, ok := ingress.CallerFrom(ctx); !ok {
 		return dto.PickupResponse{}, ErrCallerMissing
 	}
+	// ⚠️ 与 CreateDeviceOrder 同一处缺口，而这一条**代价更大**：取到的身份只用来证明验过签，
+	// PartnerID 不看也不往下传，所以任何一把有效密钥都能对**任何一台**设备发起取货码扣款——
+	// 扣的是那台设备的余额，不是这个合作方的。理由与完整的说明见 CreateDeviceOrder 那一处，
+	// 对外写在 docs/openapi.md 第七节第 9 条里。
 	order, err := s.deviceOrders.CreatePickup(ctx, client.PickupInput{
 		// 原样转过去，一个字段都不归一。取货码尤其如此：它是顾客敲进去的一串字符，比对在
 		// 持有那一列的服务里做（见 client.PickupInput）。

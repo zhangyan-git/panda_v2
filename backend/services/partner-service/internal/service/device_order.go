@@ -62,6 +62,18 @@ func (s *OpenAPIService) CreateDeviceOrder(ctx context.Context, request dto.Devi
 	if _, ok := ingress.CallerFrom(ctx); !ok {
 		return dto.DeviceOrderResponse{}, ErrCallerMissing
 	}
+	// ⚠️ 取到的那一份身份**只用来证明「有人验过签」**：PartnerID / PartnerCode 不看，也不往下
+	// 传（下游拿不到，见 client.DeviceOrderInput 的说明）。所以这条路上没有「这台设备是不是
+	// 这个合作方的」这一问——**今天没有这个数据**：partner 域只有合作方、密钥与调用日志，设备
+	// 厂商与设备归属在 coffee-machine-service，而那一块（厂商主数据、设备同步）还没做。
+	//
+	// 净效果：一把有效密钥可以对本库任何一台已登记的设备发回执，`amount` 也是报文说了算
+	// （金额不对账那条另有说明，见 DeviceOrderInput.Amount）。这不是一句「将来会有」——它是一条
+	// **记在案的边界**，对外写在 docs/openapi.md 第七节第 9 条里。
+	//
+	// 补的时候补在这里：拿 Caller.PartnerID 去比设备的归属，**不要在报文里加一个 partner
+	// 字段**——身份永远不来自字段（见 client.DeviceOrderInput）。归属数据本身要等设备那一块，
+	// 而那不是本服务能自己造出来的。
 	order, err := s.deviceOrders.Create(ctx, client.DeviceOrderInput{
 		// 原样转过去，一个字段都不归一（为什么，见 client.DeviceOrderInput 的说明）。
 		ThirdPartyOrderNo: request.ThirdPartyOrderNo,
