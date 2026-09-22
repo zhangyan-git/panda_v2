@@ -54,7 +54,15 @@ visible in `/proc` and in the process table:
 ```sh
 # /etc/panda/backup.env
 BACKUP_DIR=/var/backups/panda
-BACKUP_DATABASES="panda_identity panda_merchant"
+# BACKUP_DATABASES is deliberately not set here. The script's default is every
+# database the platform owns, and leaving it unset keeps that list in one place
+# instead of two -- this sample used to pin "panda_identity panda_merchant",
+# which is what the script defaulted to, so anything copied from here would
+# have kept backing up only those two even after the default was fixed.
+#
+# Setting it narrows the backup. A narrowed run still reports success, so the
+# script warns about every database on the server the list does not cover.
+# BACKUP_DATABASES="panda_identity panda_merchant"
 BACKUP_UPLOAD_CMD='ossutil cp -r "$1" oss://your-bucket/panda-backups/'
 ```
 

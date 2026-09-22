@@ -31,10 +31,12 @@
 #   BACKUP_REMOTE                 what that snippet uploads to (your choice of
 #                                 name; the snippet is what reads it)
 #
-# Optional: BACKUP_DIR (default /var/backups/panda), BACKUP_DATABASES,
-# BACKUP_RETENTION_DAYS, BACKUP_BASE_RETENTION_DAYS, BACKUP_ROWCOUNT,
-# BACKUP_ALLOW_LOCAL_ONLY, and the PG_DUMP / PG_RESTORE / PG_BASEBACKUP /
-# PG_VERIFYBACKUP / PG_DUMPALL / PSQL overrides.
+# Optional: BACKUP_DIR (default /var/backups/panda), BACKUP_DATABASES (default:
+# every database the platform owns -- see the comment on it, and note that
+# narrowing it is how a database ends up with no backup while the run still
+# reports success), BACKUP_RETENTION_DAYS, BACKUP_BASE_RETENTION_DAYS,
+# BACKUP_ROWCOUNT, BACKUP_ALLOW_LOCAL_ONLY, and the PG_DUMP / PG_RESTORE /
+# PG_BASEBACKUP / PG_VERIFYBACKUP / PG_DUMPALL / PSQL overrides.
 #
 # See README.md for the restore drill. A backup that has never been restored is
 # a hypothesis, not a backup.
@@ -50,7 +52,20 @@ case "$MODE" in
 esac
 
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/panda}"
-DATABASES="${BACKUP_DATABASES:-panda_identity panda_merchant}"
+# Every database the platform owns, in the order they arrived.
+#
+# The default used to be "panda_identity panda_merchant". That was right when
+# those were the only two, and it kept saying so after eight more showed up --
+# account, payment, coupon, membership, order, lottery, partner and
+# coffee_machine. The two that were covered are the two that hold no money.
+#
+# A list that has to be remembered is a list that will be wrong, and nothing
+# else here would have said so: the run succeeds, the marker is written, and
+# the pruner rotates away the last copy that had the missing database. Adding a
+# service is exactly the moment nobody re-reads the cron entry. So the list is
+# not the only thing standing between a new database and having no backup --
+# checkDatabaseCoverage below makes an omission loud.
+DATABASES="${BACKUP_DATABASES:-panda_identity panda_merchant panda_coupon panda_coffee_machine panda_order panda_payment panda_account panda_lottery panda_membership panda_partner}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 BASE_RETENTION_DAYS="${BACKUP_BASE_RETENTION_DAYS:-7}"
 ROWCOUNT="${BACKUP_ROWCOUNT:-true}"
@@ -127,8 +142,36 @@ exactRowCounts() {
 	SQL
 }
 
+# checkDatabaseCoverage names every database on the server that DATABASES does
+# not cover. Those get no dump, and without this line nothing would say so --
+# see the comment on DATABASES.
+#
+# It warns rather than dies. A run that covers nine databases is worth more
+# than no run at all, and the warning lands in the log and in cron's mail; a
+# die here would turn "one database is missing from the list" into "nothing was
+# backed up tonight".
+#
+# Only the maintenance connection can see the list, so it needs a database to
+# connect to that is not one of the ones being dumped; postgres is always
+# there. A failure to connect is swallowed: this is a warning about coverage,
+# and the pg_dump loop below is about to report any real connection problem
+# with far better context.
+checkDatabaseCoverage() {
+	command -v "$PSQL" >/dev/null 2>&1 || return 0
+	local present db
+	present="$("$PSQL" --no-password --no-align --tuples-only --dbname=postgres \
+		-c "select datname from pg_database where not datistemplate and datname <> 'postgres'" 2>/dev/null)" || return 0
+	for db in $present; do
+		case " $DATABASES " in
+		*" $db "*) ;;
+		*) log "WARNING: $db is on this server but not in BACKUP_DATABASES; it will have no logical backup" ;;
+		esac
+	done
+}
+
 backupLogical() {
 	mkdir -p "$DEST"
+	checkDatabaseCoverage
 	local db out
 	for db in $DATABASES; do
 		out="$DEST/$db.dump"
