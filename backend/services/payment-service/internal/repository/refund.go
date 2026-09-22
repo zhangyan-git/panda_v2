@@ -89,6 +89,44 @@ func loadRefundFundings(ctx context.Context, tx pgx.Tx, refundID string) ([]*mod
 	return fundings, rows.Err()
 }
 
+// refundableFunding 是一行**还能退**的出资：它还有多少额度，以及这额度挂在哪个来源上。
+type refundableFunding struct {
+	id       string
+	lineNo   int
+	lineType string
+	amount   int64
+}
+
+// refundableFundingsQuery 列出这张支付单还能退的出资行与各自的剩余额度，按 line_no 升序。
+//
+// 剩余额度 = 出资额 − 已经许出去的那部分。「许出去」必须把**在途**的也算上：一张停在
+// pending/processing 的退款单还没有把出资行置成 reversed，但它的钱已经承诺出去了，第二次
+// 退款再按原始额度分摊就会退超。
+//
+// 判据里的那组状态（pending/processing/succeeded）与 BeginRefund 里算 reserved 的那条 SQL
+// 逐字一致，**两处必须一起改**：一处把某种状态当成「钱已经出去了」而另一处当成「还没出去」，
+// 分摊出来的数与可退余额就对不上。
+//
+// 只取 status='succeeded' 的出资行：reserved/failed/released 的钱从来没到过我们手上，
+// reversed 的已经退干净了（剩余额度也会算成 0，这里再挡一次是让查询的意图直接读得出来）。
+//
+// funding_id 为空是允许的（存量迁移过来的退款找不到对应出资行），那种行不进 consumed 的
+// 分组，也不会被这里选中——它本来就没有对应的 payment_fundings 可分摊。
+const refundableFundingsQuery = `WITH consumed AS (
+		SELECT rf.funding_id, SUM(rf.amount) AS amount
+		FROM payment_refund_fundings rf
+		JOIN payment_refunds r ON r.id = rf.refund_id
+		WHERE r.status IN ('pending','processing','succeeded')
+		GROUP BY rf.funding_id
+	)
+	SELECT f.id::text, f.line_no, f.line_type, f.amount - COALESCE(c.amount, 0)
+	FROM payment_fundings f
+	LEFT JOIN consumed c ON c.funding_id = f.id
+	WHERE f.payment_id = $1::uuid
+		AND f.status = 'succeeded'
+		AND f.amount > COALESCE(c.amount, 0)
+	ORDER BY f.line_no`
+
 // BeginRefundParams 是建退款单（退款第一段事务）需要的全部输入。
 type BeginRefundParams struct {
 	// RefundNo 是本服务生成的退款单号，由 service 生成。
@@ -124,9 +162,14 @@ type BeginRefundParams struct {
 //
 // # 出资行怎么分
 //
-// 照抄 payment_fundings 逐行：行号、来源、金额、以及被冲的那一行出资的 ID。**这里不筛
-// line_type**——哪些行要真的走渠道是 service 的判断（见 service/refund.go），仓储只负责把
-// 「这笔钱当初是怎么来的」原样搬到退款这一侧。
+// 把这次要退的金额**分摊**到还能退的出资行上：行号、来源、以及被冲的那一行出资的 ID 都沿用
+// 出资行，金额是分摊出来的那一份（见 refundableFundingsQuery 与下面那段）。
+//
+// **分摊而不是照抄**，因为退款额可以小于支付额：售后单按行退（order-service 的 scope=line）
+// 就是这种，而发起退款时发给渠道的金额是这些行累加出来的——照抄全额等于按整单退给渠道。
+//
+// **这里不筛 line_type**——哪些行要真的走渠道是 service 的判断（见 service/refund.go），
+// 仓储只负责把「这笔钱当初是怎么来的、这次退掉了它多少」搬到退款这一侧。
 func (r *PostgresRepository) BeginRefund(ctx context.Context, p BeginRefundParams) (*model.Refund, []*model.RefundFunding, bool, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -195,28 +238,62 @@ func (r *PostgresRepository) BeginRefund(ctx context.Context, p BeginRefundParam
 		return nil, nil, false, mapPGError(err)
 	}
 
-	// 逐行照抄出资。line_no 与 line_type 沿用被冲那一行的取值，让两条链的行能按序号对上。
-	rows, err := tx.Query(ctx, `INSERT INTO payment_refund_fundings
-		(refund_id, funding_id, line_no, line_type, amount, status)
-		SELECT $1, id, line_no, line_type, amount, 'pending'
-		FROM payment_fundings WHERE payment_id=$2 ORDER BY line_no`, refund.ID, paymentID)
+	// 把这次要退的钱**分摊**到还能退的出资行上。
+	//
+	// 不是照抄出资行的全额。退款额可以小于支付额（售后单按行退就是这种，见 order-service
+	// 的 scope=line），照抄会让渠道收到一笔比售后单大得多的退款——发起退款时发给渠道的那个
+	// 金额，正是把这些行的金额累加出来的（见 service/refund.go 的 splitRefundFundings）。
+	//
+	// 也不是按原始金额比例分：分摊只认「哪一行还有钱」，按 line_no 顺序吃到够为止。混合出资
+	// （渠道 + 咖啡豆）落地时这条规则同样成立——两个来源各退各的那一份，账户那一份不会跑到
+	// 渠道去。
+	//
+	// line_no 与 line_type 沿用被冲那一行的取值，让两条链的行能按序号对上。
+	rows, err := tx.Query(ctx, refundableFundingsQuery, paymentID)
 	if err != nil {
-		rows.Close()
 		return nil, nil, false, err
+	}
+	var refundable []refundableFunding
+	for rows.Next() {
+		var f refundableFunding
+		if err := rows.Scan(&f.id, &f.lineNo, &f.lineType, &f.amount); err != nil {
+			rows.Close()
+			return nil, nil, false, err
+		}
+		refundable = append(refundable, f)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, nil, false, err
 	}
 
+	remaining := p.Amount
+	for _, f := range refundable {
+		if remaining == 0 {
+			break
+		}
+		take := min(f.amount, remaining)
+		if _, err := tx.Exec(ctx, `INSERT INTO payment_refund_fundings
+			(refund_id, funding_id, line_no, line_type, amount, status)
+			VALUES ($1::uuid,$2::uuid,$3,$4,$5,'pending')`,
+			refund.ID, f.id, f.lineNo, f.lineType, take); err != nil {
+			return nil, nil, false, err
+		}
+		remaining -= take
+	}
+	// 分摊不满这次退款额，说明可退余额算出来的数与出资行的账对不上（出资行没有一行是
+	// succeeded 的、被谁改过、或者那组状态的判据两处不一致）。宁可在这里炸，也不要建一张
+	// 「退款单说退了 3000、它的出资行只凑得出 2000」的单——差额在渠道那边看不见，而
+	// payment_transactions 会照着这些行逐笔记账，账面上就永远差这一笔。
+	if remaining != 0 {
+		return nil, nil, false, fmt.Errorf(
+			"payment %s: refund of %d cannot be covered by its fundings, %d left unallocated",
+			p.PaymentNo, p.Amount, remaining)
+	}
+
 	fundings, err := loadRefundFundings(ctx, tx, refund.ID)
 	if err != nil {
 		return nil, nil, false, err
-	}
-	// 一行都没有说明这张支付单从来没有出资行——它不该是 succeeded。宁可在这里炸，也不要
-	// 建一张「退了钱但没有任何一行说明钱从哪来」的退款单。
-	if len(fundings) == 0 {
-		return nil, nil, false, fmt.Errorf("payment %s has no funding lines to reverse", p.PaymentNo)
 	}
 
 	if err := recordTransition(ctx, tx, model.AggregateRefund, refund.ID, "",
@@ -332,10 +409,22 @@ func (r *PostgresRepository) MarkRefundSucceeded(ctx context.Context, p MarkRefu
 
 	// 冲正出资本身。只冲这张退款单真的覆盖到的那些行（refund_fundings 里挂着 funding_id 的），
 	// 而不是整张支付单的所有出资行。
+	//
+	// **只在这行被退干净的时候才置 reversed**：一条出资行可以分几次退（两次按行退的售后单
+	// 打在同一笔支付上），只退出去了它的一部分时它仍然是「钱在这儿」，置成 reversed 会让
+	// 对账以为这行已经冲光了，剩下那部分再退时也无从判断。
+	//
+	// 「退干净」= 许出去的总数 ≥ 出资额，判据与 refundableFundingsQuery 里那条互为反面，
+	// 状态那组取值也必须一致。
 	if _, err := tx.Exec(ctx, `UPDATE payment_fundings f
 		SET status='reversed', reversed_at=$2, updated_at=NOW()
 		FROM payment_refund_fundings rf
-		WHERE rf.refund_id=$1 AND rf.funding_id=f.id AND f.status='succeeded'`,
+		WHERE rf.refund_id=$1 AND rf.funding_id=f.id AND f.status='succeeded'
+			AND (SELECT COALESCE(SUM(rf2.amount), 0)
+				FROM payment_refund_fundings rf2
+				JOIN payment_refunds r2 ON r2.id = rf2.refund_id
+				WHERE rf2.funding_id = f.id
+					AND r2.status IN ('pending','processing','succeeded')) >= f.amount`,
 		refund.ID, p.SucceededAt); err != nil {
 		return nil, err
 	}
