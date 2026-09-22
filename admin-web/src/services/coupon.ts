@@ -172,6 +172,25 @@ export type TemplateInput = {
   // PUT 是全量覆盖：这两个字段不发就等于清空已有范围（空数组 = 不限）。
   brandIds?: string[];
   storeIds?: string[];
+  // 下面八个以前没登记，而 PUT 是全量覆盖 —— 「打开模板 → 编辑 → 保存」会把它们
+  // 全部清零（'' / false / 0 / NULL），而它们中的五个正是同一个页面的列表与详情里
+  // 展示的那几格，所以用户看到的是自己刚看过的数据变成 — 和 否。券模板没有
+  // before-image，丢了就丢了。
+  //
+  // 登记成可选只是与上面那批保持一致（创建时后端有自己的默认值），**编辑路径必须
+  // 原样带上**，见 pages/coupon-templates/templateForm.ts。
+  coverImage?: string;
+  useRuleDescription?: string;
+  // 这两个与 claimLimitMode 是一对：库里那条 CHECK 要求 periodic 时两个都非空、
+  // 其余两档两个都为空。所以它们不是「随便填填」的可选字段，见 templateForm.ts。
+  claimPeriodUnit?: 'day' | 'week' | 'month' | 'year';
+  claimPeriodQuantity?: number;
+  // 只有 redemptionType='external_code' 时有值（库里那条 CHECK 同理）。今天后台
+  // 的核销方式下拉里没有 external_code 这一档，所以它只会被原样带回去、不会被改。
+  externalUseMethod?: 'copy_code' | 'download_qr';
+  isHot?: boolean;
+  isRecommended?: boolean;
+  sortOrder?: number;
 };
 
 export type IssueCouponsInput = {

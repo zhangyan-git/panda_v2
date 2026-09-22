@@ -8,8 +8,10 @@ import {
   ProFormSelect,
   ProFormSwitch,
   ProFormText,
+  ProFormTextArea,
   ProTable,
 } from '@ant-design/pro-components';
+import { ProFormImageUpload } from '@panda-v2/ui';
 import { Button, Drawer, Form, Image, message, Popconfirm, Space, Tag } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { ActionType, ProColumns, ProFormInstance } from '@ant-design/pro-components';
@@ -23,8 +25,13 @@ import {
   updateCouponTemplate,
   updateCouponTemplateStatus,
   type CouponTemplate,
-  type TemplateInput,
 } from '../../services/coupon';
+import {
+  fenToYuan,
+  toFormValues,
+  toPayload,
+  type TemplateFormValues,
+} from './templateForm';
 import { listBrands } from '../../services/brand';
 import { listStores, type Store } from '../../services/store';
 import { listMerchants } from '../../services/merchant';
@@ -37,17 +44,11 @@ import {
 } from '../../services/couponLabels';
 import { enumMeta, searchOptions } from '../../services/labels';
 import UserPicker, { type PickedUser } from '../../components/common/UserPicker';
-import { formatDateTime, toRFC3339 } from '../../services/datetime';
+import { formatDateTime } from '../../services/datetime';
 import { requestErrorMessage } from '../../services/requestError';
+import { uploadImage } from '../../services/upload';
 import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 import { useAccess } from '@umijs/max';
-
-// 表单里金额用 InputNumber **按元**编辑（运营的习惯），提交时换成分。
-type TemplateFormValues = Omit<TemplateInput, 'faceValue' | 'minPurchaseAmount' | 'purchasePrice'> & {
-  faceValue?: number;
-  minPurchaseAmount?: number;
-  purchasePrice?: number;
-};
 
 // 发券弹窗的表单值。templateName 只是把「发给哪个模板」显示出来，不进提交载荷：
 // 模板由行内按钮决定，不允许手填 ID。
@@ -61,14 +62,8 @@ type IssueFormValues = {
   reason?: string;
 };
 
-// 接口和库里金额一律是「分」的整数；页面按「元」录入和展示。换算只发生在这里，
-// 别在别处再写一次 /100 —— 单位错位（12.50 存成 12）不会报错，只会静默算错钱。
-//
-// 用 Math.round 而不是直接截断：1.15 * 100 在 IEEE754 下是 114.99999999999999，
-// 截断会悄悄少收一分钱。输入框另外用 precision={2} 限死两位小数。
-const yuanToFen = (yuan?: number) => Math.round(Number(yuan ?? 0) * 100);
-const fenToYuan = (fen?: number) => Number(fen ?? 0) / 100;
 // 展示用，固定两位小数，与表单口径一致。不拼 ¥：这一列原本就没有币种前缀。
+// 分↔元的换算与表单的拼装都在 ./templateForm 里（那边可以单测）。
 const formatYuan = (fen?: number) => fenToYuan(fen).toFixed(2);
 
 // 剩余 = 总量 - 已发行 - 已预留，与库里的约束 issued + reserved <= total 同一个口径。
@@ -135,63 +130,6 @@ function ScopeTags({
     </Space>
   );
 }
-
-// validFrom/validTo 是 Go 的 *time.Time，只认 RFC3339；dateFormatter 在这里不生效，
-// 所以提交前显式转一次（见 services/datetime.ts 里的说明）。
-
-// 逐字段挑，不用展开：模板响应比表单多出 auditStatus/status/createdAt 等，
-// 展开会把它们混进提交载荷。
-const toFormValues = (template: CouponTemplate): TemplateFormValues => ({
-  couponTypeId: template.couponTypeId,
-  merchantId: template.merchantId,
-  name: template.name,
-  shortTitle: template.shortTitle,
-  description: template.description,
-  totalQuantity: template.totalQuantity,
-  validityMode: template.validityMode,
-  validFrom: template.validFrom,
-  validTo: template.validTo,
-  validDays: template.validDays,
-  claimLimitMode: template.claimLimitMode,
-  redemptionType: template.redemptionType,
-  visible: template.visible,
-  faceValue: fenToYuan(template.faceValue),
-  minPurchaseAmount: fenToYuan(template.minPurchaseAmount),
-  purchasePrice: fenToYuan(template.purchasePrice),
-  // 适用范围必须原样带进表单：PUT 是全量覆盖，漏了这两个字段就是静默清空范围。
-  // 接口保证是数组（空数组 = 该层不限），这里只是防御 null。
-  brandIds: template.brandIds ?? [],
-  storeIds: template.storeIds ?? [],
-});
-
-const toPayload = (values: TemplateFormValues): TemplateInput => {
-  const payload: TemplateInput = {
-    ...values,
-    faceValue: yuanToFen(values.faceValue),
-    minPurchaseAmount: yuanToFen(values.minPurchaseAmount),
-    purchasePrice: yuanToFen(values.purchasePrice),
-    claimLimitMode: values.claimLimitMode ?? 'once_ever',
-    validFrom: toRFC3339(values.validFrom),
-    validTo: toRFC3339(values.validTo),
-    // 多选框清空后给的是 undefined，而后端要的是「空数组 = 不限」。不归一的话
-    // JSON.stringify 会把 undefined 的 key 整个丢掉，PUT 全量覆盖时旧范围仍在
-    // 库里没被删——界面上看着清空了，实际没清掉。
-    brandIds: values.brandIds ?? [],
-    storeIds: values.storeIds ?? [],
-  };
-  // 两个模式各自的有效期字段在库里是同一行的 valid_from/valid_to/valid_days，
-  // 而 PUT 是全量覆盖（templateUpdateQuery 的 SET 列表里有这三列）。antd 表单
-  // 卸载字段时默认 preserve，值还留在 store 里，所以切换到另一个模式后旧值会
-  // 照原样发出去 —— valid_to 一旦有值，发券处 COALESCE(valid_to, NOW()+days)
-  // 就会压过 valid_days，管理员刚填的天数被静默吃掉。这里按模式显式清干净。
-  if (payload.validityMode === 'fixed') {
-    delete payload.validDays;
-  } else {
-    delete payload.validFrom;
-    delete payload.validTo;
-  }
-  return payload;
-};
 
 export default function CouponTemplatesPage() {
   const access = useAccess();
@@ -819,6 +757,13 @@ export default function CouponTemplatesPage() {
         </ProFormDependency>
         <ProFormText name="name" label="模板名称" rules={[{ required: true }]} />
         <ProFormText name="shortTitle" label="短标题" />
+        {/* description / coverImage / useRuleDescription 三格都是**列表和详情里展示着的**，
+            所以这里必须可编辑。以前表单不渲染它们，而 PUT 是全量覆盖 —— 打开模板点保存
+            就会把它们清空，界面上表现为「刚看过的字变成 —」。文案字段没有必填约束，
+            后端也都给了 DEFAULT ''，渲染出来就等于带上去了。 */}
+        <ProFormTextArea name="description" label="券说明" fieldProps={{ maxLength: 500, showCount: true }} />
+        <ProFormTextArea name="useRuleDescription" label="使用规则说明" fieldProps={{ maxLength: 500, showCount: true }} />
+        <ProFormImageUpload name="coverImage" label="封面图" upload={uploadImage} />
         {/* 单位是元：填 12.5，提交时 ×100 成分。precision 限死两位小数，
             否则 12.505 这种值会被 Math.round 悄悄修成 12.51，用户看不出来。 */}
         <ProFormDigit name="faceValue" label="面值（元）" min={0} fieldProps={{ precision: 2 }} rules={[{ required: true }]} />
@@ -880,6 +825,40 @@ export default function CouponTemplatesPage() {
           ]}
           rules={[{ required: true }]}
         />
+        {/* 周期领取的两个字段与上面这一栏是一对：库里那条 CHECK 要求 periodic 时
+            两个都非空、其余两档两个都为空（001 的 coupon_templates）。所以「按周期」
+            以前是**选不了的**——填不上周期，保存必然撞约束报 500；切走之后旧值又还
+            留在 store 里，同样撞约束。必填标记与 templateForm 里那两行 delete 是同
+            一件事的两半，缺一半就复现。 */}
+        <ProFormDependency name={['claimLimitMode']}>
+          {({ claimLimitMode }) => {
+            if (claimLimitMode !== 'periodic') {
+              return null;
+            }
+            return (
+              <>
+                <ProFormSelect
+                  name="claimPeriodUnit"
+                  label="领取周期单位"
+                  options={[
+                    { label: '天', value: 'day' },
+                    { label: '周', value: 'week' },
+                    { label: '月', value: 'month' },
+                    { label: '年', value: 'year' },
+                  ]}
+                  rules={[{ required: true, message: '请选择领取周期单位' }]}
+                />
+                <ProFormDigit
+                  name="claimPeriodQuantity"
+                  label="每周期领取张数"
+                  min={1}
+                  fieldProps={{ precision: 0 }}
+                  rules={[{ required: true, message: '请输入每周期领取张数' }]}
+                />
+              </>
+            );
+          }}
+        </ProFormDependency>
         {/* 后端 validateTemplate 把 redemptionType 当必填枚举校验，不选会直接
             400 invalid coupon template。以前这里没有 required，用户不碰这一栏
             就会拿到一个讲不清的服务端报错。 */}
@@ -890,6 +869,11 @@ export default function CouponTemplatesPage() {
           rules={[{ required: true, message: '请选择核销方式' }]}
         />
         <ProFormSwitch name="visible" label="前台可见" />
+        {/* 热推/推荐/排序在列表与详情里都有格子，原先只在库里、表单不认；
+            全量覆盖的 PUT 会把它们一起清零（「是」变「否」、「3」变「0」）。 */}
+        <ProFormSwitch name="isHot" label="热门推荐" />
+        <ProFormSwitch name="isRecommended" label="编辑推荐" />
+        <ProFormDigit name="sortOrder" label="排序" min={0} fieldProps={{ precision: 0 }} />
       </ModalForm>
       <ModalForm<IssueFormValues>
         open={issueOpen}
