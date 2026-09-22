@@ -38,17 +38,46 @@ const AdminUsersPage: React.FC = () => {
   const [roleTarget, setRoleTarget] = useState<AdminUser | null>(null);
   const [allRoles, setAllRoles] = useState<Role[]>([]);
   const [targetKeys, setTargetKeys] = useState<string[]>([]);
+  /** 正在取「这个人已有哪些角色」的那一行，见 openRoleModal。 */
+  const [roleLoadingId, setRoleLoadingId] = useState<string>();
+
+  /**
+   * 取「已分配角色」的请求序号。
+   *
+   * 打开弹窗要先取一次这个人当前的角色，而这件事是**并发**的：点了 A 的「分配角色」，链接还没
+   * 回来又去点 B。先发出去的那一次可能后回来，于是**弹窗标题写着 B、勾选的却是 A 的角色**——
+   * 点「确定」就是把 A 的角色整体覆盖到 B 身上（后端是整体覆盖语义，见 assignRolesToUser）。
+   * 这是一次**权限写入**，错的不是显示而是 B 从此多/少了一批权限。
+   *
+   * 所以每次发请求领一个号，只有**最后领号的那一次**的结果才落到状态上；被取代的那一次连错误
+   * 都不报（那一下已经被后来的动作取代了，报一句只会让人以为刚才点失败了）。与
+   * payments/settlement-rules 的 detailSeq 同一个写法。
+   */
+  const roleSeq = useRef(0);
 
   const openRoleModal = async (user: AdminUser) => {
-    setRoleTarget(user);
-    // 候选角色要全集：分页后只给 Transfer 第 1 页会静默少几项可选项。
-    const [roles, userRoles] = await Promise.all([
-      listRoles(FULL_PAGE_PARAMS),
-      listUserRoles(user.id),
-    ]);
-    setAllRoles(roles.items);
-    setTargetKeys(userRoles.map((r) => r.id));
-    setRoleModal(true);
+    const seq = ++roleSeq.current;
+    setRoleLoadingId(user.id);
+    try {
+      // 候选角色要全集：分页后只给 Transfer 第 1 页会静默少几项可选项。
+      const [roles, userRoles] = await Promise.all([
+        listRoles(FULL_PAGE_PARAMS),
+        listUserRoles(user.id),
+      ]);
+      // 落状态之前再看一眼序号：这中间点了别的一行的话，这一次拿到的就是过期数据。
+      if (seq !== roleSeq.current) return;
+      // 四份状态**同一批**落下去，标题（roleTarget）与勾选（targetKeys）必须来自同一次请求。
+      setRoleTarget(user);
+      setAllRoles(roles.items);
+      setTargetKeys(userRoles.map((r) => r.id));
+      setRoleModal(true);
+    } catch (error) {
+      if (seq !== roleSeq.current) return;
+      message.error(requestErrorMessage(error, '加载角色失败，请稍后重试'));
+    } finally {
+      // 只有最后那一次负责把转圈停掉——先发的那次回来时，按钮上转的是后发的那一行。
+      if (seq === roleSeq.current) setRoleLoadingId(undefined);
+    }
   };
 
   const columns: ProColumns<AdminUser>[] = [
@@ -86,6 +115,9 @@ const AdminUsersPage: React.FC = () => {
               type="link"
               size="small"
               icon={<SafetyCertificateOutlined />}
+              // 转圈是为了让人知道「点了，在等」：详情要一次往返，点在没反应的那几百毫秒里，
+              // 人会以为按钮坏了——而这里再点一下就是上面那个并发问题。
+              loading={roleLoadingId === row.id}
               onClick={() => openRoleModal(row)}
             >
               分配角色
