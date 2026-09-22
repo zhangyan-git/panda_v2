@@ -99,7 +99,26 @@ func normalizeScopes(brandIDs, storeIDs []string) ([]*model.CouponTemplateScope,
 }
 
 func validateTemplate(t *model.CouponTemplate) bool {
-	return strings.TrimSpace(t.CouponTypeID) != "" && strings.TrimSpace(t.Name) != "" && t.TotalQuantity > 0 && (t.ValidityMode == "fixed" || t.ValidityMode == "relative") && (t.ClaimLimitMode == "once_ever" || t.ClaimLimitMode == "unlimited_after_use" || t.ClaimLimitMode == "periodic") && (t.RedemptionType == "platform" || t.RedemptionType == "external_code" || t.RedemptionType == "show_qr")
+	if !(strings.TrimSpace(t.CouponTypeID) != "" && strings.TrimSpace(t.Name) != "" && t.TotalQuantity > 0 && (t.ValidityMode == "fixed" || t.ValidityMode == "relative") && (t.ClaimLimitMode == "once_ever" || t.ClaimLimitMode == "unlimited_after_use" || t.ClaimLimitMode == "periodic") && (t.RedemptionType == "platform" || t.RedemptionType == "external_code" || t.RedemptionType == "show_qr")) {
+		return false
+	}
+	// 下面两条是库里那两条 CHECK 的等值翻译（001_coupon_templates）。写在这里不是
+	// 重复劳动：没有它们，一个直接调接口的调用方（后台表单已经拦住了，接口没有）会
+	// 拿到一个 500 —— 约束失败的报错讲不出「哪一栏填错了」，而这本来是一句
+	// 400 invalid coupon template 就能说清的事。判空用 nil 而不是空串：两列的 CHECK
+	// 都是 `IS NULL OR IN (...)`，所以 "" 与 NULL 在库里不是一回事，判空串会放过
+	// 一个必然撞约束的请求。
+	if t.ClaimLimitMode == "periodic" {
+		if t.ClaimPeriodUnit == nil || t.ClaimPeriodQuantity == nil {
+			return false
+		}
+	} else if t.ClaimPeriodUnit != nil || t.ClaimPeriodQuantity != nil {
+		return false
+	}
+	if t.RedemptionType == "external_code" && t.ExternalUseMethod == nil {
+		return false
+	}
+	return true
 }
 func (s *CouponService) templateRepo() (repository.CouponTemplateRepository, error) {
 	r, ok := s.batches.(repository.CouponTemplateRepository)
