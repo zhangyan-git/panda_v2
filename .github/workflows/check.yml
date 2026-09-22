@@ -10,35 +10,201 @@ jobs:
         # A nested go.mod is a separate module: `go test ./...` inside backend
         # skips it entirely. Without an entry here these services are never
         # built or tested at all, which is how they drifted out of CI before.
-        module:
-          - backend
-          - backend/services/user-service
-          - backend/services/merchant-service
-          - backend/services/coupon-service
-          - backend/services/coffee-machine-service
-          - backend/services/order-service
-          - backend/services/payment-service
-          - backend/services/account-service
-          - backend/services/lottery-service
-          - backend/services/gateway-service
+        #
+        # Each entry also names the database its integration tests read. Those
+        # tests skip themselves when the variable is unset, so until this job
+        # provisioned anything they were not "passing" — they were not running,
+        # and the green tick said nothing about the code they cover. Every entry
+        # that has DB-gated tests carries database_env/database/migration_set;
+        # the ones without say so instead of silently pointing at nothing.
+        include:
+          - module: backend
+            # The platform tests are connection-level (pool limits, pgx
+            # behaviour) plus the migration runner's own tests, which create and
+            # drop tables as they go. Two separate scratch databases, so neither
+            # can see the other's leftovers.
+            database_env: TEST_DATABASE_URL
+            database: panda_platform_test
+            scratch_env: ACCOUNT_TEST_DATABASE_URL
+            scratch_database: panda_platform_scratch
+          - module: backend/services/user-service
+            database_env: USER_DATABASE_URL
+            database: panda_identity
+            migration_set: identity
+          - module: backend/services/merchant-service
+            database_env: MERCHANT_DATABASE_URL
+            database: panda_merchant
+            migration_set: merchant
+          - module: backend/services/coupon-service
+            database_env: COUPON_DATABASE_URL
+            database: panda_coupon
+            migration_set: coupon
+          - module: backend/services/coffee-machine-service
+            database_env: COFFEE_MACHINE_DATABASE_URL
+            database: panda_coffee_machine
+            migration_set: coffee_machine
+          - module: backend/services/order-service
+            database_env: ORDER_DATABASE_URL
+            database: panda_order
+            migration_set: order
+          - module: backend/services/payment-service
+            database_env: PAYMENT_DATABASE_URL
+            database: panda_payment
+            migration_set: payment
+          - module: backend/services/account-service
+            database_env: ACCOUNT_DATABASE_URL
+            database: panda_account
+            migration_set: account
+          - module: backend/services/lottery-service
+            database_env: LOTTERY_DATABASE_URL
+            database: panda_lottery
+            migration_set: lottery
+          - module: backend/services/gateway-service
+            # No database of its own and no DB-gated tests: the gateway routes
+            # and does not store.
           # Both were added after this list was written and neither is reachable
           # from another entry: `go test ./...` in backend/ stops at their nested
           # go.mod. That is the same way the services above drifted out before.
-          - backend/services/membership-service
-          - backend/services/partner-service
+          - module: backend/services/membership-service
+            database_env: MEMBERSHIP_DATABASE_URL
+            database: panda_membership
+            migration_set: membership
+          - module: backend/services/partner-service
+            # Stores its keys and call logs, but has no DB-gated tests yet.
           # The migration sets are their own module too, and they are what every
           # other module's schema assumes: a syntax error here surfaces as a
           # failed deploy, not a failed build, unless it is checked here.
-          - migrations
+          - module: migrations
     defaults:
       run:
         # Block style on purpose: `${{ ... }}` inside a flow mapping makes the
         # outer braces ambiguous to a strict YAML parser.
         working-directory: ${{ matrix.module }}
+    services:
+      # Four real backends, because the tests below are the ones that exist to
+      # catch what a fake cannot: pool exhaustion against a real server, a
+      # broker reconnect, a lease that outlives its holder.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: panda
+          POSTGRES_PASSWORD: panda
+          # Named explicitly: without it the image defaults the one database it
+          # creates to POSTGRES_USER, and the psql below connects to `postgres`.
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U panda"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      rabbitmq:
+        image: rabbitmq:3.13
+        env:
+          # Not the image's default guest user: that one may only log in from
+          # 127.0.0.1, and a connection arriving through a published port comes
+          # from the bridge address instead.
+          RABBITMQ_DEFAULT_USER: panda
+          RABBITMQ_DEFAULT_PASS: panda
+        ports: ['5672:5672']
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_running"
+          --health-interval 10s --health-timeout 10s --health-retries 20
+      etcd:
+        # The upstream image rather than a repackager's: its tag names have not
+        # been retired out from under a workflow.
+        image: quay.io/coreos/etcd:v3.5.16
+        env:
+          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+          ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
+        ports: ['2379:2379']
+        options: >-
+          --health-cmd "etcdctl endpoint health"
+          --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: {go-version: '1.25'}
+      # Every database starts empty and gets its module's migration set applied
+      # before any test runs: the fixtures assume the schema exists, they never
+      # create it (no test file in this repository runs a migration).
+      - name: Create the test databases
+        run: |
+          set -euo pipefail
+          psql "postgres://panda:panda@localhost:5432/postgres?sslmode=disable" -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE panda_platform_test" \
+            -c "CREATE DATABASE panda_platform_scratch" \
+            -c "CREATE DATABASE panda_identity" \
+            -c "CREATE DATABASE panda_merchant" \
+            -c "CREATE DATABASE panda_coupon" \
+            -c "CREATE DATABASE panda_coffee_machine" \
+            -c "CREATE DATABASE panda_order" \
+            -c "CREATE DATABASE panda_payment" \
+            -c "CREATE DATABASE panda_account" \
+            -c "CREATE DATABASE panda_lottery" \
+            -c "CREATE DATABASE panda_membership"
+      - name: Apply this module's migrations
+        if: matrix.migration_set != ''
+        run: |
+          go run ./cmd/panda-migrate -database \
+            "postgres://panda:panda@localhost:5432/${{ matrix.database }}?sslmode=disable" \
+            apply "${{ matrix.migration_set }}"
+        # This step is the one exception to the matrix's working directory: the
+        # runner lives in the migrations module, which is where the sets are
+        # embedded.
+        working-directory: migrations
+      - name: Point the integration tests at their database
+        if: matrix.database_env != ''
+        run: |
+          set -euo pipefail
+          base="postgres://panda:panda@localhost:5432"
+          # Every variable this step exports, space separated, for the guard below.
+          names="${{ matrix.database_env }}"
+          {
+            echo "${{ matrix.database_env }}=$base/${{ matrix.database }}?sslmode=disable"
+            # TEST_DATABASE_URL as well, always pointing at the same database: it is
+            # the fallback name every helper in this repository accepts, and two
+            # user-service suites read **only** it (internal/repository/role_test.go
+            # and internal/casbin/enforcer_test.go). Exporting just the module's own
+            # name left those seven tests skipping behind a green tick.
+            if [ "${{ matrix.database_env }}" != "TEST_DATABASE_URL" ]; then
+              echo "TEST_DATABASE_URL=$base/${{ matrix.database }}?sslmode=disable"
+              names="$names TEST_DATABASE_URL"
+            fi
+            if [ -n "${{ matrix.scratch_env }}" ]; then
+              echo "${{ matrix.scratch_env }}=$base/${{ matrix.scratch_database }}?sslmode=disable"
+              names="$names ${{ matrix.scratch_env }}"
+            fi
+            # Only the platform module's tests reach for these; the services
+            # talk to them through fakes.
+            if [ "${{ matrix.module }}" = "backend" ]; then
+              echo "REDIS_TEST_ADDR=127.0.0.1:6379"
+              echo "TEST_RABBITMQ_URL=amqp://panda:panda@127.0.0.1:5672/"
+              echo "TEST_ETCD_ENDPOINT=127.0.0.1:2379"
+            fi
+          } >> "$GITHUB_ENV"
+          echo "PANDA_TEST_DB_VARS=$names" >> "$GITHUB_ENV"
+      # The failure this guards against is silent: rename or drop the variable a
+      # fixture reads and `go test` reports the same tidy green, because the
+      # tests skip themselves. Nothing else in this job would notice — the seven
+      # user-service suites that read only TEST_DATABASE_URL were doing exactly
+      # that until this was checked one name at a time.
+      - name: This module really reads the variables we set
+        if: matrix.database_env != ''
+        run: |
+          set -euo pipefail
+          for name in $PANDA_TEST_DB_VARS; do
+            if ! grep -rq "os.Getenv(\"$name\")" --include='*_test.go' .; then
+              echo "No test in ${{ matrix.module }} reads \$$name."
+              echo "Either the integration tests were renamed (they are skipping silently) or this"
+              echo "matrix entry is stale. Fix one of the two before merging."
+              exit 1
+            fi
+          done
       - name: Check formatting
         run: |
           unformatted=$(gofmt -l .)
