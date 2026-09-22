@@ -20,3 +20,7 @@ coverage/
 # compiled local binaries
 # `go build ./backend/tools/fakechannel` 默认把产物落在包目录的上两级，也就是这里。
 /backend/fakechannel
+
+# 编译产物：`go build` 或 make 会把服务二进制落在各自的 bin/ 下。
+# membership-service/bin/membership-service（37 MB）曾经被跟踪进去过，已从索引删除。
+**/bin/
