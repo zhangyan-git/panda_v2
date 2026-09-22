@@ -24,6 +24,13 @@ type LeasedEnvelope struct {
 	LeaseOwner string
 	LeaseToken string
 	LeaseUntil time.Time
+	// Attempts 是这次认领之前已经投递过几次。认领语句自己会把它加一，所以第一次
+	// 认领拿到的是 1，而不是 0。
+	//
+	// 它只被 relay 用来算退避（见 RelayConfig.retryDelay）。**它不是放弃的门槛**：
+	// 认领时按 attempts 过滤掉一些行，等于让那些事件永远留在表里、谁也不投，而
+	// outbox 里的每一条都对应一件已经发生的事。
+	Attempts int
 }
 
 // DurableOutbox adds lease-based processing while preserving Outbox callers.
@@ -54,6 +61,8 @@ type MemoryOutboxInbox struct {
 	seen    map[string]struct{}
 	leases  map[string]memoryLease
 	next    map[string]time.Time
+	// attempts 与 PostgreSQL 那份的 message_outbox.attempts 同一个意思：认领一次加一。
+	attempts map[string]int
 }
 
 type memoryLease struct {
@@ -63,7 +72,12 @@ type memoryLease struct {
 }
 
 func NewMemoryOutboxInbox() *MemoryOutboxInbox {
-	return &MemoryOutboxInbox{seen: make(map[string]struct{}), leases: make(map[string]memoryLease), next: make(map[string]time.Time)}
+	return &MemoryOutboxInbox{
+		seen:     make(map[string]struct{}),
+		leases:   make(map[string]memoryLease),
+		next:     make(map[string]time.Time),
+		attempts: make(map[string]int),
+	}
 }
 
 func contextError(ctx context.Context) error {
@@ -172,8 +186,12 @@ func (m *MemoryOutboxInbox) ClaimPending(ctx context.Context, limit int, owner s
 		}
 		until := now.Add(lease)
 		token := uuid.NewString()
+		m.attempts[event.EventID]++
 		m.leases[event.EventID] = memoryLease{owner: owner, token: token, until: until}
-		result = append(result, LeasedEnvelope{Envelope: event, LeaseOwner: owner, LeaseToken: token, LeaseUntil: until})
+		result = append(result, LeasedEnvelope{
+			Envelope: event, LeaseOwner: owner, LeaseToken: token, LeaseUntil: until,
+			Attempts: m.attempts[event.EventID],
+		})
 	}
 	return result, nil
 }
@@ -189,6 +207,7 @@ func (m *MemoryOutboxInbox) MarkSuccess(ctx context.Context, eventID, token stri
 		return fmt.Errorf("messaging: outbox event %q lease is not owned", eventID)
 	}
 	delete(m.leases, eventID)
+	delete(m.attempts, eventID)
 	for i, event := range m.pending {
 		if event.EventID == eventID {
 			m.pending = append(m.pending[:i], m.pending[i+1:]...)

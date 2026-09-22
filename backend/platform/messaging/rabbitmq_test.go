@@ -8,6 +8,11 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/panda-dev/panda-v2/backend/platform/observability"
 )
 
 // newTestClient 建一个没有真实连接的客户端，只用来测 cur/ready 这段状态机。
@@ -310,6 +315,99 @@ func TestRabbitPublishMarksMessagesPersistent(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("published message never arrived")
+	}
+}
+
+// 重试次数用完之后，消息必须真的落到 DLQ，并且留下一个计数。
+//
+// 死信队列**没有消费者**：消息进去就停在那儿等人捞。所以「它进去了」这件事在系统里
+// 唯一的痕迹就是下面断言的那个计数（和同一分支里那条 error 日志）。没有它，一条消息
+// 失败到底只表现为队列深度的一个增量，而队列深度没有基线——涨到 3 还是 300 都不触发
+// 任何东西。
+func TestRabbitDeadLettersAfterRetriesAreExhausted(t *testing.T) {
+	// RetryLimit=1：第一次失败重投，第二次失败就走到头。默认的 3 要多等两轮，
+	// 而这条测的是「到头之后」，不是「到头的路上」。
+	cfg := integrationConfig(t, "dead-letter")
+	cfg.RetryLimit = 1
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetMeterProvider(provider)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	client, consumer, closer, err := NewRabbitMQ(cfg)
+	if err != nil {
+		t.Fatalf("NewRabbitMQ: %v", err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	handled := make(chan struct{}, 16)
+	go func() {
+		// 消费循环只在 ctx 结束时返回，这里不关心它的返回值。
+		_ = consumer.Consume(ctx, func(context.Context, Envelope) error {
+			handled <- struct{}{}
+			return errors.New("handler always fails")
+		})
+	}()
+
+	// 直接去 DLQ 里读，而不是去看代码认为自己做了什么：要证明的正是「消息落在哪里」。
+	// 客户端在上面已经建过队列，所以这里连上去就能读。
+	conn, err := amqp.Dial(cfg.URL)
+	if err != nil {
+		t.Fatalf("dial the dead-letter reader: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	ch, err := conn.Channel()
+	if err != nil {
+		t.Fatalf("open dead-letter channel: %v", err)
+	}
+	defer func() { _ = ch.Close() }()
+	dead, err := ch.Consume(cfg.DLQ, "", true, false, false, false, nil)
+	if err != nil {
+		t.Fatalf("consume %s: %v", cfg.DLQ, err)
+	}
+
+	const body = `{"n":1}`
+	if err := client.Publish(ctx, Envelope{EventID: "dead-letter-verify", EventType: "verify.event", Payload: []byte(body)}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	select {
+	case d := <-dead:
+		if string(d.Body) != body {
+			t.Fatalf("dead-lettered body = %q, want %q", d.Body, body)
+		}
+		if got := retryCount(d.Headers); got < cfg.RetryLimit {
+			t.Fatalf("dead-lettered after %d attempts, want at least RetryLimit=%d", got, cfg.RetryLimit)
+		}
+	case <-ctx.Done():
+		t.Fatalf("the message never reached %s (handled %d times)", cfg.DLQ, len(handled))
+	}
+
+	var collected metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &collected); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	var deadLetters int64
+	for _, scope := range collected.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name != observability.DeadLetterName {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("%s data = %T, want an int64 sum", observability.DeadLetterName, m.Data)
+			}
+			for _, point := range sum.DataPoints {
+				deadLetters += point.Value
+			}
+		}
+	}
+	if deadLetters != 1 {
+		t.Fatalf("%s = %d, want 1", observability.DeadLetterName, deadLetters)
 	}
 }
 

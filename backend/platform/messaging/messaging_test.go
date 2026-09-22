@@ -184,6 +184,48 @@ func TestMemoryOutboxInbox(t *testing.T) {
 	}
 }
 
+// 内存版认领也要把它数出来，理由与 Postgres 那份一样：relay 的退避拿它算等待时间。
+// 数不出来，dev 下每条事件就永远按「第一次失败」退避。
+func TestMemoryOutboxInboxCountsClaimAttempts(t *testing.T) {
+	store := NewMemoryOutboxInbox()
+	event := Envelope{EventID: "event-1", Payload: []byte("payload")}
+	if err := store.Append(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimPending(context.Background(), 10, "relay-1", time.Minute)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("first claim = %#v, %v", claimed, err)
+	}
+	if claimed[0].Attempts != 1 {
+		t.Fatalf("first claim attempts = %d, want 1", claimed[0].Attempts)
+	}
+	// 租约还挂着，同一个 owner 也认领不到；换一个（租约过期的模拟）走 release 那条。
+	if err := store.MarkFailure(context.Background(), event.EventID, claimed[0].LeaseToken, errors.New("boom"), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = store.ClaimPending(context.Background(), 10, "relay-1", time.Minute)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("second claim = %#v, %v", claimed, err)
+	}
+	if claimed[0].Attempts != 2 {
+		t.Fatalf("second claim attempts = %d, want 2", claimed[0].Attempts)
+	}
+	// 投出去之后这条事件的计数跟着清掉，不然重名的 event_id 会带着旧计数投出去。
+	if err := store.MarkSuccess(context.Background(), event.EventID, claimed[0].LeaseToken); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = store.ClaimPending(context.Background(), 10, "relay-1", time.Minute)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("third claim = %#v, %v", claimed, err)
+	}
+	if claimed[0].Attempts != 1 {
+		t.Fatalf("attempts after success = %d, want the count reset to 1", claimed[0].Attempts)
+	}
+}
+
 func TestOutboxErrorSummaryRedactsAndBoundsDetails(t *testing.T) {
 	failure := errors.New("connect postgres://alice:secret@example.test/db password=hunter2 token=abc " + strings.Repeat("x", 2000))
 	got := sanitizeOutboxError(failure)

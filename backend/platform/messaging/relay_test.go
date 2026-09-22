@@ -203,3 +203,93 @@ func TestRelayRunOnceDoesNotReportPublishedWhenBookkeepingFails(t *testing.T) {
 		t.Fatalf("OnPublished fired %d times, want 0 while MarkSuccess fails", reported)
 	}
 }
+
+// 退避是「一秒一次投到天荒地老」的解药，所以它得真的退、真的封顶。
+//
+// 封顶那几条同时守着位移溢出：attempts 由认领语句累加，没有上限，1 秒左移 33 位就
+// 溢出 int64 的纳秒——不封顶的话大 attempts 会算出一个负数（或绕回来的小正数），
+// MarkFailure 写进去的 next_attempt_at 就在过去，事件立刻被重新认领，退避反而变成
+// 忙等。
+func TestRelayConfigRetryDelayBacksOffAndCaps(t *testing.T) {
+	config := RelayConfig{RetryDelay: time.Second, MaxRetryDelay: 5 * time.Minute}.withDefaults()
+	cases := []struct {
+		attempts int
+		want     time.Duration
+	}{
+		{attempts: 0, want: time.Second}, // 认领至少把它加到 1，0 只是个不该出现的输入
+		{attempts: 1, want: time.Second},
+		{attempts: 2, want: 2 * time.Second},
+		{attempts: 3, want: 4 * time.Second},
+		{attempts: 9, want: 256 * time.Second}, // 封顶前最后一个还在长的
+		{attempts: 10, want: 5 * time.Minute},  // 512s 超了上限
+		{attempts: maxRetryShift, want: 5 * time.Minute},
+		{attempts: maxRetryShift + 1, want: 5 * time.Minute}, // 位移被夹住
+		{attempts: 1 << 40, want: 5 * time.Minute},           // 累加出来的荒唐值也是上限
+	}
+	for _, tc := range cases {
+		if got := config.retryDelay(tc.attempts); got != tc.want {
+			t.Errorf("retryDelay(%d) = %s, want %s", tc.attempts, got, tc.want)
+		}
+	}
+
+	// 上一个值必须真的比它小，否则上表里的「等于上限」也可能只是「每次都等于起点」。
+	if config.retryDelay(3) <= config.retryDelay(2) {
+		t.Fatalf("backoff does not grow: retryDelay(3)=%s retryDelay(2)=%s", config.retryDelay(3), config.retryDelay(2))
+	}
+}
+
+// 上限被配成比起点还低时，翻倍第一下就被它压住，退避等于没有。把起点抬到上限上，
+// 让「上限」这个词在配置里自洽。
+func TestRelayConfigRaisesMaxRetryDelayToTheFirstRetry(t *testing.T) {
+	config := RelayConfig{RetryDelay: 10 * time.Second, MaxRetryDelay: time.Second}.withDefaults()
+	if config.MaxRetryDelay != 10*time.Second {
+		t.Fatalf("MaxRetryDelay = %s, want it raised to RetryDelay", config.MaxRetryDelay)
+	}
+	if got := config.retryDelay(5); got != 10*time.Second {
+		t.Fatalf("retryDelay(5) = %s, want %s", got, 10*time.Second)
+	}
+
+	// 只留 MaxRetryDelay 时它取默认值，而默认值本来就高于默认起点。
+	if got := (RelayConfig{}).withDefaults().MaxRetryDelay; got != defaultMaxRetryDelay {
+		t.Fatalf("default MaxRetryDelay = %s, want %s", got, defaultMaxRetryDelay)
+	}
+}
+
+// 退避要按**这条事件**失败过几次算，不是按「这一批里的第几条」。
+//
+// 认领语句认领时就把 attempts 加了，所以第一次失败看到的是 1。这个值一旦传不出来
+// （LeasedEnvelope.Attempts 没接上 RETURNING），每条事件都会永远按第一次失败退避，
+// 上限也就永远到不了——事件始终按秒级重投。
+func TestRelayRunOnceSchedulesBackoffFromTheEventAttemptCount(t *testing.T) {
+	publishErr := errors.New("broker unavailable")
+	outbox := &relayOutboxFake{events: []LeasedEnvelope{
+		{Envelope: Envelope{EventID: "first-attempt"}, LeaseToken: "t1", Attempts: 1},
+		{Envelope: Envelope{EventID: "fourth-attempt"}, LeaseToken: "t2", Attempts: 4},
+	}}
+	publisher := &relayPublisherFake{errs: map[string]error{
+		"first-attempt": publishErr, "fourth-attempt": publishErr,
+	}}
+	relay, err := NewRelay(outbox, publisher, RelayConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := relay.RunOnce(context.Background()); err == nil {
+		t.Fatal("RunOnce error = nil, want the publish errors")
+	}
+	if len(outbox.markFailures) != 2 {
+		t.Fatalf("MarkFailure called %d times, want 2", len(outbox.markFailures))
+	}
+
+	// 默认 RetryDelay 是 1s：第 n 次失败等 2^(n-1) 秒，也就是 1s 与 8s。
+	want := map[string]time.Duration{"first-attempt": time.Second, "fourth-attempt": 8 * time.Second}
+	for _, failure := range outbox.markFailures {
+		expected, ok := want[failure.eventID]
+		if !ok {
+			t.Fatalf("unexpected failure for %q", failure.eventID)
+		}
+		got := time.Until(failure.next)
+		if got < expected-time.Second || got > expected+time.Second {
+			t.Errorf("%s scheduled in %s, want about %s", failure.eventID, got, expected)
+		}
+	}
+}

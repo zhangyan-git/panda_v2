@@ -39,9 +39,20 @@ func (p *PostgreSQL) Append(ctx context.Context, event Envelope) error {
 	if event.EventID == "" {
 		return errors.New("messaging: event ID is required")
 	}
+	// created_at 显式写 clock_timestamp()，**不用列的默认值 NOW()**。
+	//
+	// 认领与列举都是 `ORDER BY created_at,event_id`，而 NOW() 在 Postgres 里返回的是
+	// **事务开始时刻**——同一个事务里追加的几条事件拿到的是同一个 created_at，排序于是
+	// 落到 event_id 上，那是随机 uuid，也就是**任意顺序**。这在真事上会出现：
+	// membership-service 的店铺码领取在一个事务里连写两条（membership.activated 与
+	// membership.campaign.claimed），下游看见的先后由抽签决定。
+	//
+	// clock_timestamp() 每调用一次读一次时钟，同事务内的先后因此是插入顺序。微秒精度
+	// 下两次调用撞上同一刻的可能性可以忽略；真撞上也只是退回今天这个行为（按 uuid）。
+	// 换列默认值不行：默认值对别的写入者（手工补数据）仍然要留着 NOW()。
 	result, err := p.q.Exec(ctx, `INSERT INTO message_outbox
-		(event_id,event_type,event_version,trace_id,payload)
-		VALUES ($1,$2,$3,$4,$5)
+		(event_id,event_type,event_version,trace_id,payload,created_at)
+		VALUES ($1,$2,$3,$4,$5,clock_timestamp())
 		ON CONFLICT (event_id) DO NOTHING`, event.EventID, event.EventType,
 		event.EventVersion, event.TraceID, event.Payload)
 	if err != nil {
@@ -127,7 +138,7 @@ func (p *PostgreSQL) ClaimPending(ctx context.Context, limit int, owner string, 
 	)
 	UPDATE message_outbox o SET lease_owner=$2, lease_token=$3, lease_until=NOW()+make_interval(secs => $4), attempts=attempts+1
 	FROM claimed WHERE o.event_id=claimed.event_id
-	RETURNING o.event_id,o.event_type,o.event_version,o.trace_id,o.payload,o.lease_owner,o.lease_token,o.lease_until`, limit, owner, token, lease.Seconds())
+	RETURNING o.event_id,o.event_type,o.event_version,o.trace_id,o.payload,o.lease_owner,o.lease_token,o.lease_until,o.attempts`, limit, owner, token, lease.Seconds())
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +146,7 @@ func (p *PostgreSQL) ClaimPending(ctx context.Context, limit int, owner string, 
 	result := make([]LeasedEnvelope, 0, limit)
 	for rows.Next() {
 		var e LeasedEnvelope
-		if err := rows.Scan(&e.EventID, &e.EventType, &e.EventVersion, &e.TraceID, &e.Payload, &e.LeaseOwner, &e.LeaseToken, &e.LeaseUntil); err != nil {
+		if err := rows.Scan(&e.EventID, &e.EventType, &e.EventVersion, &e.TraceID, &e.Payload, &e.LeaseOwner, &e.LeaseToken, &e.LeaseUntil, &e.Attempts); err != nil {
 			return nil, err
 		}
 		result = append(result, e)

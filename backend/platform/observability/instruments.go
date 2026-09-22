@@ -18,6 +18,11 @@ const (
 	OutboxFailedName    = "panda.outbox.failed"
 	PolicyReloadsName   = "panda.policy.reloads"
 	RateLimitDeniedName = "panda.ratelimit.denied"
+	// DeadLetterName 数的是「处理失败、重试次数用完、被拒进死信队列」的消息。
+	//
+	// 死信队列**没有消费者**：消息进去就是等着人捞。没有这个计数，一条消息走到那里
+	// 只留下队列深度的一个增量，而队列深度没有基线——涨到 3 还是 300 都不触发任何东西。
+	DeadLetterName = "panda.consumer.dead_letters"
 )
 
 // Counter 取一个平台计数器。

@@ -9,14 +9,28 @@ import (
 	"github.com/google/uuid"
 )
 
+// 投递失败的退避上限与位移上限，两个都是防「一秒一次投到天荒地老」的。
+const (
+	// defaultMaxRetryDelay 是同一个事件两次投递之间最长等多久。取值是一分钟级别：
+	// 到了这个量级，「再试一次」和「人工看一眼」的性价比已经反过来了，而事件仍然
+	// 留在表里、仍然会被投——只是不再占着轮询。
+	defaultMaxRetryDelay = 5 * time.Minute
+	// maxRetryShift 挡住位移溢出。attempts 由认领语句累加，没有上限，而 1 秒左移
+	// 33 位就溢出了 int64 的纳秒。
+	maxRetryShift = 20
+)
+
 // RelayConfig controls polling and lease behavior for an outbox relay.
 type RelayConfig struct {
 	Owner        string
 	BatchSize    int
 	Lease        time.Duration
 	PollInterval time.Duration
-	RetryDelay   time.Duration
-	OnError      func(error)
+	// RetryDelay 是第一次失败之后的等待，之后每次翻倍，封顶 MaxRetryDelay。
+	RetryDelay time.Duration
+	// MaxRetryDelay 留零时取 defaultMaxRetryDelay。
+	MaxRetryDelay time.Duration
+	OnError       func(error)
 	// OnPublished and OnFailed report a single event's outcome, as opposed to
 	// OnError which reports the batch-level error the relay loop retries on.
 	// Both are optional and must not block: the relay calls them inline.
@@ -40,7 +54,39 @@ func (c RelayConfig) withDefaults() RelayConfig {
 	if c.RetryDelay <= 0 {
 		c.RetryDelay = time.Second
 	}
+	if c.MaxRetryDelay <= 0 {
+		c.MaxRetryDelay = defaultMaxRetryDelay
+	}
+	// 上限低于起点的话翻倍立刻被它压住，退避等于没有——把起点抬到上限上，
+	// 让「上限」这个词在这里是自洽的。
+	if c.MaxRetryDelay < c.RetryDelay {
+		c.MaxRetryDelay = c.RetryDelay
+	}
 	return c
+}
+
+// retryDelay 是第 attempts 次失败之后该等多久：RetryDelay 起，每次翻倍，封顶
+// MaxRetryDelay。
+//
+// 为什么要退避、而不是一直按固定间隔重投：投不出去的事件大多不是「等一会儿就好」
+// 的那一类（载荷被 broker 拒、事件类型没有绑定、消息本身超限），固定间隔下它们会
+// 被**每秒**重投一次，直到进程退出——每秒一次数据库写加一次 broker 往返，只为了
+// 换来一条同样的错误。退避之后同一件事的代价降到几分钟一次，而事件还在队列里。
+//
+// 刻意**不设放弃线**：outbox 里的每一条都对应一件已经发生的事，把它标成「不再投」
+// 等于把这件事从系统里删掉。慢，是可以接受的；丢，不行。
+func (c RelayConfig) retryDelay(attempts int) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+	if attempts > maxRetryShift {
+		attempts = maxRetryShift
+	}
+	delay := c.RetryDelay << (attempts - 1)
+	if delay <= 0 || delay > c.MaxRetryDelay {
+		return c.MaxRetryDelay
+	}
+	return delay
 }
 
 // Relay publishes claimed outbox events and records the result. It is safe to
@@ -94,7 +140,7 @@ func (r *Relay) RunOnce(ctx context.Context) error {
 			if r.config.OnFailed != nil {
 				r.config.OnFailed(event, err)
 			}
-			next := time.Now().Add(r.config.RetryDelay)
+			next := time.Now().Add(r.config.retryDelay(event.Attempts))
 			if markErr := r.outbox.MarkFailure(ctx, event.EventID, event.LeaseToken, err, next); markErr != nil {
 				recoveryErr := r.releaseLease(ctx, event)
 				errs = append(errs, fmt.Errorf("event %q publish: %w; mark failure: %v; lease recovery: %v", event.EventID, err, markErr, recoveryErr))

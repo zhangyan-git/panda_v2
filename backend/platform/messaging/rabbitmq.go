@@ -14,8 +14,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/panda-dev/panda-v2/backend/platform/observability"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
+
+// deadLetters 是死信计数器的进程级单例。
+//
+// 用 OnceValue 而不是给 rabbitClient 加个字段：指标名是全局的，一个进程里的多个
+// client（测试、或者发布与消费各一个）应当落在同一个 instrument 上。取的是 otel 的
+// 全局 meter，所以不配 OTLP 端点时它就是个空实现——dev 不启 collector 也不报错。
+var deadLetters = sync.OnceValue(func() metric.Int64Counter {
+	return observability.Counter(observability.DeadLetterName, "messages rejected into the dead-letter queue after exhausting retries")
+})
 
 // RabbitConfig describes the exchange and queue used by RabbitMQ.
 type RabbitConfig struct {
@@ -561,19 +573,35 @@ func (r *rabbitClient) consumeOnce(ctx context.Context, handler Handler) error {
 				return fmt.Errorf("%w: delivery channel closed", ErrUnavailable)
 			}
 			envelope := envelopeFromDelivery(d)
+			attempts := retryCount(d.Headers)
 			if err := handler(ctx, envelope); err == nil {
 				if ackErr := d.Ack(false); ackErr != nil {
 					return ackErr
 				}
-			} else if retryCount(d.Headers) < r.cfg.RetryLimit {
+			} else if attempts < r.cfg.RetryLimit {
+				// 处理失败的**值**此前是直接丢掉的——重投几次、为什么失败，日志里一个字
+				// 都没有。重投有上限（RetryLimit），所以这不是无限循环，但「这条消息
+				// 为什么被重投了五次」当时只能靠猜。
+				slog.Warn("messaging: consumer handler failed; retrying",
+					"event", envelope.EventID, "type", envelope.EventType,
+					"attempt", attempts+1, "retry_limit", r.cfg.RetryLimit, "error", err)
 				if err := r.republishRetry(ctx, d); err != nil {
 					return err
 				}
 				if err := d.Ack(false); err != nil {
 					return err
 				}
-			} else if err := d.Reject(false); err != nil {
-				return err
+			} else {
+				// 这一条走到头了。它被拒进死信队列，而那个队列**没有消费者**：消息进去
+				// 就停在那里，直到有人主动去捞。所以下面这条日志与这个计数是它唯一的
+				// 痕迹，也是「该去 DLQ 里看看了」这件事唯一会被触发的时机。
+				deadLetters().Add(ctx, 1, metric.WithAttributes(attribute.String("event_type", envelope.EventType)))
+				slog.Error("messaging: consumer handler failed; message dead-lettered",
+					"event", envelope.EventID, "type", envelope.EventType,
+					"attempts", attempts, "error", err)
+				if err := d.Reject(false); err != nil {
+					return err
+				}
 			}
 		}
 	}
