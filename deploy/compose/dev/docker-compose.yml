@@ -255,6 +255,55 @@ services:
       etcd:
         condition: service_healthy
 
+  coupon-service:
+    profiles: ["app"]
+    build:
+      context: ../../..
+      dockerfile: deploy/docker/Dockerfile.backend
+      args:
+        SERVICE: coupon-service
+    env_file: ["../../../.env"]
+    environment:
+      PANDA_ENV: dev
+      SERVICE_NAME: coupon-service
+      HTTP_ADDR: ":8080"
+      # 券域这一轮没有入向 gRPC（coupon.proto 还是空壳，发券只有要管理员 actor 的后台面），
+      # 但**仍然显式写出来**：.env 里那行是给本机手工起服务用的 :19090，容器不覆盖就会
+      # 照着注册到 etcd 上。没人调它，所以今天不出错，但这种「注册了一个自己没有的地址」
+      # 属于等着被下一个人踩的那类，不留给默认值。
+      GRPC_ADDR: ":9090"
+      COUPON_DATABASE_URL: postgres://${POSTGRES_USER:-panda}:${POSTGRES_PASSWORD:-replace-me}@postgres:5432/panda_coupon?sslmode=disable
+      # 用户服务是硬依赖：后台每条券路由都要现取一次授权（coupon:read / coupon:manage
+      # 等），问不到就 fail-closed 成 503。config 里必填，少一条容器起不来。
+      USER_GRPC_ADDR: user-service:9090
+      # 和 user-service 同理：.env 里的 RABBITMQ_URL 指向 localhost，容器里到不了，
+      # 而「配了但连不上」是启动失败、不是退化成 Noop。本服务两侧都用：后台发放的一批券
+      # 在业务事务里追加 coupon.issued 走 outbox 发出去，消费侧收会员域的三条发券事件。
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-user}:${RABBITMQ_PASSWORD:-replace-me}@rabbitmq:5672/
+      # 这两行必须覆盖，而且**不能沿用 .env 的值**——那是 user-service 的审计队列
+      # （admin.operation.logged）。照抄的后果和 membership-service 那处一样，是一个不报错的
+      # 错法：审计事件被两个消费者对半分，而会员域那三条事件根本不会投过来，于是「买了会员
+      # 没有券」，两边都看不出异常。
+      #
+      # 绑这三条而不是 "#"：本服务只认这三种事件（见 service.HandleEvent），会员主题上还有
+      # 到期、撤销这些，绑全量只会让每条都走一遍再被 ack 掉。
+      #
+      # 队列名一旦声明就不能改——改了等于换一个新队列，旧队列上原有的绑定还留在 broker 里
+      # 继续收消息，那些消息再也没人 ack。要改名得先手工删掉旧队列。
+      RABBITMQ_QUEUE: coupon.membership.dev
+      RABBITMQ_ROUTING_KEY: membership.activated,membership.renewed,membership.campaign.claimed
+      REGISTRY_ENDPOINT: http://etcd:2379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      DB_MIGRATE_ON_START: "false"
+      # 与 merchant-service 一样刻意不设 REDIS_ADDR：这个服务不用 Redis。
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+
   payment-service:
     profiles: ["app"]
     build:
@@ -622,6 +671,12 @@ services:
       # 那三条开放接口还没上线（`/v1/openapi` 下面今天是三条：会员权益查询、设备刷卡回执、
       # 设备取货码，再往后的接口见 partner-service cmd/main.go 文末的缺口说明）。
       PARTNER_SERVICE_URL: http://partner-service:8080
+      # 券域。**这一行不能跟 .env**：.env 里它是 http://127.0.0.1:18082（本机手工起服务用的
+      # 端口），容器里那个地址指的是网关自己，连上去是 connection refused，表现出来是
+      # 502 而不是 404——比 404 更难认，看着像券服务挂了。少了这一行时 /v1/admin/coupons
+      # 整棵在网关这一层就是 404（proxy.go 里 coupon 那几条 case 只在配了上游时才生效），
+      # 页面上写「接口不存在」。
+      COUPON_SERVICE_URL: http://coupon-service:8080
       REGISTRY_ENDPOINT: http://etcd:2379
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       # Without this the gateway keys rate limits on nginx's container address,
