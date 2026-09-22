@@ -155,6 +155,15 @@ type Config struct {
 	WeChatPayMchID    string
 	WeChatPayCertPath string
 	WeChatPayKeyPath  string
+	// WeChatPaySignMiniProgramAppID 是**微信官方的签约小程序**的 appid —— 用户在它里面点
+	// 「同意并签约」，签完跳回我们的小程序。它与 WeChatPayAppID 是两回事：那个是我们自己的
+	// 小程序，待签串以它的名义发出；这个只是跳转目标。
+	//
+	// 它曾经写死在适配器里（wechatpay.SignMiniProgramAppID），理由是「微信侧的固定值，不是
+	// 部署事实」。那条理由站不住：它是一串**能定位到具体主体的标识**，与商户号同一性质，写进
+	// 源码就是把它发到了每一个拿到仓库的人手上（GitHub 的密钥扫描正是这么判的）。协议固定
+	// 不等于可以公开——取值仍然只有那一个，但它归部署配置管。
+	WeChatPaySignMiniProgramAppID string
 	// PartnerSecretKey 是加密合作方签名密钥的主密钥（AES-256-GCM，见 platform/secret）。
 	// 只有 partner-service 读它，且**读不到就拒绝启动**（见下面那条校验）。
 	//
@@ -346,6 +355,7 @@ func Load(service string) (Config, error) {
 	weChatPayMchID := strings.TrimSpace(os.Getenv("WECHAT_PAY_MCH_ID"))
 	weChatPayCertPath := strings.TrimSpace(os.Getenv("WECHAT_PAY_CERT_PATH"))
 	weChatPayKeyPath := strings.TrimSpace(os.Getenv("WECHAT_PAY_KEY_PATH"))
+	weChatPaySignMiniProgramAppID := strings.TrimSpace(os.Getenv("WECHAT_PAY_SIGN_MINI_PROGRAM_APP_ID"))
 	// Each service now reaches its peer over gRPC, so it needs that peer's
 	// address rather than its own. MERCHANT_SERVICE_URL is deliberately no longer
 	// required here: user-service stopped calling merchant-service over HTTP, and
@@ -491,51 +501,52 @@ func Load(service string) (Config, error) {
 		return Config{}, err
 	}
 	return Config{
-		ServiceName:                service,
-		Version:                    version,
-		Environment:                env,
-		HTTPAddress:                addr,
-		GRPCAddress:                grpcAddr,
-		RegistryEndpoint:           registryEndpoint,
-		ServiceDatabaseURL:         serviceDatabaseURL,
-		MigrateOnStart:             parseBoolEnv("DB_MIGRATE_ON_START"),
-		RedisAddress:               os.Getenv("REDIS_ADDR"),
-		RedisPassword:              os.Getenv("REDIS_PASSWORD"),
-		RedisDB:                    redisDB,
-		JWTSecret:                  os.Getenv("JWT_SECRET"),
-		JWTIssuer:                  os.Getenv("JWT_ISSUER"),
-		AccountServiceURL:          os.Getenv("ACCOUNT_SERVICE_URL"),
-		UserServiceURL:             os.Getenv("USER_SERVICE_URL"),
-		MerchantServiceURL:         os.Getenv("MERCHANT_SERVICE_URL"),
-		UserGRPCAddress:            userGRPCAddr,
-		MerchantGRPCAddress:        merchantGRPCAddr,
-		CoffeeMachineGRPCAddress:   coffeeMachineGRPCAddr,
-		PaymentGRPCAddress:         paymentGRPCAddr,
-		MembershipGRPCAddress:      membershipGRPCAddr,
-		OrderGRPCAddress:           orderGRPCAddr,
-		PaymentNotifyBaseURL:       paymentNotifyBaseURL,
-		PaymentReturnPageURL:       paymentReturnPageURL,
-		PaymentUMSBaseURL:          paymentUMSBaseURL,
-		PaymentUMSAppID:            paymentUMSAppID,
-		PaymentUMSMID:              paymentUMSMID,
-		PaymentUMSTID:              paymentUMSTID,
-		PaymentUMSSourceCode:       paymentUMSSourceCode,
-		PaymentUMSDomainName:       paymentUMSDomainName,
-		PaymentUMSSceneType:        paymentUMSSceneType,
-		PaymentUMSMerAppName:       paymentUMSMerAppName,
-		PaymentUMSMerAppID:         paymentUMSMerAppID,
-		WeChatPayBaseURL:           weChatPayBaseURL,
-		WeChatPayAppID:             weChatPayAppID,
-		WeChatPayMchID:             weChatPayMchID,
-		WeChatPayCertPath:          weChatPayCertPath,
-		WeChatPayKeyPath:           weChatPayKeyPath,
-		PartnerSecretKey:           partnerSecretKey,
-		PartnerTrustedProxyCIDRs:   os.Getenv("PARTNER_TRUSTED_PROXY_CIDRS"),
-		AccountGRPCAddress:         strings.TrimSpace(os.Getenv("ACCOUNT_GRPC_ADDR")),
-		MerchantInternalToken:      merchantToken,
-		MerchantOwnershipTimeoutMS: ownershipTimeout,
-		AuthorizationTimeoutMS:     authorizationTimeout,
-		HTTPTimeoutMS:              httpTimeoutMS,
+		ServiceName:                   service,
+		Version:                       version,
+		Environment:                   env,
+		HTTPAddress:                   addr,
+		GRPCAddress:                   grpcAddr,
+		RegistryEndpoint:              registryEndpoint,
+		ServiceDatabaseURL:            serviceDatabaseURL,
+		MigrateOnStart:                parseBoolEnv("DB_MIGRATE_ON_START"),
+		RedisAddress:                  os.Getenv("REDIS_ADDR"),
+		RedisPassword:                 os.Getenv("REDIS_PASSWORD"),
+		RedisDB:                       redisDB,
+		JWTSecret:                     os.Getenv("JWT_SECRET"),
+		JWTIssuer:                     os.Getenv("JWT_ISSUER"),
+		AccountServiceURL:             os.Getenv("ACCOUNT_SERVICE_URL"),
+		UserServiceURL:                os.Getenv("USER_SERVICE_URL"),
+		MerchantServiceURL:            os.Getenv("MERCHANT_SERVICE_URL"),
+		UserGRPCAddress:               userGRPCAddr,
+		MerchantGRPCAddress:           merchantGRPCAddr,
+		CoffeeMachineGRPCAddress:      coffeeMachineGRPCAddr,
+		PaymentGRPCAddress:            paymentGRPCAddr,
+		MembershipGRPCAddress:         membershipGRPCAddr,
+		OrderGRPCAddress:              orderGRPCAddr,
+		PaymentNotifyBaseURL:          paymentNotifyBaseURL,
+		PaymentReturnPageURL:          paymentReturnPageURL,
+		PaymentUMSBaseURL:             paymentUMSBaseURL,
+		PaymentUMSAppID:               paymentUMSAppID,
+		PaymentUMSMID:                 paymentUMSMID,
+		PaymentUMSTID:                 paymentUMSTID,
+		PaymentUMSSourceCode:          paymentUMSSourceCode,
+		PaymentUMSDomainName:          paymentUMSDomainName,
+		PaymentUMSSceneType:           paymentUMSSceneType,
+		PaymentUMSMerAppName:          paymentUMSMerAppName,
+		PaymentUMSMerAppID:            paymentUMSMerAppID,
+		WeChatPayBaseURL:              weChatPayBaseURL,
+		WeChatPayAppID:                weChatPayAppID,
+		WeChatPayMchID:                weChatPayMchID,
+		WeChatPayCertPath:             weChatPayCertPath,
+		WeChatPayKeyPath:              weChatPayKeyPath,
+		WeChatPaySignMiniProgramAppID: weChatPaySignMiniProgramAppID,
+		PartnerSecretKey:              partnerSecretKey,
+		PartnerTrustedProxyCIDRs:      os.Getenv("PARTNER_TRUSTED_PROXY_CIDRS"),
+		AccountGRPCAddress:            strings.TrimSpace(os.Getenv("ACCOUNT_GRPC_ADDR")),
+		MerchantInternalToken:         merchantToken,
+		MerchantOwnershipTimeoutMS:    ownershipTimeout,
+		AuthorizationTimeoutMS:        authorizationTimeout,
+		HTTPTimeoutMS:                 httpTimeoutMS,
 		// 裸值透传：UPLOAD_PATH 为空时由 platform/upload 用它的 DefaultPrefix
 		// 兜底，默认值只有一处定义。OSSCNAME 留空则从 OSS_ENDPOINT 推公开基址。
 		OSSAccessKey:            os.Getenv("OSS_ACCESS_KEY"),

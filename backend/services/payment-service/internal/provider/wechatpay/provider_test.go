@@ -27,9 +27,10 @@ var (
 // 在测试里能跑、在真部署里 Parse 就失败）。
 func testMethod(overrides map[string]any) provider.Method {
 	config := provider.Config{
-		"appId": testAppID,
-		"mchId": testMchID,
-		"sign":  map[string]any{"secretRef": "apiV2Key"},
+		"appId":                testAppID,
+		"mchId":                testMchID,
+		"signMiniProgramAppId": testSignMiniProgramAppID,
+		"sign":                 map[string]any{"secretRef": "apiV2Key"},
 	}
 	for key, value := range overrides {
 		config[key] = value
@@ -73,8 +74,9 @@ func TestSignHandsTheClientEverythingItNeedsToJump(t *testing.T) {
 	if len(result.PayParams) != 11 {
 		t.Fatalf("pay params = %v, want 11 keys", result.PayParams)
 	}
-	if result.PayParams["mini_program_appid"] != SignMiniProgramAppID {
-		t.Fatalf("mini_program_appid = %q, want the official signing miniapp", result.PayParams["mini_program_appid"])
+	if result.PayParams["mini_program_appid"] != testSignMiniProgramAppID {
+		t.Fatalf("mini_program_appid = %q, want the configured signing miniapp %q",
+			result.PayParams["mini_program_appid"], testSignMiniProgramAppID)
 	}
 	if result.PayParams["mini_program_path"] != SignMiniProgramPath {
 		t.Fatalf("mini_program_path = %q", result.PayParams["mini_program_path"])

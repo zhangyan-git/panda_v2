@@ -115,11 +115,12 @@ func main() {
 
 		// 微信直连委托代扣那组（见 .env.example 的 WECHAT_PAY_*）。同样是账户值与证书路径，
 		// 密钥不在其中。
-		WeChatPayBaseURL:  cfg.WeChatPayBaseURL,
-		WeChatPayAppID:    cfg.WeChatPayAppID,
-		WeChatPayMchID:    cfg.WeChatPayMchID,
-		WeChatPayCertPath: cfg.WeChatPayCertPath,
-		WeChatPayKeyPath:  cfg.WeChatPayKeyPath,
+		WeChatPayBaseURL:              cfg.WeChatPayBaseURL,
+		WeChatPayAppID:                cfg.WeChatPayAppID,
+		WeChatPayMchID:                cfg.WeChatPayMchID,
+		WeChatPayCertPath:             cfg.WeChatPayCertPath,
+		WeChatPayKeyPath:              cfg.WeChatPayKeyPath,
+		WeChatPaySignMiniProgramAppID: cfg.WeChatPaySignMiniProgramAppID,
 	})
 
 	// 渠道适配器在这里注册，之后只读。

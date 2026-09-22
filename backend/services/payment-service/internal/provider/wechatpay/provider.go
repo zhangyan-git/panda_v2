@@ -243,8 +243,9 @@ func (p *Provider) Sign(_ context.Context, req provider.AgreementSignRequest) (p
 		payParams[key] = value
 	}
 	payParams["request_serial"] = signed.RequestSerial
-	// 跳转目标：微信官方的签约小程序（不是我们自己的）。
-	payParams["mini_program_appid"] = SignMiniProgramAppID
+	// 跳转目标：微信官方的签约小程序（不是我们自己的）。appid 来自配置（见 Protocol），
+	// 不再写死在包里。
+	payParams["mini_program_appid"] = protocol.signMiniProgramAppID
 	payParams["mini_program_path"] = SignMiniProgramPath
 	result.PayParams = payParams
 

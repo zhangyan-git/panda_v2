@@ -89,12 +89,17 @@ const (
 // 我们的小程序（`wx.navigateToMiniProgram` 的返回）并向 notify_url 推 change_type=ADD。
 // 所以签约这件事从头到尾没有一次「我们发起的请求」——这也是鉴权那条路上没有它签名的原因。
 //
-// 两个值是**微信侧的固定值**（老系统写死在 subscription_service.go:1147-1148），不是配置：
-// 换一个值等于跳去另一个小程序，而那个小程序不存在第二个。
-const (
-	SignMiniProgramAppID = "wxbd687630cd02ce1d"
-	SignMiniProgramPath  = "pages/index/index"
-)
+// 跳转目标的 **appid 是配置**（Protocol.signMiniProgramAppID，环境变量
+// WECHAT_PAY_SIGN_MINI_PROGRAM_APP_ID），不再写死在这里。
+//
+// 它原先的理由是「微信侧的固定值，换一个值等于跳去另一个小程序，而那个小程序不存在第二个」。
+// 那说的是**取值**只有一个，推不出**它可以公开**：它是一串能定位到具体主体的标识，与商户号
+// 同一性质，写进源码就是把它发给了每一个拿到仓库的人。协议固定 ≠ 可以提交进仓库——取值仍然
+// 只有那一个，但它归部署配置管。签下这条判据的是 GitHub 的密钥扫描（commit 4920ce71）。
+//
+// **path 仍然写死**：那是一个页面路径，不含任何主体标识，换一个值只是跳到同一小程序里的
+// 另一页，泄不出任何东西。
+const SignMiniProgramPath = "pages/index/index"
 
 // 响应里的状态码，照抄微信 APIv2 的约定。
 const (
@@ -126,11 +131,19 @@ type Protocol struct {
 	// 它**不是**跳转签约那个小程序的 id（那是 SignMiniProgramAppID）：签约的发起方是我们，
 	// 用户去微信那个小程序里确认，所以待签串里出现的是**我们**的 appid。
 	appID string
-	// mchID 是微信支付商户号。老系统那个号是 1668145209（config.yaml 里明文写着），
-	// V2 从环境变量来，见 catalog。
+	// mchID 是微信支付商户号。老系统把它明文写在 config.yaml 里；V2 从环境变量来
+	// （WECHAT_PAY_MCH_ID，见 catalog），真值只在 .env 里——它与 signMiniProgramAppID
+	// 是同一类东西：能定位到具体主体的标识，不进仓库。
 	mchID string
 	// baseURL 是根地址，默认见 defaultBaseURL，**不带结尾斜杠**。
 	baseURL string
+	// signMiniProgramAppID 是**跳转目标**那个小程序的 appid（微信官方的签约小程序），
+	// 由客户端拿着它调 `wx.navigateToMiniProgram`。它**不是** appID：待签串里出现的是我们
+	// 自己的 appid，这个只是用户去哪儿点「同意」。
+	//
+	// 必填。缺了它算出来的参数表导不了跳，而失败发生在用户手机上（点了没反应），不在日志里，
+	// 所以让它在 Parse 就撞墙（catalog 那边按环境变量名点名）。
+	signMiniProgramAppID string
 	// secretRef 是 APIv2 密钥的槽名（32 位）。**签名与验签用的是同一把**——微信 APIv2 的
 	// 回调就是用这把密钥按同一套算法签的，所以这一族只有一个槽。
 	secretRef string
@@ -156,15 +169,20 @@ func Parse(config map[string]any) (*Protocol, error) {
 	if err != nil {
 		return nil, err
 	}
+	signMiniProgramAppID, err := cfg.RequireString("signMiniProgramAppId")
+	if err != nil {
+		return nil, err
+	}
 	secretRef, err := cfg.RequireString("sign.secretRef")
 	if err != nil {
 		return nil, err
 	}
 
 	return &Protocol{
-		appID:   appID,
-		mchID:   mchID,
-		baseURL: textOr(cfg.String("baseURL"), defaultBaseURL),
+		appID:                appID,
+		mchID:                mchID,
+		signMiniProgramAppID: signMiniProgramAppID,
+		baseURL:              textOr(cfg.String("baseURL"), defaultBaseURL),
 		// 证书两项**都不填是合法的**：一个只跑纯签约（签约参数在本地算、不发请求）的部署
 		// 一个证书都不需要。要证书的那两条路自己 fail closed，见 certClient。
 		secretRef: secretRef,

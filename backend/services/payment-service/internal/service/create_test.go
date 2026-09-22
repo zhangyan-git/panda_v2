@@ -529,17 +529,24 @@ func testCatalogWith(overrides catalog.Config) *catalog.Catalog {
 	cfg.UMSMerAppName = overrides.UMSMerAppName
 	cfg.UMSMerAppID = overrides.UMSMerAppID
 
-	// 微信直连那条渠道也默认给齐账户值：它只有 appId / mchId 两个必填项（证书不是必填，
-	// 只有代扣与解约要它，见 catalog.wechatPayChannel），缺了它们任何一条走签约的用例都会
-	// 先撞上一句 ErrChannelIncomplete——那看起来像被测的代码坏了。**密钥不在这里**：
-	// APIv2 密钥是凭据，走凭据槽，装配处不把它放进 Catalog。
+	// 微信直连那条渠道也默认给齐账户值：它有三个必填项——appId / mchId / 跳转小程序的
+	// appId（证书不是必填，只有代扣与解约要它，见 catalog.wechatPayChannel），缺了它们任何
+	// 一条走签约的用例都会先撞上一句 ErrChannelIncomplete——那看起来像被测的代码坏了。
+	// **密钥不在这里**：APIv2 密钥是凭据，走凭据槽，装配处不把它放进 Catalog。
+	//
+	// 三个值都是**编的**：它们能定位到具体主体（见 wechatpay_test.go 里那组常量的注释），
+	// 进了仓库就是发给了每一个拿到它的人。
 	cfg.WeChatPayAppID = "wxtestappid0000001"
-	cfg.WeChatPayMchID = "1668145209"
+	cfg.WeChatPayMchID = "1900000000"
+	cfg.WeChatPaySignMiniProgramAppID = "wxtestsignappid0001"
 	if overrides.WeChatPayAppID != "" {
 		cfg.WeChatPayAppID = overrides.WeChatPayAppID
 	}
 	if overrides.WeChatPayMchID != "" {
 		cfg.WeChatPayMchID = overrides.WeChatPayMchID
+	}
+	if overrides.WeChatPaySignMiniProgramAppID != "" {
+		cfg.WeChatPaySignMiniProgramAppID = overrides.WeChatPaySignMiniProgramAppID
 	}
 	cfg.WeChatPayBaseURL = overrides.WeChatPayBaseURL
 	cfg.WeChatPayCertPath = overrides.WeChatPayCertPath

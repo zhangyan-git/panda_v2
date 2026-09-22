@@ -227,6 +227,9 @@ type Config struct {
 	WeChatPayMchID    string
 	WeChatPayCertPath string
 	WeChatPayKeyPath  string
+	// WeChatPaySignMiniProgramAppID 是跳转目标那个小程序的 appid（微信官方的签约小程序）。
+	// 与 WeChatPayAppID 是两个不同的 id，见 platform/config 里那个字段的注释。
+	WeChatPaySignMiniProgramAppID string
 }
 
 // FromConfig 用部署配置构造目录。
@@ -302,9 +305,13 @@ func FromConfig(cfg Config) *Catalog {
 			// 存在的理由（见 Method.Action 的注释）。
 			Action:      provider.ActionJumpMiniapp,
 			ChannelCode: ChannelCodeWeChatPay,
-			// Params 空是**有意的**：跳哪个小程序（wxbd687630cd02ce1d）是微信侧的固定值、
-			// 写在适配器里（wechatpay.SignMiniProgramAppID），它是协议的一部分而不是部署的
-			// 一部分。换个值等于跳去另一个小程序，而那个小程序不存在第二个。
+			// Params 空是**有意的**：这条通道没有「随方式走的参数」——跳转目标（微信官方
+			// 签约小程序的 appid）是**渠道**的配置（WECHAT_PAY_SIGN_MINI_PROGRAM_APP_ID，
+			// 见 channelWeChatPay 与 wechatpay.Parse），不是方式的参数。
+			//
+			// 它原先写死在这里的适配器里，理由是「微信侧的固定值、不存在第二个小程序」。
+			// 取值确实只有一个，但那推不出它可以进源码：它是能定位到具体主体的标识，与商户号
+			// 同一性质（GitHub 密钥扫描在 commit 4920ce71 上标了它）。
 		},
 	}
 
@@ -462,6 +469,10 @@ func wechatPayChannel(cfg Config) *Channel {
 	required := []struct{ key, value, env string }{
 		{"appId", cfg.WeChatPayAppID, envWeChatPayAppID},
 		{"mchId", cfg.WeChatPayMchID, envWeChatPayMchID},
+		// 跳转目标（微信官方那个签约小程序）也做成必填：纯签约这条路的价值就是让客户端跳过去，
+		// 缺了它算出来的参数表是**导不了跳**的，而失败会发生在用户手机上（点了没反应），
+		// 不在日志里。它曾经写死在代码里，见 WeChatPaySignMiniProgramAppID 的注释。
+		{"signMiniProgramAppId", cfg.WeChatPaySignMiniProgramAppID, envWeChatPaySignAppID},
 	}
 	var missing []string
 	config := provider.Config{
@@ -499,6 +510,9 @@ const (
 	envWeChatPayAppID = "WECHAT_PAY_APP_ID"
 	// envWeChatPayMchID 是微信支付商户号。
 	envWeChatPayMchID = "WECHAT_PAY_MCH_ID"
+	// envWeChatPaySignAppID 是跳转目标那个小程序（微信官方的签约小程序）的 appid。
+	// 它与 envWeChatPayAppID 不是同一个值，别合并。
+	envWeChatPaySignAppID = "WECHAT_PAY_SIGN_MINI_PROGRAM_APP_ID"
 	// envWeChatPayAPIKey 是 APIv2 密钥（32 位），签名与验签共用。
 	envWeChatPayAPIKey = "WECHAT_PAY_API_V2_KEY"
 )

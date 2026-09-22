@@ -21,21 +21,31 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/provider"
 )
 
-// 测试里那几个钉死的值。商户号是**老系统那一个**（1668145209）——它出现在协议的待签串里，
-// 用真值能让「签名算错」这件事在联调时对得上，而它本身不是秘密（商户号是公开在收银台上的）。
+// 测试里那几个钉死的值，**全部是编的**。
+//
+// 尤其是商户号：它一度用的是老系统那一个（真值现在只在 .env 里，见 WECHAT_PAY_MCH_ID），
+// 理由是「真值能让签名算错这件事在联调时对得上，而商户号公开在收银台上」。这条理由与
+// 「跳转小程序的 appid 是微信侧的固定值」是同一条错误的推理——**取值只有一个**推不出
+// **它可以进仓库**。它们都是能定位到具体主体的标识，进了仓库就是发给了每一个拿到仓库的人
+// （GitHub 的密钥扫描按同一判据判了那个 appid）。
+//
+// 换成编的值不损失任何东西：这几条用例验的是签名口径（参数怎么排、空值怎么剔、MD5 怎么编），
+// 与商户号是什么无关，也没有一条断言依赖真值。
 const (
-	testAppID  = "wxtestappid0000001"
-	testMchID  = "1668145209"
-	testSecret = "testkeytestkeytestkey12abcdef"
+	testAppID                = "wxtestappid0000001"
+	testMchID                = "1900000000"
+	testSignMiniProgramAppID = "wxtestsignappid0001"
+	testSecret               = "testkeytestkeytestkey12abcdef"
 )
 
 // mustProtocol 拼一份能跑的协议声明。overrides 覆盖默认值（例如把 baseURL 指向假服务端）。
 func mustProtocol(t *testing.T, overrides map[string]any) *Protocol {
 	t.Helper()
 	config := map[string]any{
-		"appId": testAppID,
-		"mchId": testMchID,
-		"sign":  map[string]any{"secretRef": "apiV2Key"},
+		"appId":                testAppID,
+		"mchId":                testMchID,
+		"signMiniProgramAppId": testSignMiniProgramAppID,
+		"sign":                 map[string]any{"secretRef": "apiV2Key"},
 	}
 	for key, value := range overrides {
 		config[key] = value
@@ -55,6 +65,11 @@ func mustProtocol(t *testing.T, overrides map[string]any) *Protocol {
 //
 // 参数集也是断言的一部分：**恰好 8 个字段 + sign**。多一个 nonce_str 微信会回 SIGN_ERROR
 // （老系统那行注释），而那是这条链路上最难查的一种错——报文看上去完全正常。
+//
+// 期望值随夹具的 mch_id 换过一次（老系统那个真值 → 现在这个编的，理由见上面那组常量的注释）。
+// 换的方法是**用另一份独立实现重算**，不是跑一遍这里的代码把输出抄回来：先在独立实现里
+// 用旧 mch_id 复算出原来的摘要 EE92B5B3D8C0FC61E01E2DB945278593（对得上，说明那份实现与
+// 这条向量记的是同一套口径），再换上新 mch_id 取值。抄输出会把这条测试变成同义反复。
 func TestSignParamsMatchesTheAPIv2Vector(t *testing.T) {
 	client := NewClient(mustProtocol(t, nil))
 
@@ -70,7 +85,7 @@ func TestSignParamsMatchesTheAPIv2Vector(t *testing.T) {
 		t.Fatalf("SignParams: %v", err)
 	}
 
-	if got.Params["sign"] != "EE92B5B3D8C0FC61E01E2DB945278593" {
+	if got.Params["sign"] != "EF7FCC6212301D29DE4DAFC1C3B1897C" {
 		t.Fatalf("sign = %q, want the APIv2 vector (params: %v)", got.Params["sign"], got.Params)
 	}
 
