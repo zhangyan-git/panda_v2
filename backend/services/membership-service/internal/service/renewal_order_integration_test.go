@@ -233,16 +233,21 @@ func TestIntegrationChargeSucceededRecordsARenewalOrder(t *testing.T) {
 	}
 }
 
-// TestIntegrationChargeSucceededFailsWithoutAnOrder 是「钱收了、账记不上」那一格。
+// TestIntegrationChargeSucceededParksWithoutAnOrder 是「钱收了、账记不上」那一格。
 //
-// 建单失败必须让整条消息**重投**（返回非 nil），而且**一步都不往下走**：会员不续、流水不写、
-// 事件不发。给用户续上会员只会让账面更难对——钱在渠道那边已经动了，而订单管理里查不到这一笔，
-// 事后对账的人手上没有任何东西能解释这个人的会员是哪来的。
+// 建单失败时**一步都不往下走**：会员不续、订阅不推进、流水不写、事件不发。给用户续上会员只会让
+// 账面更难对——钱在渠道那边已经动了，而订单管理里查不到这一笔，事后对账的人手上没有任何东西能
+// 解释这个人的会员是哪来的。
+//
+// 但它**不再返回错误让平台重投**：那 5 次重投是毫秒级的、之后进 panda.events.dlq，而那个队列今天
+// 既没有消费者也没有监控（见 charge_settlement.go 的文件头）。订单域重启三分钟，这三分钟里到的
+// 扣款成功事件会全部消失，而两边都不报错。所以这一期落成一条**待办**（本用例断言它落了什么），
+// 由 worker 重试到订单域回来为止——补上去的那一半在 charge_settlement_integration_test.go 里。
 //
 // 反过来「先结算、建单失败只记个日志」看着更友好，但那个顺序还有个更硬的毛病：结算一旦成功，
 // 重投就会先撞上它的幂等（那一笔渠道流水已经续过了）被安静地 ack 掉，**建单那一步永远轮不到**，
 // 订单从此静默地少一张。这正是这一刀要修的那个缺陷的形状。
-func TestIntegrationChargeSucceededFailsWithoutAnOrder(t *testing.T) {
+func TestIntegrationChargeSucceededParksWithoutAnOrder(t *testing.T) {
 	f := newMembershipFixture(t)
 
 	plan := f.seedMembership(t)
@@ -255,20 +260,25 @@ func TestIntegrationChargeSucceededFailsWithoutAnOrder(t *testing.T) {
 	orderErr := errors.New("订单域连不上")
 	f.orders.createErr = orderErr
 
+	transactionID := "WXTXN-" + uuid.NewString()[:12]
 	err := f.chargeEvent(chargeEventInput{
 		AgreementID:           subscription.AgreementID,
 		AgreementNo:           subscription.ContractCode,
 		BizPeriod:             subscription.bizPeriod(),
 		Amount:                plan.PriceCents,
-		ProviderTransactionID: "WXTXN-" + uuid.NewString()[:12],
+		ProviderTransactionID: transactionID,
 		Status:                dto.ChargeStatusSucceeded,
 	})
-	if !errors.Is(err, orderErr) {
-		t.Fatalf("建单失败时回的是 %v，想要把 %v 原样带出来（平台据此重投）", err, orderErr)
+	if err != nil {
+		t.Fatalf("建单失败时回的是 %v，想要 nil：这一期该落成待办之后被 ack（重投那条路只走毫秒级的 "+
+			"5 次，之后进那个没有人看的死信队列）", err)
+	}
+	if f.parkedCharge(transactionID) == nil {
+		t.Fatal("建单失败却没有落下待办：这一笔钱在会员域与订单域两边都没有痕迹")
 	}
 
-	// 会员：一分没续。这一条与「钱到了、权益必须跟上」那条（归属对不上时仍然续期）是**两种不同
-	// 的失败**：那一次是账记完了才发现人不对，这一次是账根本没记成。
+	// 落成待办不是落成了账：会员一分没续。这一条与「钱到了、权益必须跟上」那条（归属对不上时仍然
+	// 续期）是**两种不同的失败**：那一次是账记完了才发现人不对，这一次是账根本没记成。
 	if now := f.membership(); !now.ExpireAt.UTC().Equal(before.ExpireAt.UTC()) {
 		t.Errorf("建单失败却把会员续了：%v → %v", before.ExpireAt.UTC(), now.ExpireAt.UTC())
 	}

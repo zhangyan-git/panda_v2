@@ -1,13 +1,15 @@
 // Package worker 是会员服务的后台补偿任务。
 //
-// 它们都是 runtime.Runner：随服务启停，只依赖传进来的 ctx。两个任务都做成补偿扫描而不是
+// 它们都是 runtime.Runner：随服务启停，只依赖传进来的 ctx。三个任务都做成补偿扫描而不是
 // 定时精确到点——到期的那一刻没有人在等它：把 status 从 active 改成 expired 晚几十秒，
 // 不会让任何人少享一秒权益（判定读的是 expire_at，不是 status，见 model.Membership.IsUsable）；
 // 扣款晚几分钟，用户的会员也还在。而「到点必达」要的是一套调度基础设施，不是这个阶段该引入
 // 的东西。
 //
-// 两个任务的分工：expiry.go 管**会员到期**（改本库状态），renewal.go 管**代扣到期**（出网调
-// 渠道，一个字节都不改本库）。后者多一层要防的东西，见 renewal.go 里那段「它只发起」。
+// 三个任务的分工：expiry.go 管**会员到期**（改本库状态），renewal.go 管**代扣到期**（出网调
+// 渠道，一个字节都不改本库），settlement.go 管**扣款成功但账没落成的待办**（重试另一个域的
+// 调用）。中间那个多一层要防的东西，见 renewal.go 里那段「它只发起」；最后一个等的是订单域
+// 恢复，见 settlement.go 里那段。
 package worker
 
 import (

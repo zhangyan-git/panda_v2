@@ -121,6 +121,17 @@ type Repository interface {
 	// 幂等、把建单那一步整个跳过去。
 	LoadChargeContext(ctx context.Context, agreementID string) (*repository.ChargeContext, error)
 
+	// —— 扣款成功但账没落成时的待办（见 repository/charge_settlement.go）——
+	//
+	// 这四个只服务**一条链**：事件入口建单失败时落一行（ParkChargeSettlement），worker 定时取
+	// 一批重试（ClaimDueChargeSettlements），落成了就删（DeleteChargeSettlement）、没成就推后
+	// （RescheduleChargeSettlement）。它们不是给别的读写路径用的——这张表是一张工作队列，不是
+	// 业务数据（见 migrations/membership/009 的文件头）。
+	ParkChargeSettlement(ctx context.Context, p repository.ChargeSettleParams) error
+	ClaimDueChargeSettlements(ctx context.Context, limit int) ([]*model.ChargeSettlement, error)
+	DeleteChargeSettlement(ctx context.Context, providerTransactionID string) error
+	RescheduleChargeSettlement(ctx context.Context, providerTransactionID string, nextAttemptAt time.Time, lastError string) error
+
 	// —— 店铺码会员活动（配置侧 CRUD + 领取）——
 	//
 	// 领取那一条**只写它自己的两张表和会员**：券那一半没做（老系统的领取还发券，而 V2 今天

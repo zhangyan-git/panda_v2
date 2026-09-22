@@ -350,34 +350,13 @@ func (s *MembershipService) handleChargeEvent(ctx context.Context, event messagi
 		return fmt.Errorf("%w: bizPeriod is required", ErrInvalidEvent)
 	}
 
-	// **先建单，再结算**：这个顺序反不得。
-	//
-	// 反过来的话（结算完再建单），一条重投会先被结算那一步的幂等挡住——SettleCharge 发现这笔
-	// 渠道流水已经续过了，回 changed=false，函数在下面那个 `!outcome.Changed` 的分支里安静地
-	// ack，**建单那一步永远轮不到**。而「重投」在这里恰恰是常态（broker 重连、处理完没 ack 时
-	// 崩溃），所以订单会**静默地少掉**，谁都不报错——这正是这一刀要修的那个缺陷的形状。
-	//
-	// 换过来之后两边都还是对的：建单幂等（同一个渠道流水号命中同一张单），结算幂等（撞唯一索引
-	// → ack）。而且第一次投递崩在两步之间时，重投能把订单补上——反过来那个顺序补不了，因为
-	// 事件已经发出去过了（发券那一条读的就是事件里的订单号）。
-	//
-	// 建单失败就是没成：返回错误让平台重投（≤5 次后进死信），**不往下走结算**——钱收了而账
-	// 记不上，这时候给用户续上会员只是让账面更难对。
-	orderID, err := s.recordRenewalOrderFor(ctx, target, agreementID, payload.ProviderTransactionID, payload.Amount)
-	if err != nil {
-		return err
-	}
-
-	outcome, err := s.repository.SettleCharge(ctx, repository.ChargeSettleParams{
+	params := repository.ChargeSettleParams{
 		// 只有协议 id：事件体里没有订阅 id，一份协议也只对一条订阅（库上那个部分唯一索引）。
 		AgreementID: agreementID,
 		UserID:      userID,
 		Target:      target,
 		BizPeriod:   bizPeriod,
 		Amount:      payload.Amount,
-		// 这一期在订单域那张续费单。它落进续费流水，也随 membership.renewed 出去——**下游发券
-		// 的判据就是它**（见 repository.ChargeSettleParams.OrderID）。
-		OrderID: orderID,
 		// 渠道流水号：成功那条非空且是幂等键；失败那条可能是空的，而空串在那里是**对的**——见
 		// repository.SettleCharge 里关于失败流水为什么不能拿它当幂等键的那段。
 		ProviderTransactionID: strings.TrimSpace(payload.ProviderTransactionID),
@@ -387,63 +366,36 @@ func (s *MembershipService) handleChargeEvent(ctx context.Context, event messagi
 		// 那条它是续期的起点候选之一：这个人的会员如果已经过期，就从这一刻重新起算。
 		OccurredAt: s.Now(),
 		TraceID:    event.TraceID,
-	})
-	switch {
-	case err == nil:
-	case errors.Is(err, repository.ErrDuplicateChange):
-		// 同一笔渠道流水已经续过了。支付那边对同一次扣款可能发出两遍（通知重投、补发），而
-		// **重投不是故障**——正是幂等想要的答案（与 handleOrderPaid 那条逐字相同）。
-		return nil
-	case errors.Is(err, repository.ErrSubscriptionNotFound):
-		slog.WarnContext(ctx, "membership: charge event has no subscription",
-			"agreementId", agreementID, "bizPeriod", bizPeriod, "eventType", event.EventType)
-		return nil
-	default:
-		// 其中包括 ErrChargeEndedSubscription（一条解约了的订阅扣到了钱）：它要的是人来看，不是
-		// 重试，返回错误让它停在死信里（见那条错误的说明）。
-		return err
+		// OrderID 还空着：它由下面那一步建出来（见 charge_settlement.go 里那段顺序说明）。
 	}
 
-	// 归属对不上：事件里的 userId 与订阅上的不是同一个人。
+	// **先建单，再结算**：这个顺序反不得。
 	//
-	// **结算已经做完了**（上面那一步按协议 id 定位，改的是对的那一行），这里报的是另一件事：
-	// 支付域记的签约人与本域记的不是同一个人。与 handleAgreementEvent 逐字同一条处置——返回错误
-	// 让它进死信，不是为了重做，而是为了让它停在一个人看得见的地方。
-	if outcome.Subscription != nil && outcome.Subscription.UserID != userID {
-		return fmt.Errorf("%w: agreement %s belongs to user %s, charge event says %s",
-			ErrInvalidEvent, agreementID, outcome.Subscription.UserID, userID)
+	// 反过来的话（结算完再建单），一条重投会先被结算那一步的幂等挡住——SettleCharge 发现这笔
+	// 渠道流水已经续过了，回 changed=false，settleCharge 在那个 `!outcome.Changed` 的分支里安静地
+	// ack，**建单那一步永远轮不到**。而「重投」在这里恰恰是常态（broker 重连、处理完没 ack 时
+	// 崩溃），所以订单会**静默地少掉**，谁都不报错——这正是这一刀要修的那个缺陷的形状。
+	//
+	// 换过来之后两边都还是对的：建单幂等（同一个渠道流水号命中同一张单），结算幂等（撞唯一索引
+	// → ack）。而且第一次投递崩在两步之间时，重投能把订单补上——反过来那个顺序补不了，因为
+	// 事件已经发出去过了（发券那一条读的就是事件里的订单号）。
+	//
+	// 建单失败分两种处置，判据见 orderFailureCanBeRetried：订单域没答上来就落成一条**待办**，
+	// 坏数据与装配缺失照旧返回错误进死信。两种都**不往下走结算**——钱收了而账记不上，这时候给
+	// 用户续上会员只是让账面更难对。
+	//
+	// 为什么不能像以前那样一律「返回错误让平台重投」：那 5 次重投是**毫秒级**的，之后进
+	// panda.events.dlq——一个今天既没有消费者也没有监控的队列。订单域重启三分钟，这三分钟里到的
+	// 扣款成功事件就会全部消失，而两边都不报错（见 charge_settlement.go 的文件头）。
+	orderID, err := s.recordRenewalOrderFor(ctx, params.Target, params.AgreementID, params.ProviderTransactionID, params.Amount)
+	if err != nil {
+		return s.parkChargeSettlement(ctx, params, err)
 	}
-	if !outcome.Changed {
-		// 什么都没写，两种原因、轻重不同，所以分开说：
-		//
-		//   - 订阅已经结束了（解约 / 走完）：这一期扣成没扣成对它都没有意义。钱没动过的那种不必
-		//     惊动人；扣到了钱的那种已经在仓储里报错进了死信，走不到这里。
-		//   - 这一笔已经结算过（同一笔渠道流水的重复投递）：**正常**，是幂等生效的样子。
-		switch outcome.Subscription.Status {
-		case model.SubscriptionStatusCancelled, model.SubscriptionStatusExpired:
-			slog.WarnContext(ctx, "membership: charge result for a subscription that is no longer charging",
-				"agreementId", agreementID, "bizPeriod", bizPeriod, "eventType", event.EventType,
-				"subscriptionStatus", outcome.Subscription.Status)
-		default:
-			slog.InfoContext(ctx, "membership: charge result already settled; nothing to do",
-				"agreementId", agreementID, "bizPeriod", bizPeriod, "eventType", event.EventType)
-		}
-		return nil
-	}
+	params.OrderID = orderID
 
-	// 下面两条是运营要能看见的信号。成功那条走 info：一次正常的续费不该是告警；**停扣走 warn**——
-	// 那是这一整条链上唯一一个「从此不再扣这个人的钱」的动作，而它今天不对外发事件。
-	if outcome.Suspended {
-		slog.WarnContext(ctx, "membership: auto charge suspended after consecutive failures",
-			"agreementId", agreementID, "bizPeriod", bizPeriod,
-			"consecutiveFailedCount", outcome.Subscription.ConsecutiveFailedCount,
-			"failureCode", strings.TrimSpace(payload.FailureCode))
-		return nil
-	}
-	slog.InfoContext(ctx, "membership: charge settled",
-		"agreementId", agreementID, "bizPeriod", bizPeriod, "target", target,
-		"amount", payload.Amount, "providerTransactionId", strings.TrimSpace(payload.ProviderTransactionID))
-	return nil
+	// 收口那一段在 charge_settlement.go 里，与**待办重试**共用同一份（见那个文件的文件头）：
+	// 重投、订阅已结束、归属对不上这几格该怎么答，两个入口必须逐字一样。
+	return s.settleCharge(ctx, params)
 }
 
 // chargeTargetFor 判这条事件说的是一次成功还是一次失败。

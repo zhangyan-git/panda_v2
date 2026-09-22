@@ -236,6 +236,16 @@ func main() {
 	// 「会员永远续不上」。
 	renewalWorker := worker.NewRenewalWorker(membershipService, worker.DefaultRenewalInterval, repository.DefaultChargeBatch)
 
+	// 待办重试：「钱收了、续费单没建上」的那几笔，由它一分钟一轮地重试到落成为止。
+	//
+	// 它补的是**事件消费那一侧的兜底缺口**：平台的重投是毫秒级的 5 次，之后进
+	// panda.events.dlq，而那个队列今天没有消费者也没有监控。没有这个 worker，订单域重启三分钟
+	// 里到的扣款成功事件会全部消失——会员没续、订单没建，而渠道那边的钱是真的动了，两边都不报错。
+	//
+	// 它与 renewalWorker 是这一条链的两半：那一个发起扣款，这一个把收到的钱落成账。少任何一个的
+	// 表现分别是「签了却不扣」与「扣了钱、账上没有」。
+	settlementWorker := worker.NewSettlementWorker(membershipService, worker.DefaultSettlementInterval, repository.DefaultSettlementBatch)
+
 	// access token 24 小时，与其余八个服务保持一致（见那几处的说明）。各处 auth.NewService
 	// 的取值必须一致。
 	jwtService, err := auth.NewService([]byte(cfg.JWTSecret), cfg.JWTIssuer, 24*time.Hour, 7*24*time.Hour)
@@ -259,7 +269,7 @@ func main() {
 		// 消费的是订单支付成功。事件类型由 order-service 决定，本服务只认自己认识的那一种，
 		// 其余原样 ack（见 service.HandleEvent）。
 		ConsumerHandler: membershipService.HandleEvent,
-		Workers:         []runtime.Runner{expiryWorker, renewalWorker},
+		Workers:         []runtime.Runner{expiryWorker, renewalWorker, settlementWorker},
 		HTTPRoutes: func(r *runtime.HTTPRouter) {
 			// 后台：认证 → 平台账号闸门 → 实时授权 → 权限码。
 			routes.RegisterAdmin(r, adminMembership, adminAuthorizer(jwtService, authorizer.Resolve, authorizationTimeout))

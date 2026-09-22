@@ -131,6 +131,10 @@ func (f *membershipFixture) cleanup() {
 		{"暂时摘掉只增不改不删的触发器", `ALTER TABLE membership_changes DISABLE TRIGGER membership_changes_append_only`, nil},
 		{"删流水", `DELETE FROM membership_changes WHERE user_id = $1`, []any{f.user}},
 		{"装回触发器", `ALTER TABLE membership_changes ENABLE TRIGGER membership_changes_append_only`, nil},
+		// 扣款待办没有外键（它记的是另一个域的调用还没做成），但**必须在删会员之前**：它按 user_id
+		// 收，而 user_id 是本用例独占的 uuid，删干净了才不会让下一条用例的 SettlePendingCharges
+		// 捞到别人的行、把「这一轮落成了几条」的计数顶歪。
+		{"删扣款待办", `DELETE FROM membership_charge_settlements WHERE user_id = $1`, []any{f.user}},
 		// 订阅必须在会员之前删：membership_subscriptions.membership_id 是
 		// ON DELETE RESTRICT，顺序反了这一步会直接失败（而失败信息指的是「删会员」那一步，
 		// 真正的原因在下一条外键上）。
