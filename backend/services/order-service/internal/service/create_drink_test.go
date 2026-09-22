@@ -300,6 +300,49 @@ func TestCreateOrderDrinkVerdicts(t *testing.T) {
 	}
 }
 
+// TestCreateOrderChargesTheMemberPricePerCup 钉住「优惠额是行级金额，不是单价差」。
+//
+// 少乘这一次数量不撞任何约束：discount = price + coupon 与 payable = 原价 × 数量 − discount
+// 两条式子同时少算同一笔钱，照样自洽，结账页那一行也看不出异常。只有把数量写成 2 才看得见
+// ——买两杯，用户被多收一份差价（1800/1500 时是 3300 而不是 3000）。
+func TestCreateOrderChargesTheMemberPricePerCup(t *testing.T) {
+	devices := catalogDrinkFixture()
+	repo, svc := newDrinkService(devices, &stubPlanReader{
+		entitlement: &client.MemberPriceEntitlement{GrantsMemberPrice: true},
+	})
+
+	request := drinkOrder(testCatalogDrinkID)
+	request.Lines[0].Quantity = 2
+	if _, _, err := svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID: testUserID, IdempotencyKey: testCatalogIdemKey, Request: request,
+	}); err != nil {
+		t.Fatalf("CreateOrder: %v", err)
+	}
+
+	line := repo.got.Lines[0]
+	// 每杯省 300，两杯省 600。单价那两格仍是**每杯**的价，不跟着数量走。
+	if line.OriginalUnitPrice != 1800 || line.UnitPrice != 1500 {
+		t.Errorf("原价/成交价 = %d/%d, want 1800/1500（单价不随数量变）",
+			line.OriginalUnitPrice, line.UnitPrice)
+	}
+	if line.PriceDiscountAmount != 600 {
+		t.Errorf("会员价优惠 = %d, want 600（每杯 300 × 2 杯）", line.PriceDiscountAmount)
+	}
+	if line.PayableAmount != 3000 {
+		t.Errorf("行应付额 = %d, want 3000（1800 × 2 − 600）", line.PayableAmount)
+	}
+	if repo.got.Order.PayableAmount != 3000 {
+		t.Errorf("订单应付额 = %d, want 3000", repo.got.Order.PayableAmount)
+	}
+	// 库上那两条恒等式。
+	if line.PayableAmount != line.OriginalUnitPrice*int64(line.Quantity)-line.DiscountAmount {
+		t.Error("payable ≠ 原价 × 数量 − discount")
+	}
+	if line.DiscountAmount != line.PriceDiscountAmount+line.CouponDiscountAmount {
+		t.Error("discount ≠ price + coupon")
+	}
+}
+
 // TestCreateOrderFailsClosedWithoutADrinkReader 是这条路最重要的一条兜底：
 // 读端没配齐时**绝不退化成「那就用请求里那个价」**。
 //

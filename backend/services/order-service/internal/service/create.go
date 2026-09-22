@@ -460,7 +460,17 @@ func (s *OrderService) applyDrinkPricing(ctx context.Context, lines []*repositor
 		if entitlement.GrantsMemberPrice && drink.VipPrice > 0 && drink.VipPrice < originalUnitPrice {
 			unitPrice = drink.VipPrice
 		}
-		priceDiscount := originalUnitPrice - unitPrice
+
+		// 单价差 × 数量：price_discount_amount 是**行级**金额，不是单价差。001 的列注释
+		// 写得很直白——「这个会员价一共省了多少」= sum(price_discount_amount)，而两格
+		// 单价的差只说明「一杯省多少」，另一格 unit_price 明确不参与任何恒等式。
+		//
+		// 少乘这一次数量**撞不上任何约束**，这正是它活下来的原因：下面两条式子同时少算
+		// 同一笔钱，order_lines_discount_breakdown 与 order_lines_payable_matches 照样
+		// 成立，结账页那一行也看不出异常。买两杯会员价拿铁，用户被多收一份差价（原价
+		// 1800 会员价 1500 → 应付 3300，而正确值是 3000）。
+		originalAmount := originalUnitPrice * int64(line.Quantity)
+		priceDiscount := (originalUnitPrice - unitPrice) * int64(line.Quantity)
 
 		// item_code 存**机器报的那个编号**（product_num）：事后拿机器流水来对账时，唯一能
 		// 对上的就是它。与设备单那条路存机器报的编号同一条理由，只是那边编号来自报文、
@@ -471,10 +481,11 @@ func (s *OrderService) applyDrinkPricing(ctx context.Context, lines []*repositor
 		line.OriginalUnitPrice = originalUnitPrice
 		line.UnitPrice = unitPrice
 		line.PriceDiscountAmount = priceDiscount
-		// 券抵多少仍是调用方给的（见 CreateOrderLine），所以这里只重算「价格优惠进来了之后」
-		// 的那两个数——恒等式在库上还有一道 CHECK，算错了会以 23514 收场。
+		// 券抵多少仍是调用方给的（见 CreateOrderLine），而且它本来就是**行级**的（buildLine
+		// 与加购行都这么用）。所以这里只重算「价格优惠进来了之后」的那两个数——恒等式在库上
+		// 还有一道 CHECK，算错了会以 23514 收场。
 		line.DiscountAmount = priceDiscount + line.CouponDiscountAmount
-		line.PayableAmount = originalUnitPrice*int64(line.Quantity) - line.DiscountAmount
+		line.PayableAmount = originalAmount - line.DiscountAmount
 		if line.PayableAmount < 0 {
 			// buildLine 那条校验在饮品行上跳过了（那时还不知道原价），在这里补上：券抵得比
 			// 这一行还贵。库上 order_lines_payable_matches 也会拒，但回一句人话更好。
