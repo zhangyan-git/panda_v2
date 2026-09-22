@@ -479,8 +479,9 @@ func TestIntegrationSubscribeRefusesWhatCannotBeSigned(t *testing.T) {
 
 // TestIntegrationConfirmActivatesAndSetsNextCharge 走一遍「用户从微信回来」。
 //
-// 断言的是收口之后的三个值：状态 active、next_charge_at 按「有会员就接着会员到期日算」那条
-// 规则、以及**会员本身没有被这次签约改动**（签约只让「以后可以扣款」成立，钱是另一件事）。
+// 断言的是收口之后的三个值：状态 active、next_charge_at 就是**会员到期那一刻**（见
+// repository.applySettle 那条规则）、以及**会员本身没有被这次签约改动**（签约只让「以后可以
+// 扣款」成立，钱是另一件事）。
 func TestIntegrationConfirmActivatesAndSetsNextCharge(t *testing.T) {
 	f := newMembershipFixture(t)
 	plan := f.seedMembership(t)
@@ -509,12 +510,15 @@ func TestIntegrationConfirmActivatesAndSetsNextCharge(t *testing.T) {
 	if after.NextChargeAt == nil {
 		t.Fatal("生效之后没有下一期扣款时间（库上 active 时它是 NOT NULL 的 CHECK）")
 	}
-	// 有会员且还没过期 ⇒ 基点取会员到期日，再往后推一个周期。取「此刻 + 一个周期」的话，用户
-	// 已经买过的这段会员就被吞掉了。
-	want := model.AddPeriod(membershipBefore.ExpireAt, after.Period, after.PeriodCount)
-	if !after.NextChargeAt.Equal(want) {
-		t.Errorf("下一期扣款时间 = %v，想要 %v（会员到期日 %v 再加一个周期）",
-			after.NextChargeAt.UTC(), want.UTC(), membershipBefore.ExpireAt.UTC())
+	// 有会员且还没过期 ⇒ 第一次扣款就落在**会员到期那一刻**：那一期是用户已经付过钱的，续费
+	// 必须在它结束的当口接上，代扣成功之后再把到期日往后推一期（见 charge.go）。
+	//
+	// 这里曾经断言的是「到期日再往后推一个周期」，比正确值晚了整整一期：从到期日到那一刻用户
+	// 持币却没有会员，而扫描器那一刻才看得见这一行——自动续费开着，中间断了一期。取「此刻 +
+	// 一个周期」同样是错的：那会把已经买过、还没用完的这段会员吞掉。
+	if !after.NextChargeAt.Equal(membershipBefore.ExpireAt) {
+		t.Errorf("下一期扣款时间 = %v，想要会员到期日 %v（第一次扣的就是到期那一刻该续的那一期）",
+			after.NextChargeAt.UTC(), membershipBefore.ExpireAt.UTC())
 	}
 
 	if now := f.membership(); !now.ExpireAt.Equal(membershipBefore.ExpireAt) {
@@ -531,6 +535,52 @@ func TestIntegrationConfirmActivatesAndSetsNextCharge(t *testing.T) {
 	if len(agreements.queries) != asked {
 		t.Errorf("重复确认又问了渠道一次（%d → %d），它该按「已经是这个状态」短路",
 			asked, len(agreements.queries))
+	}
+}
+
+// TestIntegrationConfirmWithLapsedMembershipStartsFromNow 是上面那条用例的另一半：会员**已经
+// 过期**时签约，第一次扣款落在「这一刻 + 一个周期」。
+//
+// 两半合起来才是 applySettle 那条规则的全部（有没有权益可接，决定取哪个基点），所以它们必须
+// 一起看：只钉住前一半的话，把整条规则写死成「到期日 + 一个周期」或「这一刻 + 一个周期」都能
+// 让前一半之外的那一格悄悄地错。
+//
+// 这一刻而不是立刻扣，是有意的：签约本身一分钱都不动（用户刚在微信点完同意，再扣他一笔是另
+// 一件事），而这一期从第一次扣款那一刻起算。
+func TestIntegrationConfirmWithLapsedMembershipStartsFromNow(t *testing.T) {
+	f := newMembershipFixture(t)
+	// 两个月前买的包月会员：一个月前就到期了。行还挂在库里（签约要求先有会员），只是此刻没有
+	// 任何权益可接——这正是这一格与上一格的分界。
+	lapsed := f.createPlan(couponPlanRequest())
+	f.activate(lapsed)
+	f.mustPay(uuid.NewString(), lapsed, f.clock.AddDate(0, -2, 0))
+
+	signable := f.signedPlan()
+	agreements, _ := f.agreementsOf()
+
+	sub := f.subscribe(signable, uuid.NewString())
+	row := f.subscription(sub.Subscription.ID)
+	if before := f.membership(); before.ExpireAt.After(f.clock) {
+		t.Fatalf("这一格要求会员已经过期，实际到期日是 %v（此刻 %v）", before.ExpireAt.UTC(), f.clock.UTC())
+	}
+	agreements.queryResult = &dto.AgreementState{
+		AgreementNo:   row.ContractCode,
+		Status:        dto.AgreementStatusActive,
+		ProviderState: "signed",
+	}
+
+	if _, err := f.svc.ConfirmSubscription(context.Background(), row.ID, f.user, uuid.NewString(), uuid.NewString()); err != nil {
+		t.Fatalf("确认签约失败：%v", err)
+	}
+
+	after := f.subscription(row.ID)
+	if after.NextChargeAt == nil {
+		t.Fatal("生效之后没有下一期扣款时间（库上 active 时它是 NOT NULL 的 CHECK）")
+	}
+	want := model.AddPeriod(f.clock, after.Period, after.PeriodCount)
+	if !after.NextChargeAt.Equal(want) {
+		t.Errorf("下一期扣款时间 = %v，想要 %v（没有剩余权益 ⇒ 这一刻 + 一个周期 %s×%d）",
+			after.NextChargeAt.UTC(), want.UTC(), after.Period, after.PeriodCount)
 	}
 }
 

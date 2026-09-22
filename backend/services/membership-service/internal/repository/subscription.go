@@ -713,10 +713,20 @@ func guardSettleToActive(current *SubscriptionRow, agreementNo string) error {
 //
 // # 下一次扣款时间的那条规则
 //
-// **有会员就取会员到期日，没有（或已过期）就取这一刻 + 一个周期**——与 renewMembership 里
-// 决定叠加基点的那条判据逐字相同（`expire_at` 在不在这一刻之后）。不另立一套的理由：这两个
-// 地方回答的是同一个问题「这一段权益从哪儿接着算」，而两套判据迟早在某次调价或某次补签上
-// 走偏，走偏的表现是「用户签完当月被扣了两次」。
+// **next_charge_at 就是「这一段权益的结束时刻」**——这个列的含义在代扣那一刀上是同一个
+// （见 charge.go「下一次扣款 = 新的会员到期日」），所以这里只有两种取值：
+//
+//   - **会员还在有效期内：取那个到期日**，不加任何东西。签约本身不发放权益（这条流水起止
+//     都不改会员，见 repository.CreateSubscription），所以它不产生新的一段——加了就变成
+//     「权益结束之后再过一整期才来扣第一次」。用户那一期持币却没有会员，界面上自动续费还
+//     亮着，而库里没有一行会去纠正它。
+//   - **会员已过期（或没有剩余）：这一刻 + 一个周期**。没有权益可接，这一期从第一次扣款的
+//     那一刻起算。
+//
+// 判据与 renewMembership 里决定叠加基点的那条逐字相同（`expire_at` 在不在这一刻之后），
+// 区别只在 renewMembership 会在那个基点上真加一个周期——那一次确实发了权益。两处共用一条
+// 判据的理由：它们回答的是同一个问题「这一段权益从哪儿接着算」，而两套判据迟早在某次调价或
+// 某次补签上走偏，走偏的表现是「用户签完当月被扣了两次」。
 //
 // 会员行在**同一个事务里锁着读**：它是这条规则唯一的输入，读到别人正在改的中间值会让
 // next_charge_at 差出一整个周期。
@@ -728,11 +738,12 @@ func applySettle(ctx context.Context, tx pgx.Tx, current *SubscriptionRow, p Set
 		if err != nil {
 			return nil, err
 		}
-		base := occurredAt
+		// 先按「没有剩余」算，会员还没过期再改成它的到期日。**顺序不能反**：写成「先取基点、
+		// 再加一个周期」会在签约时多加一整期（见上面那段规则），而那是这一条出过的错。
+		nextChargeAt := model.AddPeriod(occurredAt, current.Period, current.PeriodCount)
 		if membership.ExpireAt.After(occurredAt) {
-			base = membership.ExpireAt
+			nextChargeAt = membership.ExpireAt
 		}
-		nextChargeAt := model.AddPeriod(base, current.Period, current.PeriodCount)
 		updated, err := scanSubscription(tx.QueryRow(ctx, `UPDATE membership_subscriptions
 			SET status = $2, contract_code = $3, next_charge_at = $4, updated_at = NOW()
 			WHERE id = $1
