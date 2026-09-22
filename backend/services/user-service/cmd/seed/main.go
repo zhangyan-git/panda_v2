@@ -8,10 +8,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"log"
 	"os"
+	"strings"
 	"time"
 )
 
 func main() {
+	requireDevEnvironment()
+
 	// 种子数据全部属于身份域，拆库后落在身份库上。USER_DATABASE_URL 是那个库，
 	// 未配置时回落 DATABASE_URL（单库栈）。
 	dbURL := os.Getenv("USER_DATABASE_URL")
@@ -134,4 +137,30 @@ func main() {
 		log.Fatalf("bind role to user: %v", err)
 	}
 	fmt.Println("✓ bound super_admin role to admin user")
+}
+
+// requireDevEnvironment 是这个程序唯一的护栏，而它挡的是一件事：**把生产库的
+// 超级管理员密码重置成 admin123**。
+//
+// 看代码看不出来危险：这里每一句都是 upsert 与 ON CONFLICT DO NOTHING，没有一句
+// DELETE。但第一句就是 `ON CONFLICT (username) DO UPDATE SET password_hash =
+// EXCLUDED.password_hash`，配上 DEV_ADMIN_PASSWORD 缺席时的那个默认值——在一个
+// 生产库上跑一次，等于把超管口令改成一个人人皆知的字符串，还把 status 拉回 active。
+// 而它连的是 USER_DATABASE_URL（或 DATABASE_URL）指向的任何一个库——这个程序自己
+// 区分不出环境。
+//
+// 判据取 PANDA_ENV（不是「库地址里有没有 localhost」那种猜测）：它是**显式**写在
+// 环境里的一句话，这个程序在别处也从不读 .env，所以拿到的一定是操作者当下导出的值。
+// 没设、或者设成别的（production、staging、pre）一律拒绝——默认拒绝，不是默认放行。
+func requireDevEnvironment() {
+	env := strings.TrimSpace(os.Getenv("PANDA_ENV"))
+	if env == "dev" {
+		return
+	}
+	if env == "" {
+		log.Fatal("PANDA_ENV is not set; this program rewrites the admin password and grants super_admin. " +
+			"Set PANDA_ENV=dev explicitly if that is really what you mean")
+	}
+	log.Fatalf("refusing to seed: PANDA_ENV=%q. This program rewrites the admin password and grants super_admin, "+
+		"so it only runs against a dev environment", env)
 }
