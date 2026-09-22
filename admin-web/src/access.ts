@@ -29,13 +29,14 @@ export default function access(initialState: {
     canWritePermissions:  has('admin:permissions:manage'),
     canDeletePermissions: has('admin:permissions:delete'),
 
-    // 绑定管理（角色分配权限 / 用户分配角色）
-    canViewBindings:  has('admin:bindings:view'),
+    // 绑定管理（角色分配权限 / 用户分配角色）。**只有 canWriteBindings 一个键**：
+    // canViewBindings 从建库起就没人用过，页面一律用 access.can('admin:bindings:view') 或直接
+    // 不看这一档。同名的死键留着，下一个人会以为它在某处生效着。
     canWriteBindings: has('admin:bindings:manage'),
 
-    // 管理员用户管理
-    canViewAdminUsers:  has('admin:users:view'),
-    canWriteAdminUsers: has('admin:users:manage'),
+    // 管理员用户管理。key 同上去掉了 canViewAdminUsers：admin-users 页的「新建管理员 / 禁用 /
+    // 启用」三处判的都是 access.can('admin:users:manage')。
+    // `access.can` 与这两组键是两种写法，都留着（页面在用了）；死的是没人引用的**键名**。
 
     // 菜单管理
     canViewMenus:   has('admin:menus:view'),
@@ -64,7 +65,10 @@ export default function access(initialState: {
     canWriteCouponTemplates: has('coupon:template:manage'),
     canAuditCouponTemplates: has('coupon:template:audit'),
     canIssueCoupons: has('coupon:issue'),
-    canOverrideCouponIssue: has('coupon:issue:override'),
+    // 这里原来有一个 canOverrideCouponIssue（coupon:issue:override）。三件事同时成立：
+    // 后端没有任何路由强制这枚码、前端没有任何入口判它、**页面里也没有一个调用点**。
+    // 一个永远勾不出对应行为、也没有读者的键，摆在这里只会让人以为它拦着什么——那枚码本身
+    // 还在库里（identity 侧没动），要真的用起来再连键一起加回来。
     canViewCouponUserCoupons: has('coupon:user-coupon:read'),
     canRedeemCoupon: has('coupon:user-coupon:redeem'),
     canRevokeCoupon: has('coupon:user-coupon:revoke'),

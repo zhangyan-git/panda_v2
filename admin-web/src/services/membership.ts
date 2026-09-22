@@ -53,9 +53,13 @@ export type MembershipStatus = 'active' | 'frozen' | 'expired' | 'revoked';
 /**
  * membership_changes.change_type：会员身上发生过的一件事。
  *
- * 十二个取值里有六个今天写不出来（subscribe / unsubscribe 要签约链路、refund_adjust 要退款单、
+ * 十四个取值里有几个今天写不出来（subscribe / unsubscribe 要签约链路、refund_adjust 要退款单、
  * expire 要到期扫描），照登是因为迁移里的 CHECK 已经把它们写全了——登记一个今天到不了的码，
  * 好过将来那一格原样显示 `unsubscribe`。
+ *
+ * charge_failed 与 suspend 是 008 从**已经落地**的代扣链路补进来的，两个都写得出来：一期扣款
+ * 没扣到写前者（到期日不动），连续失败到上限、停掉自动续费写后者。漏登它们的后果是时间线与
+ * 筛选下拉里直接显示英文码。
  */
 export type ChangeType =
   | 'activate'
@@ -67,6 +71,8 @@ export type ChangeType =
   | 'auto_renew_off'
   | 'subscribe'
   | 'unsubscribe'
+  | 'charge_failed'
+  | 'suspend'
   | 'refund_adjust'
   | 'admin_adjust'
   | 'revoke';

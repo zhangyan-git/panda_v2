@@ -243,9 +243,10 @@ export default function SettlementTaskDetailPage() {
     },
     {
       title: '渠道交易号',
-      dataIndex: 'providerTransactionID',
+      // 列名拼写跟的是后端的 JSON 标签（providerTransactionId），不是 Go 字段名。
+      dataIndex: 'providerTransactionId',
       copyable: true,
-      render: (_, row) => dash(row.providerTransactionID),
+      render: (_, row) => dash(row.providerTransactionId),
     },
     // 向渠道发起过几次。今天这条路是「随支付一次下发」，所以它最多是 1；
     // 将来有查单兜底时会更大。

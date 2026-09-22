@@ -64,9 +64,14 @@ export const MEMBERSHIP_STATUS: Record<string, EnumMeta> = {
 /**
  * membership_changes.change_type：会员身上发生过的一件事。
  *
- * 十二个取值后端都在 CHECK 里写全了，但今天写得出来的只有一半——subscribe / unsubscribe 要
- * 签约链路、refund_adjust 要退款单、expire 要到期扫描，这三条路都还没实现。照登的理由与
- * 抽奖那边逐字相同：登记一个今天到不了的码，好过将来那一格原样显示 `unsubscribe`。
+ * 十四个取值后端都在 CHECK 里写全了（前十二个在 001，charge_failed / suspend 是 008 补的），
+ * 但今天写得出来的只有一半——subscribe / unsubscribe 要签约链路、refund_adjust 要退款单、
+ * expire 要到期扫描，这三条路都还没实现。照登的理由与抽奖那边逐字相同：登记一个今天到不了的
+ * 码，好过将来那一格原样显示 `unsubscribe`。
+ *
+ * charge_failed 与 suspend 不属于「将来」那一半：代扣链路已经落地，这两条今天就在写——
+ * 用户被扣钱失败、以及连续失败到上限被停掉自动续费，都是客服会被问到的事。漏登它们时那一格
+ * 显示的是英文码，而这一页正好是拿来回答「他为什么没续上」的。
  *
  * 「开通」与「续费」的区分是这一列最要紧的地方：一次重投如果没被 `(order_id, change_type)`
  * 那条唯一索引挡住，同一天会出现两条 renew——所以看到续期次数与订单数对不上时，先看这里。
@@ -84,6 +89,10 @@ export const CHANGE_TYPE: Record<string, EnumMeta> = {
   refund_adjust: { text: '退款调整', color: 'volcano' },
   admin_adjust: { text: '后台调整', color: 'purple' },
   revoke: { text: '撤销', color: 'error' },
+  // 一期扣款没扣到。**到期日不动**——这一期还没成，权益不该提前结束（与 renew 相反）。
+  charge_failed: { text: '代扣失败', color: 'warning' },
+  // 连续失败到上限，自动续费被停掉。协议还在，不是解约——所以与 unsubscribe 分开着色。
+  suspend: { text: '停止自动续费', color: 'error' },
 };
 
 /**

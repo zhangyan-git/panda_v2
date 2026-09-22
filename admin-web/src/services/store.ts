@@ -88,18 +88,9 @@ export async function listStores(
   return request<PageResult<Store>>('/api/v1/admin/stores', { params });
 }
 
-/**
- * 单个门店。
- *
- * 出库单详情要用它把 `store_id` 换成一个店名——库存库里只存值引用，没有店名，
- * 与订单域补门店名的做法一致（都是拿 id 回来现查，不做联表也不落冗余）。
- *
- * 刻意不写「查不到就给个占位名」的兜底：门店被删之后这里会 404，而「查不到」
- * 与「名字是空串」必须分得开——前者说明这条引用已经悬空，是要报出来的事实。
- */
-export async function getStore(id: string) {
-  return request<Store>(`/api/v1/admin/stores/${id}`);
-}
+// 这里原来有一个 getStore(id)：它是**出库单详情**用来把 store_id 换店名的。订货/库存域
+// 2026-09-22 整体删除（见 migrations/identity/036）之后，全仓再没有调用点——门店详情页本来
+// 就在列表行上直接跳 `/stores/:id`，不需要再查一次。留着它是等着下一个人以为有页面在用。
 
 export async function createStore(data: StoreInput) {
   return request<Store>('/api/v1/admin/stores', { method: 'POST', data });

@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@umijs/max', () => ({
   request: vi.fn(),
+  // 重放那条路要它：刷新成功之后拿同一个实例把原请求再发一次。
+  getRequestInstance: vi.fn(() => Object.assign(vi.fn(), { defaults: {} }) as any),
   history: { location: { pathname: '/dashboard' }, push: vi.fn() },
   useModel: vi.fn(),
 }));
@@ -12,13 +14,21 @@ vi.mock('@ant-design/pro-components', () => ({
   LoginForm: 'LoginForm', ProFormText: Object.assign(() => null, { Password: () => null }),
 }));
 vi.mock('./menuIcons', () => ({ renderMenuIcon: (name: string) => name }));
-vi.mock('./services/user', () => ({ fetchCurrentUser: vi.fn(), login: vi.fn(), logout: vi.fn() }));
+vi.mock('./services/user', () => ({
+  fetchCurrentUser: vi.fn(),
+  login: vi.fn(),
+  logout: vi.fn(),
+  // 刷新走的是它。漏了这个 key 时 refreshTokens 调的是 undefined，抛出来的是 TypeError——
+  // 那种「失败」与本用例要区分的几种失败长得一样，会把断言测成假绿。
+  refreshToken: vi.fn(),
+}));
 
 import { history, request, useModel } from '@umijs/max';
 import { message } from 'antd';
 import { getInitialState, layout, request as requestConfig } from './app';
 import LoginPage from './pages/login';
-import { fetchCurrentUser, login } from './services/user';
+import { requestErrorCode, requestErrorMessage } from './services/requestError';
+import { fetchCurrentUser, login, refreshToken } from './services/user';
 
 const user = { id: 'new-user', username: 'operator', name: '新用户', roles: [], permissions: ['roles:read'] };
 const tokens = { accessToken: 'test-access', refreshToken: 'test-refresh' };
@@ -174,6 +184,82 @@ describe('envelope unwrapping', () => {
     await expect(
       unwrap({ data: { success: false, message: '不是信封里的字段名' } }),
     ).rejects.toThrow('请求失败');
+  });
+
+  // 抛出去的那个错误必须让 requestError.ts 读得到信封：两个辅助函数都是从
+  // `error.response.data` 里取 errorMessage / errorCode 的（真实的 axios 错误本来就有这一层）。
+  // 只抛一个裸 Error 时，上面那两条 toThrow 照样过——文案在 message 里——但所有按码分支的
+  // 地方会静默走兜底那一支，而那是这两种写法唯一的区别。
+  it('hands the envelope to the error helpers through error.response.data', async () => {
+    const response = {
+      status: 400,
+      data: { success: false, errorMessage: '图片不能超过 10MB', errorCode: 'INVALID_REQUEST' },
+    };
+    const rejected = await unwrap(response).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(requestErrorMessage(rejected, '兜底')).toBe('图片不能超过 10MB');
+    expect(requestErrorCode(rejected)).toBe('INVALID_REQUEST');
+    expect((rejected as { response?: { status?: number } }).response?.status).toBe(400);
+  });
+});
+
+// 「刷新失败」有三种，处置只有一种是对的：
+//
+//   401（refresh token 过期/吊销）  这枚凭据再也换不回 token 了 → 清凭据、回登录页
+//   本机压根没有 refresh token      同上，留着也换不回来          → 清凭据、回登录页
+//   网络错 / 网关 502 / 后端重启    凭据还好好的                  → **什么都不动**
+//
+// 最后一格是这组用例存在的理由：这里原来是个裸 `catch {}`，对任何失败都清凭据跳登录——后端
+// 重启期间刷新页面，access token 其实还没过期，用户却已经被踢出去了。而判据放宽（只认 401）
+// 不能推到头：真过期时不送回登录页，用户会卡在一个永远 401 的页面上。
+describe('refresh failure', () => {
+  const retry = (requestConfig.responseInterceptors as any[])[1][1] as (e: any) => Promise<any>;
+  const request401 = () => ({ response: { status: 401 }, config: { url: '/api/v1/admin/users', headers: {} } });
+
+  it('keeps credentials when the refresh call fails without a 401', async () => {
+    localStorage.setItem('panda.auth.tokens', JSON.stringify(tokens));
+    vi.mocked(refreshToken).mockRejectedValue(new Error('Network Error'));
+    const error = request401();
+    await expect(retry(error)).rejects.toBe(error);
+    expect(localStorage.getItem('panda.auth.tokens')).toBe(JSON.stringify(tokens));
+    expect(history.push).not.toHaveBeenCalled();
+  });
+
+  it('clears credentials when the refresh token itself is rejected', async () => {
+    localStorage.setItem('panda.auth.tokens', JSON.stringify(tokens));
+    vi.mocked(refreshToken).mockRejectedValue({ response: { status: 401 } });
+    await expect(retry(request401())).rejects.toMatchObject({ response: { status: 401 } });
+    expect(localStorage.getItem('panda.auth.tokens')).toBeNull();
+    expect(history.push).toHaveBeenCalledWith('/login');
+  });
+
+  it('clears credentials when there is no refresh token to send at all', async () => {
+    // 更早版本写进去的凭据只有 accessToken：换不回来，也就没必要赖在这一页上。
+    localStorage.setItem('panda.auth.tokens', JSON.stringify({ accessToken: 'test-access' }));
+    await expect(retry(request401())).rejects.toBeTruthy();
+    expect(localStorage.getItem('panda.auth.tokens')).toBeNull();
+    expect(history.push).toHaveBeenCalledWith('/login');
+    expect(refreshToken).not.toHaveBeenCalled();
+  });
+});
+
+// 全仓原来没有任何客户端超时（axios 的默认值是 0）。网关自己卡住时请求既没有响应也不会断连，
+// 页面就一直转圈。这一条钉住「每个请求都被安上超时」以及「调用方自己设的不会被覆盖」。
+//
+// 它必须在**拦截器**里生效，不能在模块顶层写 `getRequestInstance().defaults.timeout = …`：
+// 那行会在 app.ts 求值时跑，那时 umi 的 pluginManager 还没装上，整站白屏——而 tsc 与这一份
+// 单测都看不出来（这里 getRequestInstance 是 mock 的）。浏览器里才会现形。
+describe('request timeout', () => {
+  const intercept = (requestConfig.requestInterceptors as any[])[0];
+
+  it('gives every request a timeout so a hung gateway cannot spin forever', () => {
+    expect(intercept({ url: '/api/v1/admin/users', headers: {} }).timeout).toBe(180_000);
+  });
+
+  it('keeps a timeout the caller set explicitly', () => {
+    expect(intercept({ url: '/api/v1/admin/users', headers: {}, timeout: 5_000 }).timeout).toBe(5_000);
   });
 });
 

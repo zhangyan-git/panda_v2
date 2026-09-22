@@ -22,9 +22,14 @@ import type { OperationLog } from '../../services/operationLog';
  *
  * 加完一个域之后用这三条重新对一遍（在仓库根目录跑），它们就是下面三张表的取值来源：
  *
- *   grep -rhoE 'Module: +"[a-z_]+"'     backend/services/ | sort -u
- *   grep -rhoE 'Action: +"[a-z_]+"'     backend/services/ | sort -u
- *   grep -rhoE 'TargetType: +"[a-z_]+"' backend/services/ | sort -u
+ *   grep -rhoE 'Module: +"[a-z_]+"'     $(find backend/services -name '*.go' ! -name '*_test.go') | sort -u
+ *   grep -rhoE 'Action: +"[a-z_]+"'     $(find backend/services -name '*.go' ! -name '*_test.go') | sort -u
+ *   grep -rhoE 'TargetType: +"[a-z_]+"' $(find backend/services -name '*.go' ! -name '*_test.go') | sort -u
+ *
+ * **必须把 `_test.go` 排除在外**：测试文件里也有 `Action:` 这个字段名，但那些串不是审计码。
+ * 现成的两个反例——order-service 的 after_sale_test.go 用 `Action: "maybe"` 喂一个「动作不
+ * 认识」的用例，payment 的几个测试用 `Action: "jump_miniapp"` 指渠道下发的动作。不排除的话
+ * 每次都会捞到这两个，然后被当成漏登记的码补进表里。
  *
  * **这三条捞不到动态取值的那两处**，得人工看（都写在各自表的注释里）：
  * membership.go 的 `Action: p.changeType` 与 after_sale.go 的 `Action: p.Action`。
@@ -74,10 +79,18 @@ export const moduleText: Record<string, string> = {
   // 会员（membership-service）
   membership: '会员',
   membership_plans: '会员套餐',
+  membership_campaigns: '店铺码会员活动',
   // 抽奖（lottery-service）
   lottery_activations: '门店抽奖',
   lottery_campaigns: '抽奖活动',
   lottery_rounds: '抽奖期次',
+  // 支付（payment-service）。这一条下的动作今天全是**分账**的（账户与规则的增删改，见
+  // settlement_admin.go），模块名仍是服务自己的名字 `payment`——与 `membership` 一个写法，
+  // 跟着服务的边界走。等支付域有了别的写入口，它们也归这一条。
+  payment: '支付',
+  // 开放平台（partner-service）
+  partners: '合作方',
+  partner_api_keys: '合作方密钥',
   // 订货 / 库存（inventory-service）。**服务已删，这条映射留着**：库里还有它写下的历史
   // 审计行（见文件头那条规矩）。
   inventory: '库存',
@@ -182,12 +195,21 @@ export const targetText: Record<string, string> = {
   // 会员
   membership: '会员',
   membership_plan: '会员套餐',
+  membership_campaign: '店铺码会员活动',
+  // 包月订阅（签约协议那一行，不是会员本身）。写它的是签约、取消、同步那几条路。
+  membership_subscription: '包月订阅',
   // 抽奖
   lottery_activation: '门店抽奖',
   lottery_campaign: '抽奖活动',
   lottery_round: '抽奖期次',
   // lottery_draw 是「人工开奖」这一次动作留下的那条开奖记录，不是期次本身
   lottery_draw: '开奖记录',
+  // 支付：分账账户与分账规则（payment-service 的 settlement_admin.go）
+  settlement_account: '分账账户',
+  settlement_rule: '分账规则',
+  // 开放平台（partner-service）
+  partner_account: '合作方',
+  partner_api_key: '合作方密钥',
   // 订货 / 库存
   material: '物料',
   warehouse: '仓库',

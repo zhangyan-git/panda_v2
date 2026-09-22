@@ -5,6 +5,8 @@ export default defineConfig({
   access: {},
   model: {},
   initialState: {},
+  // 这个空对象的作用是**开启 request 插件**，不是配置它。客户端超时写在 app.ts 里，原因见
+  // 那一段注释：这个配置对象在 umi 的类型里只声明了 dataField 一项。
   request: {},
   layout: {
     title: 'Panda 后台',

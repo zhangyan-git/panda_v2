@@ -386,7 +386,14 @@ export type SettlementTask = {
   /** 支付方式的 code（catalog 里的那个值）。 */
   method: string;
   providerTaskNo: string;
-  providerTransactionID: string;
+  /**
+   * 渠道那一笔交易的流水号。
+   *
+   * 拼写跟的是**后端 JSON 标签**（`dto/settlement.go`：Go 字段叫 ProviderTransactionID，
+   * 标签是 `json:"providerTransactionId"`），不是 Go 那边的字段名。这里写成
+   * `providerTransactionID` 的话详情页那一列恒显示「—」——与「这笔真没有流水号」长得一模一样。
+   */
+  providerTransactionId: string;
   attempts: number;
   lastError: string;
   createdAt: string;

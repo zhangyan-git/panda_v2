@@ -3,7 +3,7 @@ import { renderMenuIcon } from './menuIcons';
 import { loadMyMenus, type MenuNode } from './services/menu';
 import { fetchCurrentUser, logout as logoutRequest } from './services/user';
 import type { CurrentUser } from './services/user';
-import { clearTokens, isAuthEndpoint, readTokens, refreshTokens } from './services/token';
+import { clearTokens, isAuthEndpoint, isRefreshRejected, readTokens, refreshTokens } from './services/token';
 
 const LOGIN_PATH = '/login';
 
@@ -32,16 +32,38 @@ async function retryAfterRefresh(error: any): Promise<any> {
 
   try {
     await refreshTokens();
-  } catch {
-    // refresh token 也过期了：清干净回登录页，与 getInitialState 失败时的处理一致。
-    clearTokens();
-    if (history.location.pathname !== LOGIN_PATH) history.push(LOGIN_PATH);
+  } catch (refreshError) {
+    // 只有「这枚 refresh token 本身不认了」才清凭据跳登录，判据与 getInitialState 那条 catch
+    // 一致（都是 401）。这里原来对**任何**失败都清：后端重启、网关 502、网络抖动——那几种
+    // 情况下 refresh token 还好好的，用户却已经被踢回登录页，手里那次会话凭空没了。
+    //
+    // 判为非 401 时把凭据留在原地，原请求照旧 reject：页面显示一次失败，下一个请求再收到 401
+    // 时会重新走一遍这条路，那时后端已经回来了。反过来把该清的留下不做也不行——refresh token
+    // 真过期时用户会卡在一个永远 401 的页面上，而不是被送回登录页。
+    if (isRefreshRejected(refreshError)) {
+      clearTokens();
+      if (history.location.pathname !== LOGIN_PATH) history.push(LOGIN_PATH);
+    }
     return Promise.reject(error);
   }
   // 重放走同一个 axios 实例。不用手动改 Authorization：请求拦截器每次派发都会
   // 从 localStorage 重新读一次，这时它已经是刷新后的那枚。
   return getRequestInstance()(config);
 }
+
+/**
+ * 客户端的全局超时，见 requestInterceptors 里的用法。
+ *
+ * 为什么不写在 .umirc.ts 的 request 配置里：那个对象在 umi 自己的类型里只声明了 dataField
+ * 一项（`request: {}` 的用处是开启插件），写了 timeout 连 tsc 都过不去；而运行时那份配置本来
+ * 就是整份交给 axios.create 的，所以真正的落点一直是实例的 defaults。
+ *
+ * **也不能在模块顶层写 `getRequestInstance().defaults.timeout = …`**：那行会在 app.ts 被求值时
+ * 就跑，而那时 umi 的 pluginManager 还没装上，`applyPlugins` 读的是 undefined——整站白屏
+ * （浏览器里报 `Cannot read properties of undefined (reading 'applyPlugins')`，tsc 与单测都
+ * 看不出来）。所以它落在拦截器里，跟着第一个请求走。
+ */
+const REQUEST_TIMEOUT_MS = 180_000;
 
 /** 用姓名首字生成内联 SVG 头像，避免依赖外部 CDN */
 function initialsAvatar(name: string): string {
@@ -64,6 +86,12 @@ export const request: RequestConfig = {
           Authorization: `Bearer ${tokens.accessToken}`,
         };
       }
+      // 客户端超时。取 180s，与 nginx 的两个 proxy_read/send_timeout 同值
+      // （deploy/docker/nginx.conf:61-62）：客户端**不会比代理先放弃**，所以它只兜住代理也兜不住
+      // 的那一种——请求发出去之后既没有响应也没有断连（网关自己卡住、本机 dev 更是连代理都没有），
+      // 页面就永远转圈。axios 的默认值是 0，意思是「等到天荒地老」，而 falsy 判断正好把 0 一并
+      // 收进来（没人会主动要一个「永不超时」的请求）。
+      if (!config.timeout) config.timeout = REQUEST_TIMEOUT_MS;
       return config;
     },
   ],
@@ -76,7 +104,17 @@ export const request: RequestConfig = {
           // 字段名是 errorMessage：读 body.message 的话这里永远是 undefined，
           // 后端所有措辞过的中文提示（「文件超过 10MB」「非图片格式」）都会被吞成
           // 「请求失败」。requestError.ts 里那几个辅助函数读的也是这个字段名。
-          return Promise.reject(new Error(body.errorMessage || '请求失败'));
+          //
+          // **信封要挂回 error.response.data 上**：那几个辅助函数是从
+          // `error.response.data.errorMessage / .errorCode` 取值的（真实的 axios 错误本来
+          // 就有这一层，平台的信封也只在 4xx/5xx 写 success:false）。只抛一个裸 Error 的话，
+          // 这段文案虽然进了 message，requestErrorCode 却永远取不到码——所有按码分支的地方
+          // （比如售后审核的 FORTUNE_CARD_CONFIRMATION_REQUIRED）会静默走兜底那一支。
+          const rejected = new Error(body.errorMessage || '请求失败') as Error & {
+            response?: { data?: unknown; status?: number };
+          };
+          rejected.response = { data: body, status: response.status };
+          return Promise.reject(rejected);
         }
         response.data = body.data;
       }

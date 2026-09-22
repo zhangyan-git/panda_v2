@@ -40,20 +40,26 @@ describe('会员枚举文案表', () => {
     ]);
   });
 
-  it('覆盖 change_type 的十二个取值', () => {
-    // 其中六个今天写不出来（签约、代扣、退款、到期扫描那几条路都还没实现），照登是因为
-    // 迁移里的 CHECK 已经把它们写全了——见 membershipLabels 里的说明。
+  it('覆盖 change_type 的十四个取值', () => {
+    // 其中几个今天写不出来（签约、退款、到期扫描那几条路都还没实现），照登是因为迁移里的
+    // CHECK 已经把它们写全了——见 membershipLabels 里的说明。
+    //
+    // charge_failed / suspend 是 008 从代扣链路补进来的：它们在**已经落地**的那条路上，
+    // 后端集成用例（charge_integration_test.go）直接断言这两个码会被写出来。这一份漏登过
+    // 一次，症状是时间线与筛选下拉里原样显示英文码。
     expect(Object.keys(CHANGE_TYPE).sort()).toEqual([
       'activate',
       'admin_adjust',
       'auto_renew_off',
       'auto_renew_on',
+      'charge_failed',
       'expire',
       'freeze',
       'refund_adjust',
       'renew',
       'revoke',
       'subscribe',
+      'suspend',
       'unfreeze',
       'unsubscribe',
     ]);
