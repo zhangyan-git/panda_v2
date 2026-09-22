@@ -13,6 +13,7 @@ import (
 	"github.com/go-kratos/kratos/v2"
 	"github.com/go-kratos/kratos/v2/middleware"
 	"github.com/go-kratos/kratos/v2/middleware/metrics"
+	"github.com/go-kratos/kratos/v2/middleware/recovery"
 	"github.com/go-kratos/kratos/v2/middleware/tracing"
 	kgrpc "github.com/go-kratos/kratos/v2/transport/grpc"
 	khttp "github.com/go-kratos/kratos/v2/transport/http"
@@ -25,6 +26,25 @@ import (
 	runtime "github.com/panda-dev/panda-v2/backend/platform/server/runtime"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+)
+
+const (
+	// readHeaderTimeout 防慢速请求头：一个连上就不把请求头发完的客户端本来能一直占着
+	// 连接，而**在途连接会让 Shutdown 一直等**（它等的是连接变空闲，不是等 ctx 到期）。
+	// khttp 建出来的 http.Server 只设了 Handler 与 TLSConfig，这个字段默认是 0，也就是
+	// 「永远等」。只限头不限体：上传接口的正文本来就慢，掐它的是请求自己的超时。
+	readHeaderTimeout = 10 * time.Second
+
+	// drainDelay 是「已经把自己摘掉」到「停止接受连接」之间的等待。
+	//
+	// 摘注册中心是立刻生效的（服务之间的 gRPC 按 etcd 找实例，watch 是推送），但平台
+	// 外侧的 LB 按 /readyz 探，而探测有间隔。立刻停服务器的话，从摘掉到 LB 发现之间那几秒
+	// 里 LB 仍把请求发过来，全部变成 502。等一个探测周期，让它先自己把这一台摘掉。
+	// 取值要大于健康检查间隔（常见 2–5s），与网关的 drainDelay 同一个口径。
+	drainDelay = 5 * time.Second
+
+	// shutdownGrace 是停止预算里留给收尾的余量（写响应、记日志、提交那一次事务）。
+	shutdownGrace = 5 * time.Second
 )
 
 // Run starts a service's Kratos HTTP and gRPC servers and blocks until shutdown.
@@ -163,6 +183,19 @@ func RunWithOptions(cfg config.Config, options runtime.Options) error {
 	// suits every other route. See HTTPTimeoutMS in platform/config for the
 	// per-service default and how it layers under the gateway.
 	httpServer := khttp.NewServer(khttp.Address(cfg.HTTPAddress), khttp.Timeout(time.Duration(cfg.HTTPTimeoutMS)*time.Millisecond))
+	// 见 readHeaderTimeout：这个字段不设就是「不收完头也一直算在途」。
+	httpServer.ReadHeaderTimeout = readHeaderTimeout
+	// stopTimeout 是「停止」这件事的预算：一个请求的预算 + 一点收尾余量。
+	//
+	// **不设它不是「等一会儿」，是「永远等」**：kratos 只在 stopTimeout > 0 时才给停止
+	// 上下文加 deadline（app.go:106-108）。没有 deadline 时两边的 force-close 分支都不
+	// 会触发——khttp 的 Shutdown 一直等在途连接（哪怕只剩一个不发请求头的 socket），
+	// gRPC 的 GracefulStop 一直等最后一条流——于是 application.Run() 不返回，AfterStop
+	// 里那一串（停 worker、停消费者、注销、停 outbox relay、关连接池）一次都不跑，
+	// 最后由编排器 SIGKILL 收场：注册中心里留下一个死实例，消费者被硬杀在半个消息上。
+	//
+	// 编排器的 terminationGracePeriod 要设得比它长，否则掐断的还是编排器自己。
+	stopTimeout := time.Duration(cfg.HTTPTimeoutMS)*time.Millisecond + shutdownGrace
 	// Routes go through the router, not the server: this repository registers
 	// plain HandleFunc routes, which khttp.Middleware never reaches. See HTTPRouter.
 	httpRouter := runtime.NewHTTPRouter(httpServer, instrumentation...)
@@ -233,10 +266,25 @@ func RunWithOptions(cfg config.Config, options runtime.Options) error {
 			h.SetReady(true)
 			return nil
 		}),
-		kratos.AfterStop(func(ctx context.Context) error {
-			h.Stop()
-			return lifecycle.AfterStop(ctx)
+		// 排空：先把不接收新流量的意思表达出去——本进程的 /readyz 立刻转 503，注册中心
+		// 里那一条也删掉——然后等一个探测周期，最后才让 kratos 停服务器。
+		//
+		// 顺序是全部意义所在。kratos 只是在 beforeStop 之后 cancel 掉那个 ctx，服务器
+		// 这才开始停；而**注销注册中心原本要等到 AfterStop**，也就是服务器停完之后。
+		// 只把等待留在这里、不提前注销的话，那个周期里调用方仍在往一台已经不听端口的
+		// 实例上发请求，正好是要避开的那段 502。
+		kratos.BeforeStop(func(ctx context.Context) error {
+			h.SetReady(false)
+			if err := lifecycle.Drain(ctx); err != nil {
+				// 摘不掉不是致命的：AfterStop 里还会再试一次；但这一轮排空就不成立了，
+				// 得让人看见。
+				slog.Error("drain: deregister failed; instance stays discoverable until shutdown", "error", err)
+			}
+			time.Sleep(drainDelay)
+			return nil
 		}),
+		// 见 stopTimeout：这一行就是那个「有截止时间的停止」。
+		kratos.StopTimeout(stopTimeout),
 	)
 	err = application.Run()
 	if err != nil {
@@ -264,9 +312,23 @@ func serverMiddleware(cfg config.Config, providers observability.Providers) ([]m
 	if err != nil {
 		return nil, fmt.Errorf("create server request histogram: %w", err)
 	}
+	// recovery 放在最后 = 最靠近处理器，这是有意的：panic 在这一层就被翻成一个错误，
+	// 外面的 tracing 与 metrics 看到的是「一次 500」，而不是「一次什么都没记录的崩溃」。
+	// 反过来的话（它挂在最外层）这两个中间件根本不会被执行到——它们是按处理器正常返回
+	// 写的，不是按 defer 写的。
+	//
+	// 处理器 panic 在 gRPC 那条路是**直接把进程带走**（grpc-go 不 recover），在 HTTP
+	// 那条路是断连；两边都收不到一个能看的错误。
 	return []middleware.Middleware{
 		tracing.Server(tracing.WithTracerProvider(providers.Tracer)),
 		metrics.Server(metrics.WithRequests(requests), metrics.WithSeconds(seconds)),
+		// 不给 handler：kratos 自己会把 panic 的值、请求和调用栈写进日志（它用的是
+		// kratos 的 logger，落 stderr），这里只负责把错误值换成我们自己那一个——
+		// 默认那个叫 UNKNOWN，HTTP 这层认不出它，而认不出就等于**空 200**（见
+		// runtime.HTTPRouter.HandleFunc 的收尾）。
+		recovery.Recovery(recovery.WithHandler(func(context.Context, any, any) error {
+			return runtime.ErrHandlerPanic
+		})),
 	}, nil
 }
 

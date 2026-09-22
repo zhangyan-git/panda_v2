@@ -8,7 +8,19 @@ import (
 	"github.com/go-kratos/kratos/v2/middleware"
 	khttp "github.com/go-kratos/kratos/v2/transport/http"
 	khttpstatus "github.com/go-kratos/kratos/v2/transport/http/status"
+	"github.com/panda-dev/panda-v2/backend/platform/api"
 )
+
+// ErrHandlerPanic 是 recovery 中间件把 panic 翻成的错误值。它的用处只有一个：
+// 让下面这层包装认得出「刚才那次是 panic」，见 HandleFunc 里的收尾。
+//
+// 用 kratos 的错误值而不是一个普通 error：同一个中间件也挂在 gRPC server 上（见
+// platform/server 的 serverMiddleware），那边拿到的就是它。非 kratos 错误在那条路上
+// 一律变成 Unknown(2)，而这是一次服务端崩溃，该报 Internal(13)。
+//
+// 消息里不带 panic 的值：它会原样成为回给调用方的状态消息，而 panic 的值常常是
+// 被处理的数据本身（比如一句 SQL 错误）。现场在日志里，不在响应里。
+var ErrHandlerPanic = errors.InternalServer(api.CodeInternal, "handler panicked")
 
 // HTTPRouter is the registrar the HTTPRoutes hook receives. It registers routes
 // on the underlying kratos server with the runtime's instrumentation wrapped
@@ -52,7 +64,16 @@ func (r *HTTPRouter) HandleFunc(path string, h http.HandlerFunc) {
 			}
 			return nil, nil
 		}
-		_, _ = chain(handler)(req.Context(), req)
+		_, err := chain(handler)(req.Context(), req)
+		// panic 只能在这里收尾。中间件把 panic 吃掉、把错误交回来，而这层包装是唯一
+		// 还握着响应写入器的地方：不管它，net/http 会按「处理器正常返回」发一个**空
+		// 200**——调用方看到的是成功。那比崩溃难查得多。
+		//
+		// 上面那条重建出来的错误不会误伤：状态码小于 400 时它是 nil；大于等于 400 时
+		// 处理器一定已经写过响应头，下面的 wrote 判据把它挡在外面。
+		if errors.Is(err, ErrHandlerPanic) && !recorder.wrote {
+			api.Error(recorder, http.StatusInternalServerError, api.CodeInternal, "internal server error")
+		}
 	})
 }
 

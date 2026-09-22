@@ -341,3 +341,51 @@ func TestLifecycleErrorAggregationAndConcurrentAfterStop(t *testing.T) {
 		t.Fatalf("events = %v", got)
 	}
 }
+
+// Drain 是排空的第一步：它必须在服务器还活着的时候就把注册信息摘掉，否则那段窗口里
+// 调用方会继续往一台要停的实例上发请求（平台外侧那个 LB 按 /readyz 摘，服务之间按
+// etcd 摘，两边都等不到「服务器已经停了」这个信号）。
+func TestLifecycleDrainUnregistersWhileStillServing(t *testing.T) {
+	r := &lifecycleRecorder{}
+	l := New(Options{Registry: &fakeRegistry{recorder: r}, Instance: testInstance()})
+	if err := l.BeforeStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// 先看 Drain 自己：摘必须发生在**服务器还活着的时候**，那是它的全部意义。
+	if got := r.get(); !reflect.DeepEqual(got, []string{"registry-register", "registry-unregister"}) {
+		t.Fatalf("Drain 之后的事件 = %v，want 已经摘过一次", got)
+	}
+	// 再看摘过之后 AfterStop 不再摘第二次：同一个实例注销两回，第二回在 etcd 上是一次
+	// 无效删除，在日志里却是一条看得见的错误。
+	if err := l.AfterStop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.get(); !reflect.DeepEqual(got, []string{"registry-register", "registry-unregister"}) {
+		t.Fatalf("events = %v, want 只摘一次", got)
+	}
+}
+
+// 摘失败不能把排空变成一次静默的成功：这个方法把错误交回去（调用方会记日志），
+// 而且不改 registered —— AfterStop 还会再试一次。
+func TestLifecycleDrainKeepsTheInstanceWhenUnregisterFails(t *testing.T) {
+	r := &lifecycleRecorder{}
+	failure := errors.New("etcd down")
+	l := New(Options{Registry: &fakeRegistry{recorder: r, unregisterErr: failure}, Instance: testInstance()})
+	if err := l.BeforeStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Drain(context.Background()); !errors.Is(err, failure) {
+		t.Fatalf("Drain err = %v, want %v", err, failure)
+	}
+}
+
+// 没注册过（比如注册中心没配）时 Drain 是个空操作，不 panic、不报错。
+func TestLifecycleDrainWithoutRegistrationIsANoop(t *testing.T) {
+	l := New(Options{})
+	if err := l.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain err = %v, want nil", err)
+	}
+}

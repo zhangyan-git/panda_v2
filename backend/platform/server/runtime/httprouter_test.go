@@ -2,14 +2,17 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/go-kratos/kratos/v2/errors"
 	"github.com/go-kratos/kratos/v2/middleware"
+	"github.com/go-kratos/kratos/v2/middleware/recovery"
 	"github.com/go-kratos/kratos/v2/transport"
 	khttp "github.com/go-kratos/kratos/v2/transport/http"
+	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"google.golang.org/grpc/codes"
 )
 
@@ -119,5 +122,80 @@ func TestHTTPRouterDoesNotLeakTheReconstructedError(t *testing.T) {
 	}
 	if body := rec.Body.String(); body != "denied\n" {
 		t.Fatalf("body=%q want %q", body, "denied\n")
+	}
+}
+
+// panic 必须落成一个 500，这是 ErrHandlerPanic 存在的全部理由。
+//
+// recovery 中间件把 panic 收下、把错误交回来之后，**没有人会再写响应**——net/http 见到
+// 「处理器正常返回」就发一个空 200。调用方（后台页面、网关、另一个服务）看到的是成功，
+// 而实际上什么都没做：这是这个仓库里最不能接受的一种错。
+func TestHTTPRouterTurnsAPanicIntoAServerError(t *testing.T) {
+	srv := khttp.NewServer()
+	routes := NewHTTPRouter(srv, recovery.Recovery(recovery.WithHandler(func(context.Context, any, any) error {
+		return ErrHandlerPanic
+	})))
+	routes.HandleFunc("/v1/boom", func(http.ResponseWriter, *http.Request) { panic("boom") })
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/boom", nil))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want %d（panic 不能变成空 200）", rec.Code, http.StatusInternalServerError)
+	}
+	var body api.Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body.String(), err)
+	}
+	if body.Success || body.ErrorCode != api.CodeInternal {
+		t.Fatalf("body=%+v want success=false errorCode=%s", body, api.CodeInternal)
+	}
+}
+
+// 已经写过响应头的处理器中途 panic：这时候再补一个 500 只会把响应写坏（状态码已经发出去了，
+// 多出来的一段 JSON 会跟在半截正文后面）。这条守的是那个「不二次写」的条件。
+func TestHTTPRouterDoesNotRewriteAResponseThatAlreadyStarted(t *testing.T) {
+	srv := khttp.NewServer()
+	routes := NewHTTPRouter(srv, recovery.Recovery(recovery.WithHandler(func(context.Context, any, any) error {
+		return ErrHandlerPanic
+	})))
+	routes.HandleFunc("/v1/partial", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("half"))
+		panic("boom")
+	})
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/partial", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want %d（已经发出去的状态码改不掉）", rec.Code, http.StatusOK)
+	}
+	if body := rec.Body.String(); body != "half" {
+		t.Fatalf("body=%q want %q（不能往半截响应后面再补一段）", body, "half")
+	}
+}
+
+// 其它错误值不该被当成 panic：这条链上除了 recovery 还有别的中间件，而状态重建那条路
+// 也会交回一个错误（400 以上）。认错了就会把一次正常的 404 变成 500。
+func TestHTTPRouterDoesNotMistakeOtherErrorsForAPanic(t *testing.T) {
+	srv := khttp.NewServer()
+	routes := NewHTTPRouter(srv, recovery.Recovery())
+	routes.HandleFunc("/v1/missing", func(w http.ResponseWriter, _ *http.Request) {
+		api.Error(w, http.StatusNotFound, api.CodeNotFound, "nope")
+	})
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/missing", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want %d", rec.Code, http.StatusNotFound)
+	}
+	var body api.Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.ErrorCode != api.CodeNotFound {
+		t.Fatalf("errorCode=%q want %q", body.ErrorCode, api.CodeNotFound)
 	}
 }

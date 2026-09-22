@@ -310,6 +310,34 @@ func (l *Lifecycle) BeforeStart(ctx context.Context) error {
 	return finish(nil)
 }
 
+// Drain 提前把自己从注册中心摘掉，但**仍然继续服务**。
+//
+// 这是排空的第一步：收到停止信号之后、停服务器之前调用，让以为这个实例还活着的调用方
+// 先停止把请求发过来（服务之间走 gRPC，按 etcd 找实例；平台外侧还有 LB 按 /readyz 探）。
+// 顺序反过来就是一段 502 窗口——服务器先停、注册信息还在，请求全打在一条已经关掉的连线上。
+//
+// 与 AfterStop 里那次注销共用 registered 这一个标志：已经摘过就不再摘第二次，摘失败则
+// 留着让 AfterStop 重试。
+func (l *Lifecycle) Drain(ctx context.Context) error {
+	ctx = normalizeContext(ctx)
+	if l.registry == nil || l.instance.Service == "" {
+		return nil
+	}
+	l.mu.Lock()
+	registered := l.registered
+	l.mu.Unlock()
+	if !registered {
+		return nil
+	}
+	if err := l.registry.Unregister(ctx, l.instance); err != nil {
+		return err
+	}
+	l.mu.Lock()
+	l.registered = false
+	l.mu.Unlock()
+	return nil
+}
+
 // AfterStop closes resources in reverse dependency order. Shutdown gets its own
 // timeout so a stuck dependency cannot block graceful termination indefinitely.
 func (l *Lifecycle) AfterStop(ctx context.Context) error {
