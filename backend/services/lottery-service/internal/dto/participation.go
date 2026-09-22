@@ -56,7 +56,9 @@ type ParticipationResponse struct {
 // 「参与处理中」那条路（扣卡结果未知）不会走到这里，它是 202。
 type ParticipateResponse struct {
 	Participation ParticipationResponse `json:"participation"`
-	// 这一期还差几个人到门槛；已达标或已到点时是 0。抽奖中心的进度条用它。
+	// 这一期还差几次参与到门槛；已达标时是 0。抽奖中心的进度条用它。
+	//
+	// **数的是次数**：同一个人可以在同一期参与多次，每次各记一笔。
 	Remaining int32 `json:"remaining"`
 	Replayed  bool  `json:"replayed"`
 }
@@ -67,10 +69,12 @@ type RoundProgress struct {
 	RoundNo string `json:"roundNo"`
 	// open / closed / drawn / cancelled。
 	Status string `json:"status"`
-	// 参与人数与门槛。到点未达标时 Status 仍是 open，前端按时间自己解释。
-	ParticipantCount  int32     `json:"participantCount"`
-	ParticipantTarget int32     `json:"participantTarget"`
-	EndsAt            time.Time `json:"endsAt"`
+	// 已达标的参与次数与门槛。没满时 Status 仍是 open——**它会一直开着**，没有截止时间，
+	// 前端不要拿时间自己解释（期次只有收满、人工开奖、作废三条出路）。
+	//
+	// 这里原先还有一个 endsAt，2026-09-15 随活动窗口一起删了。
+	ParticipantCount  int32 `json:"participantCount"`
+	ParticipantTarget int32 `json:"participantTarget"`
 	// 我正在参与的期次里已经记了几笔（同一期可以参与多次）。
 	MyParticipationCount int32 `json:"myParticipationCount"`
 	// 我剩下的福卡张数，从 account-service 实时读。**不是本库的数**：本库根本没有余额列。

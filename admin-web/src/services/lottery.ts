@@ -43,9 +43,6 @@ export type ParticipationFailureCode =
   | 'invalid_request'
   | 'round_not_open';
 
-/** lottery_campaign_prizes.prize_kind：这个奖是什么东西 */
-export type PrizeKind = 'coupon' | 'coffee' | 'physical' | 'custom';
-
 /**
  * lottery_wins.status：中奖记录的状态机。
  *
@@ -77,7 +74,7 @@ export type ActorType = 'user' | 'merchant' | 'admin' | 'system';
 
 /** lottery_draws.mode / trigger：这次开奖是谁、因为什么触发的 */
 export type DrawMode = 'auto' | 'manual';
-export type DrawTrigger = 'threshold' | 'deadline' | 'manual';
+export type DrawTrigger = 'threshold' | 'manual';
 
 // ——— 开通门店 ———
 
@@ -90,7 +87,11 @@ export type DrawTrigger = 'threshold' | 'deadline' | 'manual';
 export type Activation = {
   id: string;
   locationId: string;
-  /** 开通那一刻的店名快照。商户改了店名之后它不变——这是有意的。 */
+  /**
+   * 门店名。**是读这一刻向商户域现解出来的，不是快照**：开通记录上只存 locationId
+   * （见 migrations/lottery/003），商户改了店名这里就跟着变。解不出来时是空串
+   * （商户域不可达，或那个 id 商户域已经不认识了）——门店的身份永远是上面那一列 id。
+   */
   locationName: string;
   status: ActivationStatus;
   remark: string;
@@ -120,21 +121,21 @@ export type Activation = {
 /**
  * 开通门店。这一个动作会同时建出**默认活动与第一期**。
  *
- * locationName 由调用方带上来（后台的门店选择器本来就有名字）。不在这里回头问商户服务：
- * 开通是一个动作，重试它不该因为一次跨服务读失败而失败。
+ * **只有门店 id，没有门店名**：名字是商户域的事实，抽奖库里不存（见
+ * migrations/lottery/003），服务端会在开通过程中拿这个 id 问一次商户域「这家店存在吗」
+ * ——不存在回 404，问不到回 503。
  *
- * participantTarget / startAt / endAt 都是可选的：默认活动是内置模板建的，都不给时窗口
- * 取「现在起 90 天」。给 participantTarget 时它同时是**第一期**的门槛（门槛在开期时冻结
- * 到期次上）。
+ * participantTarget 是可选的：默认活动是内置模板建的，不给时门槛取 30 次。给
+ * participantTarget 时它同时是**第一期**的门槛（门槛在开期时冻结到期次上）。
+ *
+ * **没有 startAt / endAt**：活动与期次都不再有时间窗口（2026-09-15 去掉）。一期收满门槛
+ * 就开奖，没满就一直收着。
  */
 export type ActivateInput = {
   locationId: string;
-  locationName: string;
   remark?: string;
   campaignName?: string;
   participantTarget?: number;
-  startAt?: string;
-  endAt?: string;
 };
 
 /**
@@ -150,34 +151,40 @@ export type UpdateActivationInput = {
 
 // ——— 活动与奖池 ———
 
-/** 奖池里的一行。 */
+/**
+ * 活动的奖品。**一个活动只有一个**。
+ *
+ * 这里原先是一份清单（每个奖品带 sortOrder / prizeKind / couponTemplateId / quantity），
+ * 2026-09-15 随 migrations/lottery/005 收敛成这样：运营侧实际就是一个活动一个奖品，「类型」
+ * 从落地起只存不消费，名额也永远填 1。名额那一列还在库里（恒为 1），但**不进这一层**——
+ * 看名额的地方是期次上的 winnerCount，那是开期时冻结下来的真值。
+ *
+ * **比例待定**：两张图都还没有约定尺寸，所以服务端不校验比例，界面也不裁剪。
+ */
 export type CampaignPrize = {
   id: string;
-  /** 行序由运营决定。开奖按它依次分配名额（第一档拿满自己那 quantity 份才轮到下一档）。 */
-  sortOrder: number;
-  prizeKind: PrizeKind;
   /** 展示名，如「10 元咖啡兑换券」。 */
   name: string;
-  /**
-   * **本期无人消费**：券类奖品的自动发放要 coupon-service 的 gRPC，而它是空壳
-   * （coupon.proto 里只有 `service CouponService {}`）。所以这一列现在只存不用。
-   */
-  couponTemplateId: string;
-  imageUrl: string;
+  /** 封面图，用在活动卡片上。**必填**（服务端也校验）。 */
+  coverImage: string;
+  /** 海报图，用在活动详情顶部的横幅。可留空，为空时前端回落到自带的那块占位。 */
+  posterImage: string;
   claimInstructions: string;
-  /** 这一档奖的名额。SUM(quantity) 就是下一期的 winner_count。 */
-  quantity: number;
 };
 
-/** 奖池整体替换时提交的一行（新建时没有 id）。 */
+/**
+ * 新建 / 修改活动时提交的奖品。
+ *
+ * 修改时 **id 必须原样带回来**：奖品行被中奖记录引用着（lottery_wins.prize_id 是
+ * ON DELETE RESTRICT），不带 id 服务端就会把旧行删掉重插，而那次删除会被外键拒绝——
+ * 保存直接 500。带上 id 才是原地 UPDATE。
+ */
 export type PrizeInput = {
-  sortOrder: number;
-  prizeKind: PrizeKind;
+  id?: string;
   name: string;
-  couponTemplateId?: string;
-  imageUrl?: string;
+  coverImage: string;
+  posterImage?: string;
   claimInstructions?: string;
-  quantity: number;
 };
 
 /** 一个活动。 */
@@ -191,21 +198,21 @@ export type Campaign = {
   /** 短名，期次号的前缀（`{code}-{seq:04d}`）。全局唯一，且只能是大写字母数字。 */
   code: string;
   name: string;
-  /** 新期次的默认门槛，开期时冻结到期次上。 */
+  /** 新期次的默认门槛（**数的是参与次数**），开期时冻结到期次上。 */
   participantTarget: number;
   description: string;
   /** 开通时建出来的那一个。一个开通记录只有一个默认活动。 */
   isDefault: boolean;
-  startAt: string;
-  endAt: string;
   status: CampaignStatus;
   /**
-   * 奖池。**列表接口不带它**（一次 20 个活动、每个带 5 个奖品，列表就成了奖池查询），
-   * 详情接口带。所以列表页里这个字段恒为 undefined/[]，别在那一页读它。
+   * 奖品。**列表接口不带它**（一次 20 个活动、每个带两张图，列表响应会白胖一圈），详情
+   * 接口带。所以列表页里这个字段恒为 undefined，别在那一页读它。
+   *
+   * 这里原先叫 prizes 且有 prizeTotalQuantity（= SUM(prizes.quantity)）。名额恒为 1 之后
+   * 那个数变成了第二份事实，而期次上的 winnerCount 才是开期时冻结下来的真值，2026-09-15
+   * 一起删了。
    */
-  prizes?: CampaignPrize[];
-  /** 奖池总名额 = SUM(prizes.quantity)，也就是下一期的 winner_count。 */
-  prizeTotalQuantity: number;
+  prize?: CampaignPrize;
   /** 在跑的那一期（open / closed），没有则为空。 */
   liveRoundId: string;
   liveRoundNo: string;
@@ -220,9 +227,9 @@ export type Campaign = {
 /**
  * 新建 / 修改活动。
  *
- * prizes 是**整份清单**，不是差集：后台那个表单就是「一张奖品表」，运营加一行删一行之后
- * 点保存。逐行增删的接口会让前端自己算差集，而差集算错的后果是名额总数对不上——那正是
- * 开奖要用的数。
+ * prize 是**整份替换**，不是差集：一个活动一个奖品，提交什么就是什么。这里原先是一份
+ * prizes 清单，说明写着「必须是完整清单，前端自己算差集算错了名额总数就对不上」——奖池
+ * 收敛成一个之后没有差集可算，那段说明跟着一起没了。
  *
  * activationId 新建时必填。**修改时后端整个忽略它**——UpdateCampaign 取的是库里已有的
  * 那个 activationId，你传什么都不看（活动不能换门店，那等于新建一个）。所以编辑页把那
@@ -235,10 +242,8 @@ export type CampaignInput = {
   name: string;
   participantTarget: number;
   description?: string;
-  startAt: string;
-  endAt: string;
   status: CampaignStatus;
-  prizes: PrizeInput[];
+  prize: PrizeInput;
 };
 
 // ——— 期次 ———
@@ -253,13 +258,11 @@ export type Round = {
   /** 期次号，`{code}-{seq:04d}`。全局唯一。 */
   roundNo: string;
   status: RoundStatus;
-  /** 门槛与已达标人数。列表页的进度条按这两个数画。 */
+  /** 门槛与已达标的参与次数（**数的是次数**，同一个人可以参与多次）。进度条按这两个数画。 */
   participantTarget: number;
   participantCount: number;
   /** **名额数**（开期时冻结的 SUM(quantity)），不是实际中奖人数。 */
   winnerCount: number;
-  startsAt: string;
-  endsAt: string;
   drawnAt: string | null;
   cancelledAt: string | null;
   cancelReason: string;
@@ -306,12 +309,11 @@ export type DrawResult = {
   createdAt: string;
   winners: Win[];
   /**
-   * 同一次事务里开出来的下一期。为空表示开完之后没有下一期了，此时 campaignEnded
-   * 必然是 true——两句是同一个事实的两面。
+   * 同一次事务里开出来的下一期。为空表示这一期开完之后没有下一期了——活动不在 enabled
+   * （被暂停、被结束、还是草稿），或者零人参与那一条路。
    */
   nextRoundId: string;
   nextRoundNo: string;
-  campaignEnded: boolean;
 };
 
 /** 零人参与时开奖接口回的那个形状（没有开奖记录）。 */
@@ -373,7 +375,6 @@ export type Win = {
   participationId: string;
   userId: string;
   prizeId: string;
-  prizeKind: PrizeKind;
   /**
    * 原奖品与现奖品分两列。换奖改的是 current，original 永远留着——它是「当时开出来的
    * 是哪个奖」的唯一记录。本轮两列相同（还没有换奖入口）。
@@ -433,11 +434,15 @@ export type WinDetail = {
 // 所以调用前要 trim，也不要做成模糊搜索框。
 
 export type ActivationQuery = PageQuery & {
-  /** 门店 ID 精确匹配。不做 uuid 前缀匹配——那是没有意义的模糊。 */
+  /**
+   * 门店 ID 精确匹配。不做 uuid 前缀匹配——那是没有意义的模糊。
+   *
+   * 后台的门店筛选走的就是它：从门店下拉里选一家。**没有按门店名搜这条路**——名字不落库
+   * （migrations/lottery/003），SQL 里没有一列能做 LIKE，而商户域的 gRPC 也没有「按名字查
+   * 门店」的能力（见 activations 页那一列的说明）。
+   */
   locationId?: string;
   status?: ActivationStatus;
-  /** 门店名的模糊匹配（后端 LIKE）。运营按店名找店是常走的一条路。 */
-  name?: string;
 };
 
 export type CampaignQuery = PageQuery & {
@@ -510,7 +515,7 @@ export async function listCampaigns(params?: CampaignQuery) {
   return request<PageResult<Campaign>>('/api/v1/admin/lottery/campaigns', { params });
 }
 
-/** 活动详情。**只有这一条路能拿到奖池**（列表接口不带 prizes）。 */
+/** 活动详情。**只有这一条路能拿到奖品**（列表接口不带 prize）。 */
 export async function getCampaign(id: string) {
   return request<Campaign>(`/api/v1/admin/lottery/campaigns/${id}`);
 }
@@ -520,9 +525,9 @@ export async function createCampaign(data: CampaignInput) {
 }
 
 /**
- * 修改活动，**含整份奖池**。
+ * 修改活动，**含奖品**。
  *
- * 奖池整体替换，所以提交的 prizes 必须是完整清单，不是这次改的那几行。
+ * 奖品整份替换，所以提交的 prize 必须带着它自己的 id（见 PrizeInput）。
  * code 建出来之后不可改：它是期次号的前缀，已经开出去的期次号里嵌着它。
  */
 export async function updateCampaign(id: string, data: CampaignInput) {
@@ -542,7 +547,12 @@ export async function updateCampaignStatus(id: string, status: CampaignStatus) {
   });
 }
 
-/** 某个活动的奖池（只读）。写入口只有 createCampaign / updateCampaign 的整份替换。 */
+/**
+ * 某个活动的奖品（只读）。写入口只有 createCampaign / updateCampaign 的整份替换。
+ *
+ * 一个活动只有一个奖品，所以它回的是**零个或一个元素的数组**。接口留着是因为删它不在
+ * 这次范围里；界面上没有调用方（活动详情读的是 getCampaign 带回来的 prize）。
+ */
 export async function listCampaignPrizes(campaignId: string) {
   return request<CampaignPrize[]>(`/api/v1/admin/lottery/campaigns/${campaignId}/prizes`);
 }
@@ -581,7 +591,7 @@ export async function drawRound(id: string, data: DrawInput) {
  * 回 409。
  *
  * 回的**不是**一整行期次，是这四格（后端就写了这四个键）。别把它当成 Round 用：
- * 少了 participantCount / endsAt 那些字段，读出来是 undefined。
+ * 少了 participantCount / participantTarget 那些字段，读出来是 undefined。
  */
 export async function cancelRound(id: string, reason: string) {
   return request<CancelRoundResult>(`/api/v1/admin/lottery/rounds/${id}/cancel`, {

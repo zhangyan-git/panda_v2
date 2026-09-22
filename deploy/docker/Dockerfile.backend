@@ -1,4 +1,4 @@
-# One Dockerfile for all three Go services.
+# One Dockerfile for all the Go services.
 #
 # Deliberately no `# syntax=` directive: it makes every build resolve and pull
 # an extra frontend image, which is a hard failure on a builder without registry
@@ -14,10 +14,10 @@
 #     --build-arg SERVICE=user-service \
 #     -t panda/user-service .
 #
-# SERVICE is the module directory name. CMD differs between services -- gateway
-# has its main package in cmd/gateway, the other two directly in cmd -- so it is
-# passed explicitly rather than guessed; getting it wrong fails the build loudly
-# with "main module does not contain package".
+# SERVICE is the module directory name. Every service keeps its main package in
+# cmd, so CMD's default is the answer for all of them; the ARG stays for the
+# occasional second binary in the same module (user-service/cmd/seed). A wrong
+# CMD fails the build loudly with "main module does not contain package".
 
 # Both base images are ARGs so a builder that cannot reach the public registry
 # can point them at a mirror. They are declared BEFORE the first FROM on

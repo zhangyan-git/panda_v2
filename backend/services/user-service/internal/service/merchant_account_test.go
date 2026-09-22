@@ -130,19 +130,53 @@ func (f *fakeMerchantAccess) FindName(_ context.Context, merchantID string) (str
 type fakeMerchantResourceAccess struct {
 	brandOwners map[string]string
 	storeOwners map[string]string
+	// storeBrands 记录门店挂在哪个品牌下，范围展开的 brand 档要用。
+	storeBrands map[string]string
 	brandNames  map[string]string
 	storeNames  map[string]string
 	// namesErr 模拟 merchant-service 不可用；nameCalls 记录批量解析次数，
 	// 用于断言列表接口只发一次 RPC 而不是每行一次。
 	namesErr  error
 	nameCalls int
+	// listCalls 记录范围展开次数：失败路径上不该发生的那次调用，要靠它才看得见。
+	listCalls int
 }
 
 func newFakeMerchantResourceAccess() *fakeMerchantResourceAccess {
 	return &fakeMerchantResourceAccess{
 		brandOwners: map[string]string{}, storeOwners: map[string]string{},
-		brandNames: map[string]string{}, storeNames: map[string]string{},
+		storeBrands: map[string]string{},
+		brandNames:  map[string]string{}, storeNames: map[string]string{},
 	}
+}
+
+// ListStoreIDs 内存版范围展开：merchant 档给全部点位，brand/store 档按表查。
+// 认不出的档位返回错误而不是空集——空集是一个正常答案，"这个账号没有点位"
+// 与"这次请求答不了"必须在调用方那里分得开。
+func (f *fakeMerchantResourceAccess) ListStoreIDs(_ context.Context, merchantID, scopeType, scopeID string) ([]string, error) {
+	f.listCalls++
+	if f.namesErr != nil {
+		return nil, f.namesErr
+	}
+	switch scopeType {
+	case "merchant", "brand", "store":
+	default:
+		return nil, errors.New("unknown store scope type")
+	}
+	// 三档都回落到同一条判定上：「这个点位属于该商户，且落在这一档里」。真实实现是一条
+	// 带 merchant_id 交叉校验的 SQL，形状相同——跨商户的目标展开出来必须是空集。
+	ids := []string{}
+	for store, owner := range f.storeOwners {
+		switch {
+		case owner != merchantID:
+		case scopeType == "store" && store != scopeID:
+		case scopeType == "brand" && f.storeBrands[store] != scopeID:
+		default:
+			ids = append(ids, store)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 // ScopeNames 只返回确实存在的 id：删除后的范围不在结果里，由调用方留空。

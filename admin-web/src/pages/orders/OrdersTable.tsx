@@ -8,13 +8,9 @@ import { enumMeta, searchOptions } from '../../services/labels';
 import { formatYuan } from '../../services/money';
 import { listMiniappUsers } from '../../services/miniappUser';
 import { cancelOrder, listOrders, type OrderQuery, type OrderSummary } from '../../services/order';
-import {
-  FULFILLMENT_STATUS,
-  ORDER_SOURCE,
-  ORDER_STATUS,
-  paymentMethodLabel,
-} from '../../services/orderLabels';
+import { FULFILLMENT_STATUS, ORDER_SOURCE, ORDER_STATUS } from '../../services/orderLabels';
 import { FULL_PAGE_PARAMS } from '../../services/pagination';
+import { paymentMethodLabel } from '../../services/paymentMethodLabels';
 import { requestErrorMessage } from '../../services/requestError';
 import { listStores } from '../../services/store';
 import CompositionTags from './CompositionTags';

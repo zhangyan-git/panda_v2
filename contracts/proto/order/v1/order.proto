@@ -2,5 +2,274 @@ syntax = "proto3";
 package panda.order.v1;
 option go_package = "github.com/panda-dev/panda-v2/contracts/proto/order/v1";
 
-// Contract placeholder; domain methods are added only after business scope approval.
-service OrderService {}
+// OrderService 是订单域对内的接口面。
+//
+// 今天只有一条 RPC，而且它是整条链路上唯一一条**由外部系统触发**的建单：线下刷卡机
+// （方案 §四）。其余下单都走 HTTP（小程序 / 屏幕扫码），那些路径上有用户、有会话、
+// 有定价链路；这一条没有——钱已经在机器上收过了，我们只是把既成事实记下来。
+service OrderService {
+  // CreateDeviceOrder 记下一笔设备刷卡订单，**直接落成已支付**。
+  //
+  // # 它做的事与别的下单路径相反
+  //
+  // 别的下单是「先建单 → pending_payment → 支付回调 → paid」；这一条是「钱已经收了 →
+  // 建一张 paid」。所以这里没有支付单、没有回调、也不进 payment 域：订单是订单域的事实，
+  // 而支付那件事在刷卡机上已经发生了，我们手里没有它的凭据（这是本批的已知缺口，
+  // 见下面 amount 的说明）。
+  //
+  // # 金额由调用方给，且不校验
+  //
+  // amount 是**设备上报的成交价**，不是我们算出来的。老系统就是这么做的
+  // （sync_order_handler.go:281：设备报价优先，为 0 才回退饮品售价），本批照搬。
+  //
+  // ⚠️ **这意味着订单金额与对账之间没有兜底**：设备报多少就是多少，跟饮品目录价对不上
+  // 也不会有人发现。方案把对账留到后面了，所以这条是**已知缺口**，不是设计好了——
+  // 真要做对账时，这条链路是第一个要挂上去的。
+  //
+  // # 幂等
+  //
+  // third_party_order_no 是幂等键（对方单号）。同一台机器重投、网络重放、我们自己点了两次，
+  // 都只会得到同一张单：命中的那一次返回 created=false 与既有订单，不报错。这是回调类
+  // 接口的标准形状——对方重试是正常的，报错会让它一直重试下去。
+  rpc CreateDeviceOrder(CreateDeviceOrderRequest) returns (CreateDeviceOrderResponse);
+
+  // CreatePickupOrder 记下一笔取货码订单（方案 §四的第二条路）：钱**不是**在机器上收的，
+  // 而是从这台设备的咖啡余额里扣的，所以这一条比 CreateDeviceOrder 多两步。
+  //
+  // # 它比 CreateDeviceOrder 多出来的三件事
+  //
+  //  1. **定价由我们做**：报文里没有金额。价格取这台机器上那一杯的取货码价
+  //     （drinks.pickup_code_price），为 0 回落目录价，两个都是 0 就拒。刷卡机那条相反
+  //     （设备报价优先）——那边钱是机器收的，我们手里没有可核对的基准；这边的钱是我们
+  //     从自己账上扣的，价格必须是我们自己认的。
+  //  2. **先扣钱、后建单**：扣减经 coffee-machine-service 的 DeductDeviceBalance 做，它与
+  //     写一行余额流水是同一个事务。顺序反过来的话，中间断了是「建了单没扣钱」——白送一杯；
+  //     现在的顺序断了只是「扣了没建单」，可以拿对方单号补出来。
+  //  3. **验证码由咖啡机域校验**：pickup_password 原样转下去，比对在扣减那个事务里、
+  //     与设备行同一把锁之内（见 DeductDeviceBalanceRequest 的说明）。本服务不取回验证码
+  //     自己比，也不做任何形式的缓存。
+  //
+  // # 一个键，两个身份
+  //
+  // third_party_order_no 同时是**余额流水上的 request_id**与**订单的幂等键**。两处必须是
+  // 同一个值：分成两个值的话，一次重投可能撞上其中一个而不撞另一个，于是要么扣了两次钱、
+  // 要么建出第二张单——而这正是这条路要防的那件事。
+  rpc CreatePickupOrder(CreatePickupOrderRequest) returns (CreatePickupOrderResponse);
+
+  // CreateRenewalOrder 记下一笔**会员续费**（连续包月每期扣款成功）。
+  //
+  // # 第三条「钱已在别处收过」的建单路
+  //
+  // 钱是微信代扣收的，回调落在 payment-service，再经 membership-service 走到这里。与前两条
+  // 不同的是：这一单**有用户**（user_id 非空，设备单那条是 NULL），而且它的会员权益在调用方
+  // 那边已经续完了——本服务只负责把订单这笔账记下来。
+  //
+  // # 为什么金额与套餐快照都由调用方给
+  //
+  // 因为**续费必须用签约时冻结的那一份**：订阅行上有签约时约定死的 price_cents / period，
+  // 会员行上有成交当时的 plan_code / plan_name 与会员价那三列。让本服务拿 plan_id 去会员域
+  // 现取（普通下单那条路是这么做的，见 CreateOrderRequest），等于让一次后台改套餐改写一个
+  // 正在被扣款的用户这一期买到了什么。
+  //
+  // ⚠️ 这与 CreateDeviceOrder 的 amount「由设备给且不校验」不是同一条口径：那边我们手里没有
+  // 基准；这边的基准就是订阅与会员行上的冻结值，**调用方必须照它们填**，而本服务不回头核对。
+  //
+  // # 幂等
+  //
+  // third_party_order_no 是幂等键，这里传**渠道流水号**（provider_transaction_id）——它是这笔
+  // 扣款在微信那一侧的唯一标识，也正是「这一期到底扣成没有」的凭据。同一个流水号重投只会得到
+  // 同一张单。与设备那两条共用 orders_third_party_order_no_key，所以命中时同样要校 payment_method
+  // （撞上别的种类的单回 ErrThirdPartyOrderNoTaken）。
+  //
+  // # 失败的那一期不建单
+  //
+  // 扣款失败时调用方**不要**调这条 RPC：那笔钱没收上来，没有订单可言。失败的期次留在
+  // payment_agreement_charges 里，后台订阅详情的「续费明细」看的就是它（老系统同此）。
+  rpc CreateRenewalOrder(CreateRenewalOrderRequest) returns (CreateRenewalOrderResponse);
+
+  // GetOrder 按订单 ID 取一张订单的摘要。**只给内部服务**（今天只有 membership-service 用，
+  // 它要显示「首月支付」那一段：订单号 / 状态 / 实付 / 支付方式 / 支付时间 / 支付单号）。
+  //
+  // # 为什么支付流水号不在这里
+  //
+  // response 里给的是 payment_no（payment-service 的支付单号），**不是**渠道流水号
+  // （provider_transaction_id）。后者是对账凭据，按既定分工只有 payment-service 对外给
+  // ——所以调用方要渠道流水号就再问一次 payment-service，本服务不代转（见
+  // admin-web 的 PaymentTab 顶部那条注释，同一条规矩）。
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+}
+
+message CreateDeviceOrderRequest {
+  // 对方单号，幂等键。**非空**，为空回 InvalidArgument。
+  string third_party_order_no = 1;
+
+  // 设备序列号（coffee-machine-service 的 devices.serial_unique）。**非空**。
+  //
+  // 门店与设备 uuid 都由这一条推出来，**请求里没有让调用方直接给 store_id 的字段**：
+  // 门店来自设备，不来自请求——设备是「这台机器属于哪个点位」的唯一来源。收调用方填的
+  // store_id 等于让订单挂在一个设备并不在的点位上，而那是最难查的一类脏数据
+  // （见 order-service 的 resolveDevice）。
+  string device_serial = 2;
+
+  // 设备报的饮品编号。**不是我们的 uuid**——机器不可能知道我们的主键。
+  //
+  // 这个编号怎么变成我们那一行饮品，**不在这里规定**：它落在 drinks 的哪一列取决于这家
+  // 厂商当初的同步来源，那是饮品库的布局知识，归 coffee-machine-service。本服务把它原样
+  // 交给 GetDeviceDrink(device_id, drink_code)，由那边一次查一条。
+  //
+  // 所以本服务**不要**自己去列菜单再按编号猜列匹配：那既把对方的布局知识抄了过来，
+  // 也躲不过列表分页——机器上饮品一多就会静默匹配不到，而那时钱已经收过了。
+  string drink_code = 3;
+
+  // 设备上报的成交金额，单位**分**。为 0 时回退到饮品目录价（照老系统）。
+  // 详见上面「金额由调用方给，且不校验」。
+  int64 amount = 4;
+
+  // 设备上报的出饮结果：false=出杯成功，true=出饮失败。
+  //
+  // 失败时订单照样建（钱收了），但履约状态标成 failed 留人工——老系统标的是
+  // make_drink_status=dead 并明确「后台重试任务不会补发出杯指令」。V2 的 order_lines
+  // 不存任务状态（履约细节归 fulfillment-service），订单这一层的汇总就是
+  // orders.fulfillment_status，它本来就有 failed 这个取值。
+  bool brew_failed = 5;
+
+  // 备注，可空。会拼在「设备刷卡购买」之后。
+  string remark = 6;
+}
+
+message CreateDeviceOrderResponse {
+  string order_id = 1;
+  string order_no = 2;
+  // true=这一次真的建了单；false=幂等命中，返回的是既有那张单。
+  //
+  // 调用方要能区分这两者：建单成功与「对方重投了一次」在日志里是完全不同的两件事，
+  // 而如果它们都回一个空响应，运维就只能看到一串 200。
+  bool created = 3;
+}
+
+message CreatePickupOrderRequest {
+  // 对方单号，**这条路唯一的幂等键**。非空，为空回 InvalidArgument。
+  //
+  // 它同时是余额流水上的 request_id 与订单上的 third_party_order_no（见 service 的说明：
+  // 一个键两个身份，拆开就等于把重投防不住）。所以**不接受空值**：
+  // device_balance_ledger_one_per_request 只索引 request_id 非空的行，空串会绕过它。
+  string third_party_order_no = 1;
+
+  // 设备序列号（coffee-machine-service 的 devices.serial_unique）。**非空**。
+  // 余额扣的是这台设备，点位也是从它推出来的，请求里没有 store_id。
+  string device_serial = 2;
+
+  // 设备报的饮品编号，**不是我们的 uuid**。**非空**。
+  // 认哪一杯与它的价格都由咖啡机域查一条决定（GetDeviceDrink），与刷卡机那条完全一样。
+  string drink_code = 3;
+
+  // 顾客在机器上敲的那个取货码。
+  //
+  // **原样转下去，本服务不比对、不 trim、不判空**：要不要放行由持有那一列的服务说了算
+  // （coffee-machine-service 在扣减事务里、与设备行同一把锁之内比）。把比对抄到这里会多出
+  // 一个 TOCTOU 窗口（读码与扣钱之间码可能被改），也会让「码对不对」与「钱够不够」变成
+  // 两次各自成立的判断——而那两件事必须在同一个事务里一次定下来。
+  string pickup_password = 4;
+
+  // 备注，可空。会拼在「取货码购买」之后。
+  string remark = 5;
+}
+
+message CreatePickupOrderResponse {
+  string order_id = 1;
+  string order_no = 2;
+  // true=这一次真的建了单；false=幂等命中（被扣过、也被建过）。
+  //
+  // 一次重投要求这两件事**同时**是幂等的：扣减按 request_id 命中（coffee-machine-service
+  // 回 applied=false），建单按对方单号命中。任一环节单独幂等都不够。
+  bool created = 3;
+}
+
+// MembershipPlanSnapshot 是会员行上那份套餐快照的形状，与
+// order-service 的 dto.MembershipPlanSnapshot **逐字同构**（同一个结构编出来的 JSON 要能直接
+// 落进 order_lines.membership_plan_snapshot）。
+//
+// 刻意做成一个嵌套消息而不是十个平铺字段：这样它在 proto 这一层就是一个整体，加一个字段时
+// 不会漏掉某一条调用路。
+message MembershipPlanSnapshot {
+  // PlanID 是套餐的值引用（订单行不建外键，会员库里才有）。PlanCode / PlanName 是成交
+  // 当时的副本，套餐改名不影响历史订单。
+  string plan_id = 1;
+  string plan_code = 2;
+  string plan_name = 3;
+  // price_cents 是这一期实付的套餐价（分）。它同时是会员行上 original_unit_price 的来源。
+  int64 price_cents = 4;
+  // period / period_count 是这一期买到的时长（连续包月 = month/1）。续期按日历加。
+  string period = 5;
+  int32 period_count = 6;
+  // auto_renew 是套餐层面的「这个产品要签代扣」，**不是**用户那个开关（那个在会员域自己身上）。
+  // 续费这条路上它恒为 true：这一单存在的原因本身就是一个开着的代扣。
+  bool auto_renew = 7;
+  // 会员价的来路快照：auto 自动享，coupon 靠发券；发几张、用哪个模板看后两列
+  // （只有 coupon 模式有值）。**下游按这份快照发券**——代扣续期发的就是这批券。
+  string member_price_mode = 8;
+  string member_price_coupon_template_id = 9;
+  int32 member_price_coupons_per_period = 10;
+}
+
+message CreateRenewalOrderRequest {
+  // 渠道流水号（payment_agreement_charges.provider_transaction_id），幂等键。**非空**，
+  // 为空回 InvalidArgument。传空串等于放弃幂等：重投会变成第二张单，而钱只收了一次。
+  string third_party_order_no = 1;
+
+  // 下单用户（user-service 的用户 ID）。**非空**——与设备单相反，这一单有主人。
+  string user_id = 2;
+
+  // 这一期的实付金额（分）。**权威来自调用方**（订阅行上冻结的 price_cents），本服务不核对。
+  int64 amount = 3;
+
+  // 签约时冻结的套餐快照。**整份由调用方给全**，理由见 rpc 的说明。
+  MembershipPlanSnapshot plan = 4;
+
+  // 会员 ID（memberships.id），可空。填了会把这一单挂到那条会员上，后台从会员看订单查得到。
+  // 「可空」只是因为它是**值引用**、不是这条路成立的条件。
+  string membership_id = 5;
+
+  // 备注，可空。会拼在「会员续费扣款」之后。
+  string remark = 6;
+
+  // 没有 paid_at 字段：记账时刻就取本服务收到调用的时刻。老系统同此
+  // （createRenewalOrder 写的也是 time.Now()），而这一单只建一次——重投命中的是既有那一行，
+  // paid_at 不会被后来的投递改写，所以「晚了几分钟」最多发生在第一次投递就晚了的那一次。
+  // 真要精确到渠道那一刻，那个时间戳在 payment 侧的扣款记录上，不在这里。
+}
+
+message CreateRenewalOrderResponse {
+  string order_id = 1;
+  string order_no = 2;
+  // true=这一次真的建了单；false=幂等命中，返回的是既有那张单。
+  //
+  // 调用方**必须**看这一位：它要在同一个事务里把 order_id 写进自己的续费流水（见
+  // membership_changes.order_id），而重投时它拿到的是同一张单的 id，不是一张新单。
+  bool created = 3;
+}
+
+message GetOrderRequest {
+  // 订单 ID（orders.id）。**非空**，为空或不是 uuid 回 InvalidArgument；
+  // 查不到回 NotFound。
+  string order_id = 1;
+}
+
+message GetOrderResponse {
+  string order_id = 1;
+  string order_no = 2;
+  string user_id = 3;
+  // 下单来源（miniapp / screen_qr / device / renewal），取值同 orders_source_check。
+  string source = 4;
+  // 订单主状态（pending_payment / paid / ...），取值同 orders_status_check。
+  string status = 5;
+  // 实付金额（分）。未支付时是 0。
+  int64 paid_amount = 6;
+  // 支付方式：payment-service 支付目录里的 code（card_pay / pickup_code / wechat_papay ...）。
+  string payment_method = 7;
+  // payment_no 是本服务库里那份支付单号的值引用。**不是渠道流水号**，理由见 rpc 的说明。
+  // 设备单与续费单这一格为空串（那两条路上没有支付单）。
+  string payment_no = 8;
+  // paid_at 是 RFC3339（UTC）。未支付时为空串。
+  string paid_at = 9;
+}

@@ -609,6 +609,118 @@ func (*ResetAccountScopeResponse) Descriptor() ([]byte, []int) {
 	return file_user_v1_user_proto_rawDescGZIP(), []int{8}
 }
 
+// GetWechatIdentityRequest 取一个用户在某个应用下的微信身份。
+//
+// user_id 是值引用而不是身份声明：调用方（order-service）在一次已认证的请求里拿到
+// 付款人之后才发这次调用，而本次调用带的是服务令牌——身份建立在前一步，不在这里。
+type GetWechatIdentityRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// app_type 取 miniapp / official_account，与 user_wechat_identities 的 CHECK 一致。
+	// 必填：openid 是按应用独立的，不指明应用就答不出唯一的一条。
+	AppType       string `protobuf:"bytes,2,opt,name=app_type,json=appType,proto3" json:"app_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWechatIdentityRequest) Reset() {
+	*x = GetWechatIdentityRequest{}
+	mi := &file_user_v1_user_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWechatIdentityRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWechatIdentityRequest) ProtoMessage() {}
+
+func (x *GetWechatIdentityRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_user_v1_user_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWechatIdentityRequest.ProtoReflect.Descriptor instead.
+func (*GetWechatIdentityRequest) Descriptor() ([]byte, []int) {
+	return file_user_v1_user_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *GetWechatIdentityRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *GetWechatIdentityRequest) GetAppType() string {
+	if x != nil {
+		return x.AppType
+	}
+	return ""
+}
+
+type GetWechatIdentityResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// openid 该用户在该应用下的微信标识。
+	Openid string `protobuf:"bytes,1,opt,name=openid,proto3" json:"openid,omitempty"`
+	// unionid 未绑定微信开放平台时为空串（列可空，仓库惯例 COALESCE 成 ”）。
+	Unionid       string `protobuf:"bytes,2,opt,name=unionid,proto3" json:"unionid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWechatIdentityResponse) Reset() {
+	*x = GetWechatIdentityResponse{}
+	mi := &file_user_v1_user_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWechatIdentityResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWechatIdentityResponse) ProtoMessage() {}
+
+func (x *GetWechatIdentityResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_user_v1_user_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWechatIdentityResponse.ProtoReflect.Descriptor instead.
+func (*GetWechatIdentityResponse) Descriptor() ([]byte, []int) {
+	return file_user_v1_user_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *GetWechatIdentityResponse) GetOpenid() string {
+	if x != nil {
+		return x.Openid
+	}
+	return ""
+}
+
+func (x *GetWechatIdentityResponse) GetUnionid() string {
+	if x != nil {
+		return x.Unionid
+	}
+	return ""
+}
+
 // GetAdminAccessRequest carries no fields: the caller's access token travels in
 // gRPC metadata and is the only source of identity.
 type GetAdminAccessRequest struct {
@@ -619,7 +731,7 @@ type GetAdminAccessRequest struct {
 
 func (x *GetAdminAccessRequest) Reset() {
 	*x = GetAdminAccessRequest{}
-	mi := &file_user_v1_user_proto_msgTypes[9]
+	mi := &file_user_v1_user_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -631,7 +743,7 @@ func (x *GetAdminAccessRequest) String() string {
 func (*GetAdminAccessRequest) ProtoMessage() {}
 
 func (x *GetAdminAccessRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_user_v1_user_proto_msgTypes[9]
+	mi := &file_user_v1_user_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -644,7 +756,7 @@ func (x *GetAdminAccessRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAdminAccessRequest.ProtoReflect.Descriptor instead.
 func (*GetAdminAccessRequest) Descriptor() ([]byte, []int) {
-	return file_user_v1_user_proto_rawDescGZIP(), []int{9}
+	return file_user_v1_user_proto_rawDescGZIP(), []int{11}
 }
 
 // GetAdminAccessResponse is the live authorization snapshot of the caller.
@@ -661,7 +773,7 @@ type GetAdminAccessResponse struct {
 
 func (x *GetAdminAccessResponse) Reset() {
 	*x = GetAdminAccessResponse{}
-	mi := &file_user_v1_user_proto_msgTypes[10]
+	mi := &file_user_v1_user_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -673,7 +785,7 @@ func (x *GetAdminAccessResponse) String() string {
 func (*GetAdminAccessResponse) ProtoMessage() {}
 
 func (x *GetAdminAccessResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_user_v1_user_proto_msgTypes[10]
+	mi := &file_user_v1_user_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -686,7 +798,7 @@ func (x *GetAdminAccessResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAdminAccessResponse.ProtoReflect.Descriptor instead.
 func (*GetAdminAccessResponse) Descriptor() ([]byte, []int) {
-	return file_user_v1_user_proto_rawDescGZIP(), []int{10}
+	return file_user_v1_user_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GetAdminAccessResponse) GetUserId() string {
@@ -706,6 +818,138 @@ func (x *GetAdminAccessResponse) GetRoles() []string {
 func (x *GetAdminAccessResponse) GetPermissions() []string {
 	if x != nil {
 		return x.Permissions
+	}
+	return nil
+}
+
+// GetMerchantAccessRequest carries no fields: like GetAdminAccess, the caller's
+// access token travels in gRPC metadata and is the only source of identity.
+type GetMerchantAccessRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMerchantAccessRequest) Reset() {
+	*x = GetMerchantAccessRequest{}
+	mi := &file_user_v1_user_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMerchantAccessRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMerchantAccessRequest) ProtoMessage() {}
+
+func (x *GetMerchantAccessRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_user_v1_user_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMerchantAccessRequest.ProtoReflect.Descriptor instead.
+func (*GetMerchantAccessRequest) Descriptor() ([]byte, []int) {
+	return file_user_v1_user_proto_rawDescGZIP(), []int{13}
+}
+
+// GetMerchantAccessResponse is the live data boundary of a merchant account.
+//
+// store_ids is the part every consumer actually filters on. Devices and orders
+// carry only a store_id — neither holds a merchant_id, and the design forbids
+// adding one just to make filtering uniform — so "which rows may this account
+// see" has exactly one usable shape: a set of store ids. The merchant/brand
+// levels are expanded here rather than pushed down as a predicate, so all three
+// consumers share one code path.
+//
+// Like GetAdminAccessResponse, consumers must not cache it: the whole point is
+// that a scope change or a disabled account takes effect on the next request,
+// not when the 24-hour access token happens to expire.
+type GetMerchantAccessResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// merchant_id is the tenant the account belongs to. Callers compare it against
+	// the token's tenant and reject on mismatch rather than trusting either alone.
+	MerchantId string `protobuf:"bytes,1,opt,name=merchant_id,json=merchantId,proto3" json:"merchant_id,omitempty"`
+	// scope_type is "merchant", "brand" or "store" — the vocabulary of
+	// merchant_users.scope_type, not of the auth.Scope claim.
+	ScopeType string `protobuf:"bytes,2,opt,name=scope_type,json=scopeType,proto3" json:"scope_type,omitempty"`
+	// scope_id is the brand or store the scope points at; empty at merchant level.
+	ScopeId string `protobuf:"bytes,3,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
+	// store_ids is the expanded boundary: an account authorized for no store gets
+	// an empty list, which filters to zero rows. At the call sites nil would be
+	// indistinguishable from "no filter", and that difference is the whole
+	// boundary.
+	//
+	// The field carries no nil/empty distinction of its own: proto3 does not put an
+	// empty repeated field on the wire, so both arrive as an empty list. Normalizing
+	// to a non-nil slice is therefore the receiver's job, and it is done once, in
+	// auth.WithStoreScope — not here, and not at each call site.
+	StoreIds      []string `protobuf:"bytes,4,rep,name=store_ids,json=storeIds,proto3" json:"store_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMerchantAccessResponse) Reset() {
+	*x = GetMerchantAccessResponse{}
+	mi := &file_user_v1_user_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMerchantAccessResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMerchantAccessResponse) ProtoMessage() {}
+
+func (x *GetMerchantAccessResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_user_v1_user_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMerchantAccessResponse.ProtoReflect.Descriptor instead.
+func (*GetMerchantAccessResponse) Descriptor() ([]byte, []int) {
+	return file_user_v1_user_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *GetMerchantAccessResponse) GetMerchantId() string {
+	if x != nil {
+		return x.MerchantId
+	}
+	return ""
+}
+
+func (x *GetMerchantAccessResponse) GetScopeType() string {
+	if x != nil {
+		return x.ScopeType
+	}
+	return ""
+}
+
+func (x *GetMerchantAccessResponse) GetScopeId() string {
+	if x != nil {
+		return x.ScopeId
+	}
+	return ""
+}
+
+func (x *GetMerchantAccessResponse) GetStoreIds() []string {
+	if x != nil {
+		return x.StoreIds
 	}
 	return nil
 }
@@ -771,20 +1015,37 @@ const file_user_v1_user_proto_rawDesc = "" +
 	"\n" +
 	"scope_type\x18\x01 \x01(\tR\tscopeType\x12\x19\n" +
 	"\bscope_id\x18\x02 \x01(\tR\ascopeId\"\x1b\n" +
-	"\x19ResetAccountScopeResponse\"\x17\n" +
+	"\x19ResetAccountScopeResponse\"N\n" +
+	"\x18GetWechatIdentityRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x19\n" +
+	"\bapp_type\x18\x02 \x01(\tR\aappType\"M\n" +
+	"\x19GetWechatIdentityResponse\x12\x16\n" +
+	"\x06openid\x18\x01 \x01(\tR\x06openid\x12\x18\n" +
+	"\aunionid\x18\x02 \x01(\tR\aunionid\"\x17\n" +
 	"\x15GetAdminAccessRequest\"i\n" +
 	"\x16GetAdminAccessResponse\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x14\n" +
 	"\x05roles\x18\x02 \x03(\tR\x05roles\x12 \n" +
-	"\vpermissions\x18\x03 \x03(\tR\vpermissions2\xf1\x02\n" +
+	"\vpermissions\x18\x03 \x03(\tR\vpermissions\"\x1a\n" +
+	"\x18GetMerchantAccessRequest\"\x93\x01\n" +
+	"\x19GetMerchantAccessResponse\x12\x1f\n" +
+	"\vmerchant_id\x18\x01 \x01(\tR\n" +
+	"merchantId\x12\x1d\n" +
+	"\n" +
+	"scope_type\x18\x02 \x01(\tR\tscopeType\x12\x19\n" +
+	"\bscope_id\x18\x03 \x01(\tR\ascopeId\x12\x1b\n" +
+	"\tstore_ids\x18\x04 \x03(\tR\bstoreIds2\xd9\x03\n" +
 	"\vUserService\x12Q\n" +
 	"\n" +
 	"GetProfile\x12 .panda.user.v1.GetProfileRequest\x1a!.panda.user.v1.GetProfileResponse\x12Z\n" +
 	"\rUpdateProfile\x12#.panda.user.v1.UpdateProfileRequest\x1a$.panda.user.v1.UpdateProfileResponse\x12K\n" +
 	"\bHasUsers\x12\x1e.panda.user.v1.HasUsersRequest\x1a\x1f.panda.user.v1.HasUsersResponse\x12f\n" +
-	"\x11ResetAccountScope\x12'.panda.user.v1.ResetAccountScopeRequest\x1a(.panda.user.v1.ResetAccountScopeResponse2s\n" +
+	"\x11ResetAccountScope\x12'.panda.user.v1.ResetAccountScopeRequest\x1a(.panda.user.v1.ResetAccountScopeResponse\x12f\n" +
+	"\x11GetWechatIdentity\x12'.panda.user.v1.GetWechatIdentityRequest\x1a(.panda.user.v1.GetWechatIdentityResponse2s\n" +
 	"\x12AdminAccessService\x12]\n" +
-	"\x0eGetAdminAccess\x12$.panda.user.v1.GetAdminAccessRequest\x1a%.panda.user.v1.GetAdminAccessResponseB7Z5github.com/panda-dev/panda-v2/contracts/proto/user/v1b\x06proto3"
+	"\x0eGetAdminAccess\x12$.panda.user.v1.GetAdminAccessRequest\x1a%.panda.user.v1.GetAdminAccessResponse2\x7f\n" +
+	"\x15MerchantAccessService\x12f\n" +
+	"\x11GetMerchantAccess\x12'.panda.user.v1.GetMerchantAccessRequest\x1a(.panda.user.v1.GetMerchantAccessResponseB7Z5github.com/panda-dev/panda-v2/contracts/proto/user/v1b\x06proto3"
 
 var (
 	file_user_v1_user_proto_rawDescOnce sync.Once
@@ -798,7 +1059,7 @@ func file_user_v1_user_proto_rawDescGZIP() []byte {
 	return file_user_v1_user_proto_rawDescData
 }
 
-var file_user_v1_user_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_user_v1_user_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_user_v1_user_proto_goTypes = []any{
 	(*UserProfile)(nil),               // 0: panda.user.v1.UserProfile
 	(*GetProfileRequest)(nil),         // 1: panda.user.v1.GetProfileRequest
@@ -809,8 +1070,12 @@ var file_user_v1_user_proto_goTypes = []any{
 	(*HasUsersResponse)(nil),          // 6: panda.user.v1.HasUsersResponse
 	(*ResetAccountScopeRequest)(nil),  // 7: panda.user.v1.ResetAccountScopeRequest
 	(*ResetAccountScopeResponse)(nil), // 8: panda.user.v1.ResetAccountScopeResponse
-	(*GetAdminAccessRequest)(nil),     // 9: panda.user.v1.GetAdminAccessRequest
-	(*GetAdminAccessResponse)(nil),    // 10: panda.user.v1.GetAdminAccessResponse
+	(*GetWechatIdentityRequest)(nil),  // 9: panda.user.v1.GetWechatIdentityRequest
+	(*GetWechatIdentityResponse)(nil), // 10: panda.user.v1.GetWechatIdentityResponse
+	(*GetAdminAccessRequest)(nil),     // 11: panda.user.v1.GetAdminAccessRequest
+	(*GetAdminAccessResponse)(nil),    // 12: panda.user.v1.GetAdminAccessResponse
+	(*GetMerchantAccessRequest)(nil),  // 13: panda.user.v1.GetMerchantAccessRequest
+	(*GetMerchantAccessResponse)(nil), // 14: panda.user.v1.GetMerchantAccessResponse
 }
 var file_user_v1_user_proto_depIdxs = []int32{
 	0,  // 0: panda.user.v1.GetProfileResponse.profile:type_name -> panda.user.v1.UserProfile
@@ -819,14 +1084,18 @@ var file_user_v1_user_proto_depIdxs = []int32{
 	3,  // 3: panda.user.v1.UserService.UpdateProfile:input_type -> panda.user.v1.UpdateProfileRequest
 	5,  // 4: panda.user.v1.UserService.HasUsers:input_type -> panda.user.v1.HasUsersRequest
 	7,  // 5: panda.user.v1.UserService.ResetAccountScope:input_type -> panda.user.v1.ResetAccountScopeRequest
-	9,  // 6: panda.user.v1.AdminAccessService.GetAdminAccess:input_type -> panda.user.v1.GetAdminAccessRequest
-	2,  // 7: panda.user.v1.UserService.GetProfile:output_type -> panda.user.v1.GetProfileResponse
-	4,  // 8: panda.user.v1.UserService.UpdateProfile:output_type -> panda.user.v1.UpdateProfileResponse
-	6,  // 9: panda.user.v1.UserService.HasUsers:output_type -> panda.user.v1.HasUsersResponse
-	8,  // 10: panda.user.v1.UserService.ResetAccountScope:output_type -> panda.user.v1.ResetAccountScopeResponse
-	10, // 11: panda.user.v1.AdminAccessService.GetAdminAccess:output_type -> panda.user.v1.GetAdminAccessResponse
-	7,  // [7:12] is the sub-list for method output_type
-	2,  // [2:7] is the sub-list for method input_type
+	9,  // 6: panda.user.v1.UserService.GetWechatIdentity:input_type -> panda.user.v1.GetWechatIdentityRequest
+	11, // 7: panda.user.v1.AdminAccessService.GetAdminAccess:input_type -> panda.user.v1.GetAdminAccessRequest
+	13, // 8: panda.user.v1.MerchantAccessService.GetMerchantAccess:input_type -> panda.user.v1.GetMerchantAccessRequest
+	2,  // 9: panda.user.v1.UserService.GetProfile:output_type -> panda.user.v1.GetProfileResponse
+	4,  // 10: panda.user.v1.UserService.UpdateProfile:output_type -> panda.user.v1.UpdateProfileResponse
+	6,  // 11: panda.user.v1.UserService.HasUsers:output_type -> panda.user.v1.HasUsersResponse
+	8,  // 12: panda.user.v1.UserService.ResetAccountScope:output_type -> panda.user.v1.ResetAccountScopeResponse
+	10, // 13: panda.user.v1.UserService.GetWechatIdentity:output_type -> panda.user.v1.GetWechatIdentityResponse
+	12, // 14: panda.user.v1.AdminAccessService.GetAdminAccess:output_type -> panda.user.v1.GetAdminAccessResponse
+	14, // 15: panda.user.v1.MerchantAccessService.GetMerchantAccess:output_type -> panda.user.v1.GetMerchantAccessResponse
+	9,  // [9:16] is the sub-list for method output_type
+	2,  // [2:9] is the sub-list for method input_type
 	2,  // [2:2] is the sub-list for extension type_name
 	2,  // [2:2] is the sub-list for extension extendee
 	0,  // [0:2] is the sub-list for field type_name
@@ -843,9 +1112,9 @@ func file_user_v1_user_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_user_v1_user_proto_rawDesc), len(file_user_v1_user_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   15,
 			NumExtensions: 0,
-			NumServices:   2,
+			NumServices:   3,
 		},
 		GoTypes:           file_user_v1_user_proto_goTypes,
 		DependencyIndexes: file_user_v1_user_proto_depIdxs,

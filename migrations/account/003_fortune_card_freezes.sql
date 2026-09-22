@@ -28,8 +28,8 @@ ALTER TABLE fortune_card_accounts
 -- 追回福卡」先扣余额后解冻写反了顺序，都会在这里当场炸出来，而不是变成一个可用余额为负、
 -- 对着账本也算不平的幽灵。
 --
--- 它同时是给下一轮的一条约束：追回必须先解冻（frozen_balance -= n）再冲正（balance -= n），
--- 反过来写这一步会失败。
+-- 它同时是追回那条路的顺序约束（见 007）：必须先解冻（frozen_balance -= n）再冲正
+-- （balance -= n），反过来写这一步会失败。
 ALTER TABLE fortune_card_accounts
     ADD CONSTRAINT fortune_card_accounts_frozen_within_balance CHECK (frozen_balance <= balance);
 

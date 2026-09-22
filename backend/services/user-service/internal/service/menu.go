@@ -207,7 +207,13 @@ func (s *AdminMenuService) AssignMenusToRole(ctx context.Context, roleID string,
 	return s.menus.AssignToRole(ctx, roleID, menuIDs)
 }
 
-// isDescendant 判断 candidateID 是否位于 rootID 的子树中
+// isDescendant 判断 candidateID 是否位于 rootID 的子树中。
+//
+// visited 是兜环的，不能省：库里的 parent_id 是自引用外键（002_identity_menus.sql:82），
+// 只声明了 ON DELETE CASCADE，**不拦成环**，表上也没有 CHECK 或触发器。走 API 造不出环
+// （本函数就是那道闸之一），但 SQL 直改能——手工修菜单在这套系统里是常规操作。
+// 没有 visited 时，只要 rootID 落在环上，这里就永远转不完：那一次「修改菜单」会挂住不放，
+// 占着 goroutine 和连接池连接，而且日志里什么都不留。
 func (s *AdminMenuService) isDescendant(ctx context.Context, rootID, candidateID string) (bool, error) {
 	menus, err := s.menus.FindAll(ctx)
 	if err != nil {
@@ -220,12 +226,19 @@ func (s *AdminMenuService) isDescendant(ctx context.Context, rootID, candidateID
 		}
 	}
 	stack := append([]string(nil), childrenOf[rootID]...)
+	visited := make(map[string]bool, len(menus))
 	for len(stack) > 0 {
 		cur := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		if cur == candidateID {
 			return true, nil
 		}
+		// 命中判断在 visited 之前：被压过两次的节点照样要比一次，只是不再展开第二遍，
+		// 于是「可达」的语义与成环前完全一致。
+		if visited[cur] {
+			continue
+		}
+		visited[cur] = true
 		stack = append(stack, childrenOf[cur]...)
 	}
 	return false, nil

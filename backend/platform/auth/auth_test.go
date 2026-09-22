@@ -31,6 +31,33 @@ func TestNewServiceSecretLengthBoundary(t *testing.T) {
 	}
 }
 
+// TestNewServiceRejectsPlaceholderSecret guards the value deploy/config/.env.example
+// ships. It is 34 bytes, so the length check passes it, and a stack brought up
+// from the example alone used to sign with a key printed in the repository.
+func TestNewServiceRejectsPlaceholderSecret(t *testing.T) {
+	tests := []struct {
+		name   string
+		secret string
+	}{
+		{name: "verbatim from .env.example", secret: "replace-with-a-long-random-secret"},
+		{name: "with surrounding whitespace", secret: " replace-with-a-long-random-secret\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := NewService([]byte(tt.secret), testIssuer, time.Hour, 24*time.Hour); err == nil {
+				t.Fatalf("NewService accepted the published placeholder %q as a signing key", tt.secret)
+			}
+		})
+	}
+
+	// A secret of one's own must still be accepted, however long the blocklist
+	// grows.
+	own := "b1f4d0c9a7e35268ab0d17f4c9e2a83d5b6c0f1e2d3c4b5a69788796a5b4c3d2"
+	if _, err := NewService([]byte(own), testIssuer, time.Hour, 24*time.Hour); err != nil {
+		t.Fatalf("NewService rejected a secret of its own: %v", err)
+	}
+}
+
 func signTestClaims(t *testing.T, secret []byte, method jwt.SigningMethod, claims Claims) string {
 	t.Helper()
 	token, err := jwt.NewWithClaims(method, claims).SignedString(secret)

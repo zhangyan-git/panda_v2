@@ -38,9 +38,12 @@ export const CAMPAIGN_STATUS: Record<string, EnumMeta> = {
 /**
  * lottery_rounds.status。
  *
- * open 与 closed 是**同一期的两个阶段**，不是两种期次：closed 表示参与人数已达标、停止收人，
- * 但还没开奖。所以它们都不算终态，界面上要区分开——一个 closed 的期次等着开奖，一个 open
- * 的期次还差人，运营要做的动作不一样。
+ * open 与 closed 是**同一期的两个阶段**，不是两种期次：closed 表示参与**次数**已收满门槛、
+ * 停止收人，但还没开奖。所以它们都不算终态，界面上要区分开——一个 closed 的期次等着开奖，
+ * 一个 open 的期次还差次数，运营要做的动作不一样（等，或者人工开奖/作废）。
+ *
+ * closed 是**开奖前**的最后一个状态，worker 扫到它就会开掉，所以它通常只存在一瞬间。一个
+ * open 的期次**不会有任何东西来动它**——没满就一直开着。
  */
 export const ROUND_STATUS: Record<string, EnumMeta> = {
   open: { text: '进行中', color: 'processing' },
@@ -82,14 +85,6 @@ export const PARTICIPATION_FAILURE: Record<string, EnumMeta> = {
   round_not_open: { text: '期次未开放', color: 'default' },
 };
 
-/** lottery_campaign_prizes.prize_kind / lottery_wins.prize_kind */
-export const PRIZE_KIND: Record<string, EnumMeta> = {
-  coupon: { text: '优惠券', color: 'blue' },
-  coffee: { text: '咖啡', color: 'brown' },
-  physical: { text: '实物', color: 'geekblue' },
-  custom: { text: '自定义', color: 'default' },
-};
-
 /**
  * lottery_wins.status。
  *
@@ -128,7 +123,7 @@ export const LOTTERY_ACTOR_TYPE: Record<string, EnumMeta> = {
   user: { text: '用户', color: 'blue' },
   merchant: { text: '商户', color: 'geekblue' },
   admin: { text: '管理员', color: 'purple' },
-  // 开奖那一条的 actor 就是 system——没有人「做了」这件事，是到点或达标触发的。
+  // 开奖那一条的 actor 就是 system——没有人「做了」这件事，是收满门槛触发的。
   system: { text: '系统', color: 'default' },
 };
 
@@ -141,20 +136,25 @@ export const DRAW_MODE: Record<string, EnumMeta> = {
 /**
  * lottery_draws.trigger：因为什么开的。
  *
- * 两档合一了，所以这里要分开说清：threshold 是**人先到了**（参与数达标，在确认那一步把
- * 期次置 closed），deadline 是**时间先到了**（窗口结束，由 worker 扫出来）。
- * 「为什么这一期昨天就开了」的答案就在这一列。
+ * 只有两条路，都是**人推着走的**：threshold 是参与**次数**收满了门槛（在确认那一步把期次
+ * 置 closed，worker 随后开掉），manual 是管理员直接开的。这里曾经还有一档 deadline
+ * （时间先到了，由 worker 扫出来），2026-09-15 随期次窗口一起删了——一个没满的期次会一直
+ * 开着等，不会被时间挑走。
+ *
+ * 「这一期为什么开了」的答案就在这一列。
  */
 export const DRAW_TRIGGER: Record<string, EnumMeta> = {
-  threshold: { text: '人数达标', color: 'blue' },
-  deadline: { text: '到点', color: 'gold' },
+  threshold: { text: '次数达标', color: 'blue' },
   manual: { text: '人工', color: 'purple' },
 };
 
 // 下面这两个不是枚举表的用法，单独说明。
 
 /**
- * 期次进度的显示文案：「3 / 10 人」。
+ * 期次进度的显示文案：「3 / 10 次」。
+ *
+ * 分母是门槛，**数的是参与次数**，不是人数——同一个人可以在同一期里参与多次，每参与一次
+ * 就 +1。
  *
  * 已开奖的期次显示**实际中奖人数**而不是名额：名额是「打算发几个」，实发可能更少
  * （参与的人不够时全员中奖）。把名额当结果显示，会让人以为没开奖成功。
@@ -171,7 +171,8 @@ export function roundProgressLabel(participantCount: number, participantTarget: 
  * 中奖名额的显示文案。
  *
  * 三个数在界面上**必须分得清**，它们最容易混：
- *   winnerCount      —— 名额（开期时按奖池 SUM(quantity) 冻结下来的）；
+ *   winnerCount      —— 名额（开期时按奖池冻结下来的；当前恒为 1，但冻结值本身还是从
+ *                       奖池求和来的，不是写死的 1——将来要改成发多份时入手点在那里）；
  *   actualWinnerCount—— 实际开出几个（够了就是名额，不够就是参与人数）；
  *   total            —— 这个活动一共开出过多少条中奖记录。
  * 这个函数只负责前两个：没开奖时说「名额 N」，开奖后说「实发 N / 名额 M」。

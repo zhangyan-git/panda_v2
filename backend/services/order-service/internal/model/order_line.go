@@ -73,3 +73,14 @@ const (
 	LineTypeAddon      = "addon"
 	LineTypeMembership = "membership"
 )
+
+// 分账业务分类，发起支付时随请求交给支付域，命中 settlement_rules.biz_type。
+//
+// 与 payment/008 那张表的词表前三个值逐字一致（第四个 store_consume 是「到店消费」，
+// 老系统 store_pos 的存量口径，V2 没有产生它的来源，所以这里不列）。这份常量在支付域
+// 另有一份**完整的**词表用于校验——两边都对着 008 的 CHECK 写，改词表要一起改。
+const (
+	SettlementBizCoffee       = "coffee"
+	SettlementBizMembership   = "membership"
+	SettlementBizAddonProduct = "addon_product"
+)

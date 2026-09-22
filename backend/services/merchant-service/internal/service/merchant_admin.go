@@ -12,13 +12,14 @@ import (
 )
 
 var (
-	ErrMerchantNameRequired     = errors.New("商户名称不能为空")
-	ErrMerchantStatusTransition = errors.New("不允许的商户状态流转")
-	ErrMerchantHasUsers         = errors.New("商户下存在账号，无法删除")
-	ErrMerchantUsernameTaken    = errors.New("用户名已存在")
-	ErrScopeTypeInvalid         = errors.New("无效的数据范围类型")
-	ErrScopeIDRequired          = errors.New("数据范围目标不能为空")
-	ErrScopeOutOfMerchant       = errors.New("数据范围目标不属于该商户")
+	ErrMerchantNameRequired      = errors.New("商户名称不能为空")
+	ErrMerchantStatusTransition  = errors.New("不允许的商户状态流转")
+	ErrMerchantHasUsers          = errors.New("商户下存在账号，无法删除")
+	ErrMerchantHasBrandsOrStores = errors.New("商户下存在品牌或门店，无法删除")
+	ErrMerchantUsernameTaken     = errors.New("用户名已存在")
+	ErrScopeTypeInvalid          = errors.New("无效的数据范围类型")
+	ErrScopeIDRequired           = errors.New("数据范围目标不能为空")
+	ErrScopeOutOfMerchant        = errors.New("数据范围目标不属于该商户")
 )
 
 // MerchantAccountPresence checks whether a merchant has accounts.
@@ -122,7 +123,11 @@ func (s *AdminMerchantService) UpdateStatus(ctx context.Context, id, status stri
 	return s.merchants.UpdateStatus(ctx, id, status)
 }
 
-// Delete 删除商户；名下存在账号时拒绝，避免触发外键约束报 500
+// Delete 删除商户；名下存在账号、品牌或门店时拒绝。
+//
+// 账号那条是跨库检查（identity 库），品牌/门店这条是本库的：brands 与 stores 对
+// merchants 都是 ON DELETE CASCADE（merchant/001），不拦的话删除会静默连带品牌、
+// 门店与两张审核表的历史一起消失，接口只回一个 200。
 func (s *AdminMerchantService) Delete(ctx context.Context, id string) error {
 	if _, err := s.merchants.FindByID(ctx, id); err != nil {
 		return err
@@ -133,6 +138,13 @@ func (s *AdminMerchantService) Delete(ctx context.Context, id string) error {
 	}
 	if hasUsers {
 		return ErrMerchantHasUsers
+	}
+	hasChildren, err := s.merchants.HasBrandsOrStores(ctx, id)
+	if err != nil {
+		return err
+	}
+	if hasChildren {
+		return ErrMerchantHasBrandsOrStores
 	}
 	return s.merchants.Delete(ctx, id)
 }

@@ -4,11 +4,18 @@ Panda V2 platform skeleton. This repository contains service and platform contra
 
 ## Services
 
-user, merchant, membership, coupon, account, lottery, order, payment, settlement, fulfillment, inventory, partner. `gateway` is the platform entrypoint.
+user, merchant, membership, coupon, account, lottery, order, payment, settlement, fulfillment, partner. `gateway` is the platform entrypoint.
 
 ## Contracts
 
 `contracts/proto` is the source of versioned protobuf contracts. The `user/v1`, `account/v1`, and `gateway/v1` packages define the initial profile, login, and routing RPC messages. Generated code is intentionally not checked in; this checkout has `protoc` for schema validation but no protobuf code generators.
+
+## Docs
+
+- `docs/architecture.md` — how the services fit together.
+- `docs/openapi.md` — the partner-facing specification for `/v1/openapi/*` (auth headers,
+  signature, error codes). Hand this one to the integration side; the source of truth for it is
+  the comments in `backend/services/partner-service/internal/ingress/`.
 
 ## Local checks
 

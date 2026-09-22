@@ -26,6 +26,7 @@ import {
   type Role,
 } from '../../services/iam';
 import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
+import { requestErrorMessage } from '../../services/requestError';
 
 const AdminUsersPage: React.FC = () => {
   const access = useAccess();
@@ -95,9 +96,13 @@ const AdminUsersPage: React.FC = () => {
               <Popconfirm
                 title="确认禁用该账号？"
                 onConfirm={async () => {
-                  await updateAdminUserStatus(row.id, 'disabled');
-                  message.success('已禁用');
-                  actionRef.current?.reload();
+                  try {
+                    await updateAdminUserStatus(row.id, 'disabled');
+                    message.success('已禁用');
+                    actionRef.current?.reload();
+                  } catch (error) {
+                    message.error(requestErrorMessage(error, '禁用失败，请稍后重试'));
+                  }
                 }}
               >
                 <Button type="link" size="small" danger icon={<StopOutlined />}>
@@ -108,9 +113,13 @@ const AdminUsersPage: React.FC = () => {
               <Popconfirm
                 title="确认启用该账号？"
                 onConfirm={async () => {
-                  await updateAdminUserStatus(row.id, 'active');
-                  message.success('已启用');
-                  actionRef.current?.reload();
+                  try {
+                    await updateAdminUserStatus(row.id, 'active');
+                    message.success('已启用');
+                    actionRef.current?.reload();
+                  } catch (error) {
+                    message.error(requestErrorMessage(error, '启用失败，请稍后重试'));
+                  }
                 }}
               >
                 <Button type="link" size="small" icon={<CheckCircleOutlined />}>
@@ -140,7 +149,12 @@ const AdminUsersPage: React.FC = () => {
           const result = await listAdminUsers(toPageParams(params));
           return { data: result.items, total: result.total, success: true };
         }}
-        search={{ labelWidth: 'auto' }}
+        // 没有搜索栏：`GET /v1/admin/users` 只解析 page / pageSize
+        // （user-service internal/handler/user.go 的 List 里只有 ParsePage），用户名 / 姓名 /
+        // 邮箱三个搜索框填了也发不出去、后端一个都不认，结果只会是「筛了跟没筛一样」。
+        // 仓库里同一条取舍见 payments/index.tsx 的「渠道 / 支付方式」两列：不给搜索就不要
+        // 摆那个框。等后端支持按这三个字段筛，再把 search 打开。
+        search={false}
         toolBarRender={() => [
           access.can('admin:users:manage') && (
             <Button
@@ -161,7 +175,14 @@ const AdminUsersPage: React.FC = () => {
         open={createOpen}
         onOpenChange={setCreateOpen}
         onFinish={async (values) => {
-          await createAdminUser(values);
+          try {
+            await createAdminUser(values);
+          } catch (error) {
+            // 用户名重复一类的错只有后端知道，返回 false 让弹窗留在原地，
+            // 填过的四个字段不丢。
+            message.error(requestErrorMessage(error, '创建失败，请稍后重试'));
+            return false;
+          }
           message.success('已创建');
           actionRef.current?.reload();
           return true;
@@ -198,9 +219,17 @@ const AdminUsersPage: React.FC = () => {
         open={roleModal}
         onCancel={() => setRoleModal(false)}
         width={640}
+        // 不返回 Promise：失败时自行提示并保持弹窗打开，避免 antd 把已保存状态当成功
+        // 关闭（与 roles 页两个分配弹窗同一写法）。角色清单是刚拉回来的，失败时留着重选
+        // 比退出去再点一次「分配角色」强。
         onOk={async () => {
           if (!roleTarget) return;
-          await assignRolesToUser(roleTarget.id, targetKeys);
+          try {
+            await assignRolesToUser(roleTarget.id, targetKeys);
+          } catch (error) {
+            message.error(requestErrorMessage(error, '角色保存失败，请稍后重试'));
+            return;
+          }
           message.success('角色已更新');
           setRoleModal(false);
         }}

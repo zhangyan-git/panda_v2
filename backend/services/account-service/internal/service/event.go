@@ -31,13 +31,21 @@ const (
 // HandleOrderEvent 消费订单事件。它是 runtime.Options.ConsumerHandler 的实现，
 // 返回值决定这条消息的归宿：nil 是 ack，非 nil 是「没处理成功」，由平台重投或送死信。
 //
-// 它认四件事，正好是本服务与订单域的全部交接点：
+// 它认六件事，正好是本服务与订单域的全部交接点：
 //
-//	order.completed          这一单完成了  → 发放福卡，余额增加
-//	order.after_sale.applied 用户申请退款  → 冻结福卡，这些卡不能抽奖了
-//	order.after_sale.reviewed 管理员审核   → 驳回：解冻福卡（通过不解冻，钱还没退）
-//	                                        通过：冲正咖啡豆（驳回不动，豆已经扣走了）
-//	order.after_sale.cancelled 用户撤销    → 解冻福卡
+//	order.completed            这一单完成了 → 发放福卡，余额增加
+//	order.after_sale.applied   用户申请退款 → 冻结福卡，这些卡不能抽奖了
+//	order.after_sale.reviewed  管理员审核   → 驳回：解冻福卡；通过：**什么都不做**（钱还没退）
+//	order.after_sale.cancelled 用户撤销     → 解冻福卡
+//	order.after_sale.refunded  退款成功     → 追回福卡（解冻 + 冲正那几笔发放），并冲正咖啡豆
+//	order.after_sale.refund_failed 退款失败 → 解冻福卡（钱没出去，卡凭什么锁着），豆一分不动
+//
+// 最后两条是退款链的收口，也是**唯一**能让冻结行走完的两条路：一支把它结在 recovered
+// （卡收回来了），一支把它结在 released（卡放回去了）。冻结不再有「一直冻着」这个结局。
+//
+// 钱的两种结局也是本服务**所有**还钱动作的时点：豆与福卡都不在「审核通过」那一拍动。
+// 审核通过只说明「同意退」，钱还在渠道那边；那时候就把赠品收走、把豆还回去，撞上退款
+// 失败就得再还一遍原样的东西回去。挂在钱的结果上，每一种结局只对应一个动作。
 //
 // 判断只有三条（对每一个类型都成立）：
 //   - 不认识的事件类型：ack。主题里有别的类型，那不是发给我们的。
@@ -59,6 +67,10 @@ func (s *AccountService) HandleOrderEvent(ctx context.Context, event messaging.E
 		return s.handleAfterSaleReviewed(ctx, event)
 	case dto.EventAfterSaleCancelled:
 		return s.handleAfterSaleCancelled(ctx, event)
+	case dto.EventAfterSaleRefunded:
+		return s.handleAfterSaleRefunded(ctx, event)
+	case dto.EventAfterSaleRefundFailed:
+		return s.handleAfterSaleRefundFailed(ctx, event)
 	default:
 		return nil
 	}
@@ -164,17 +176,19 @@ func (s *AccountService) handleAfterSaleApplied(ctx context.Context, event messa
 
 // handleAfterSaleReviewed 是「管理员审核了这张售后单」。
 //
-// 两件事在这条事件上分开走，因为它们保护的是两种不同的东西：
+// 这条事件只做一件事：**驳回 ⇒ 解冻福卡**。通过什么都不做，豆的冲正也不在这里。
 //
-//	福卡  驳回 → 解冻。**通过不解冻**：通过了只代表「同意退」，钱还没出去（退款单在
-//	      payment-service，未建）。冻结一直保持到退款成功、追回福卡那一刻。在这里解冻
-//	      会让用户在拿到退款之前先拿到可用的卡，恰好把冻结想挡的那件事放出去。
-//	咖啡豆 通过 → 冲正。**驳回什么都不做**：豆在支付的那一刻就已经扣走了，用户手上不再
-//	      有这些豆，没有可保护的东西，自然也没有要放开的东西。而通过就是资金侧完整的
-//	      退款（纯豆单的钱就是我们自己收的豆，全额、无外部渠道），所以把钱还回去。
+// 通过之所以是一个空分支，是因为它只代表「同意退」，钱还没出去——退款单是紧接着才向
+// 渠道发起的，成没成由 order.after_sale.refunded / .refund_failed 回来。在这个时点上：
 //
-// 「通过不解冻福卡、通过即冲正豆」不是矛盾：福卡是**还没花的凭证**（还回去等于放它出去），
-// 豆是**已经收下的钱**（还回去正是退款本身）。
+//	福卡  解冻等于把刚压住的卡又放出去，用户还没拿到钱；收走则更没道理，钱还没退。
+//	咖啡豆 还回去等于按「同意退」付款——退款可以失败，那时候这笔豆就得原样再扣一次。
+//
+// 所以两者都等钱的结果：退成 ⇒ 收走福卡、还回豆（handleAfterSaleRefunded），没退成 ⇒
+// 什么都不用做（豆从没动过，卡由 handleAfterSaleRefundFailed 放回）。**一个动作只对应
+// 钱的一种结局**，不必在「通过」和「退成」之间分两步走同一件事。
+//
+// 驳回也不动豆：豆在支付那一刻就已经扣走了，驳回不改变「用户花掉了这些豆」这个事实。
 func (s *AccountService) handleAfterSaleReviewed(ctx context.Context, event messaging.Envelope) error {
 	var payload dto.AfterSaleReviewedEventPayload
 	if err := newDecoder(event).Decode(&payload); err != nil {
@@ -189,15 +203,20 @@ func (s *AccountService) handleAfterSaleReviewed(ctx context.Context, event mess
 		}
 		return s.Release(ctx, afterSaleNo, FreezeReasonRejected)
 	case dto.AfterSaleStatusApproved:
-		return s.reverseBeansForAfterSale(ctx, payload)
+		return nil
 	default:
-		// 别的状态（pending 之类）不该从这条事件上来。解冻是不可逆地放松保护、冲正是不可逆
-		// 地把钱还出去，认不出来就别动——与「认不出来的 scope 不冻」同一个方向。
+		// 别的状态（pending 之类）不该从这条事件上来。解冻是不可逆地放松保护，认不出来
+		// 就别动——与「认不出来的 scope 不冻」同一个方向。
 		return nil
 	}
 }
 
-// reverseBeansForAfterSale 是「审核通过」这一步对咖啡豆做的事。
+// reverseBeansForRefund 是「钱退成了」这一步对咖啡豆做的事：把这一单扣掉的豆还回去。
+//
+// **唯一的触发点是退款成功**，不是审核通过。豆是支付时就已经收下的钱，还回去就是退款
+// 本身，所以它必须跟着钱走：钱没退成，豆一分不动，不需要任何补救；钱退成了，豆就是退
+// 款的一部分。挂在「通过」上会多出一次「钱没出去但豆已经还了」的中间态——那正是这一
+// 刀要消掉的东西。
 //
 // 绝大多数订单是渠道支付的，那些单在这里**什么都不发生**：账户域按 `order:{orderId}`
 // 找不到扣减流水，ReverseBeans 返回 (false, nil) 而不报错。这是常态而不是异常，所以
@@ -209,20 +228,16 @@ func (s *AccountService) handleAfterSaleReviewed(ctx context.Context, event mess
 //
 // 幂等有两道：同一条售后重投由 `after_sale:{afterSaleNo}` 的唯一索引挡住（不产生第二笔
 // 冲正），而「已经冲回多少」由这笔扣减的所有冲正流水之和算出来，所以第二次部分退只补差额。
+// 换触发点没有削弱这两道：`after_sale.refunded` 与 reviewed 一样由 order-service 的
+// outbox 与事实同事务发出，重放分支不重发（见 AdvanceRefund）。
 //
-// ⚠️ 留给退款单那一轮的接缝：`approved` 今天在订单域是**终点**——`orders.refunded_amount`
-// 从来没有被写过，`refunding`/`refunded` 两个状态没有任何写路径。等 payment-service 的
-// 退款单落地、多出一条「退款成功」的事件时：
-//
-//   - **不能再冲一次豆**。同一张售后单重复投递由上面那把唯一索引挡着，但一个**新的**触发源
-//     需要显式判断「这笔豆已经冲过了」，而不是靠事件幂等（那是两回事：幂等挡「同一条消息
-//     投两次」，挡不住「另一条消息说同一件事」）。
-//   - 反查入口是 `order_payment_lines.account_entry_id`（那笔扣减的流水 ID），不是这里的
-//     事件——它已经由 payment_fundings 一路带到了订单域。
-func (s *AccountService) reverseBeansForAfterSale(ctx context.Context, payload dto.AfterSaleReviewedEventPayload) error {
+// 反查入口一直是那笔扣减的流水（`coffee_bean_entries` 里 `order:{orderId}` 那条 consume），
+// 不是事件本身——所以这里不需要「这笔豆已经冲过了吗」这种额外判断：`after_sale:{no}`
+// 那把唯一索引问的就是同一件事，而且答案在数据库上，不依赖事件投递的语义。
+func (s *AccountService) reverseBeansForRefund(ctx context.Context, payload dto.AfterSaleRefundEventPayload, occurredAt time.Time) error {
 	if payload.RefundAmount <= 0 {
 		// 订单域在申请那一刻就挡掉了 `amount <= 0`（ErrAfterSaleNothingToRefund），所以
-		// 这个数不该出现在一条 approved 事件里。报错而不是跳过：跳过等于欠退，而欠退比
+		// 这个数不该出现在一条退款成功事件里。报错而不是跳过：跳过等于欠退，而欠退比
 		// 错退更难被发现。
 		return fmt.Errorf("%w: after sale refund amount is %d", ErrInvalidAmount, payload.RefundAmount)
 	}
@@ -231,7 +246,10 @@ func (s *AccountService) reverseBeansForAfterSale(ctx context.Context, payload d
 		AfterSaleID: strings.TrimSpace(payload.AfterSaleID),
 		AfterSaleNo: strings.TrimSpace(payload.AfterSaleNo),
 		Amount:      payload.RefundAmount,
-		Remark:      "售后单 " + strings.TrimSpace(payload.AfterSaleNo) + " 审核通过",
+		Remark:      "售后单 " + strings.TrimSpace(payload.AfterSaleNo) + " 退款成功",
+		// 与同一拍上的福卡冲正用同一个时刻（调用方算好的那个）：退款成了一条事件，
+		// 两处账变的业务时间就必须是同一刻，否则补投旧事件时明细页上它们的先后是乱的。
+		OccurredAt: occurredAt,
 	})
 	return err
 }
@@ -251,6 +269,68 @@ func (s *AccountService) handleAfterSaleCancelled(ctx context.Context, event mes
 		return fmt.Errorf("%w: afterSaleNo is required", ErrInvalidEvent)
 	}
 	return s.Release(ctx, afterSaleNo, FreezeReasonCancelled)
+}
+
+// handleAfterSaleRefunded 是「钱退成了」⇒ 两件还钱的事一起做。
+//
+// 一、追回这一单送出去的福卡。冻结从**申请那一刻**就压着了（handleAfterSaleApplied），
+// 所以这里不用再确认「卡还在不在」：冻着的卡抽不了奖，从申请到这一刻之间它不可能被花掉。
+// 这里做的是把那份冻结**结掉**——解冻 + 冲正（余额真的少掉），余额上的结果就是「钱退了，
+// 赠品也退了」。追不回来的那部分（申请之前就已经被抽掉的）由仓储按冻结额钳住，不报错、
+// 也不影响这条消息的归宿：钱是真的退回去了，为它失败只会让这条事件一路重试到死信。
+//
+// 二、把这一单扣掉的咖啡豆还回去（reverseBeansForRefund）。纯豆单的钱就是我们自己收的
+// 豆，钱退成的那一刻就是豆该还回去的那一刻；渠道单在这里是 no-op。
+//
+// 两件事写在同一拍上，但各自独立成事务、各自幂等：一条重投进来时，先跑完福卡追回
+// （`after_sale_no` 那把唯一索引 + 冻结行的状态判断让它成为 no-op），再跑豆的冲正
+// （`after_sale:{no}` 唯一索引拦第二笔），谁也不会被重复做一遍。追回失败时豆那一步
+// 不会执行——这条消息仍然进重试，钱已经退出去的事实不会因此丢。
+func (s *AccountService) handleAfterSaleRefunded(ctx context.Context, event messaging.Envelope) error {
+	var payload dto.AfterSaleRefundEventPayload
+	if err := newDecoder(event).Decode(&payload); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidEvent, err)
+	}
+
+	afterSaleNo := strings.TrimSpace(payload.AfterSaleNo)
+	if afterSaleNo == "" {
+		// 冻结行的幂等键缺了，追回就无从下手。进死信让有人看见。
+		return fmt.Errorf("%w: afterSaleNo is required", ErrInvalidEvent)
+	}
+
+	// 用钱的时刻而不是收到消息的那一刻：补投一条前几天的事件时，流水上的顺序必须
+	// 还是那几天——与冲正、发放同一条规矩。
+	occurredAt := s.now()
+	if payload.RefundedAtUnix > 0 {
+		occurredAt = time.Unix(payload.RefundedAtUnix, 0).UTC()
+	}
+
+	if _, err := s.Recover(ctx, afterSaleNo, occurredAt); err != nil {
+		return err
+	}
+	return s.reverseBeansForRefund(ctx, payload, occurredAt)
+}
+
+// handleAfterSaleRefundFailed 是「钱没退成」⇒ 解冻。
+//
+// 走的就是驳回/撤销那条路（Release），一行新逻辑都不用写：三种情况下钱都没出去，
+// 冻着的卡凭什么锁着。豆也一分不动——冲正挂在退款成功那一拍上，钱没退成时它从未发生
+// 过，所以这里没有要撤销的动作（这正是把豆挪到这一拍的收益：不存在「白退了豆」）。
+//
+// 这一步不是收尾工作，是**下一个回合的前提**：退款失败后那张售后单是终态，用户要重新
+// 申请；而在途冻结已经把可用吃光，重开的那张冻结行只冻得到 0 张——不在这里解开，第二次
+// 退款成功时一张卡都追不回来。
+func (s *AccountService) handleAfterSaleRefundFailed(ctx context.Context, event messaging.Envelope) error {
+	var payload dto.AfterSaleRefundEventPayload
+	if err := newDecoder(event).Decode(&payload); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidEvent, err)
+	}
+
+	afterSaleNo := strings.TrimSpace(payload.AfterSaleNo)
+	if afterSaleNo == "" {
+		return fmt.Errorf("%w: afterSaleNo is required", ErrInvalidEvent)
+	}
+	return s.Release(ctx, afterSaleNo, FreezeReasonRefundFailed)
 }
 
 // grantTitle 把一笔发放翻成用户能看懂的那一行字。

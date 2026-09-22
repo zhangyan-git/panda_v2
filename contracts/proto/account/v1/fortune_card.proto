@@ -9,8 +9,9 @@ option go_package = "github.com/panda-dev/panda-v2/contracts/proto/account/v1";
 // 任何地方 import 它，与本文件不是一回事：这里的「账户」是用户的资产账户，不是能登录后台的
 // 账号。这个目录名两义是历史遗留，改它要动一堆 go_package，不在本轮。
 //
-// 调用方都是**服务**，不是客户端：抽奖（lottery-service）扣减、退款追回冲正。小程序与后台
-// 读余额、流水走 HTTP（`/v1/miniapp/fortune-cards`、`/v1/admin/fortune-cards/*`），不走这里。
+// 调用方都是**服务**，不是客户端：抽奖（lottery-service）扣减、退款追回冲正，以及订单域在
+// 受理退款申请前问一句「这单的卡还冻得上吗」。小程序与后台读余额、流水走 HTTP
+// （`/v1/miniapp/fortune-cards`、`/v1/admin/fortune-cards/*`），不走这里。
 //
 // 金额一律是「张数」，整数，没有小数。
 service FortuneCardService {
@@ -33,6 +34,20 @@ service FortuneCardService {
   // 已经生成的那笔。冲正会把余额扣成负数时拒绝——「已经抽过奖的福卡追不回来」是业务规则，
   // 不是故障，所以是明确的错误消息，不是 500。
   rpc ReverseFortuneCardEntry(ReverseFortuneCardEntryRequest) returns (ReverseFortuneCardEntryResponse);
+
+  // 预览一次冻结：现在把这批发放冻起来，**冻得上几张**。只算不写。
+  //
+  // 存在的理由是一条业务规则：一单赠送的福卡一张都没被用过，才允许申请退款。判据只能是
+  // 这个数——福卡的流水是一口**池子**（抽奖扣的那一笔只记 `draw:{requestId}`，从不指向
+  // 它消耗的是哪一次发放），所以「这一单送的那几张还在不在」在库里没有直接答案，能算出来
+  // 的只有「这批发放键上还挂着几张（没被冲正过的）」与「账户此刻还有多少可用」，取小的
+  // 那个——正是 FreezeAfterSale 此刻会冻上的张数。预览与冻结必须用同一句 SQL，否则两个
+  // 数会漂移，而这里的漂移直接变成「申请被拒了但其实冻得上」或者反过来。
+  //
+  // 订单域在**受理申请之前**问一次：冻不满就是不受理（回给用户一句人话），而不是像过去
+  // 那样先受理、冻结时再悄悄钳住。这一问挡的是「用户早就把卡抽掉了」这个常态；申请与冻结
+  // 之间那个毫秒级的窗口挡不住，也不该由它挡——冻结那一侧的钳制仍然是权威。
+  rpc PreviewFortuneCardFreeze(PreviewFortuneCardFreezeRequest) returns (PreviewFortuneCardFreezeResponse);
 }
 
 message GetFortuneCardBalanceRequest {
@@ -77,6 +92,26 @@ message ReverseFortuneCardEntryRequest {
   // 冲正流水上的文案与备注，留空则用「冲正」。
   string title = 2;
   string remark = 3;
+}
+
+message PreviewFortuneCardFreezeRequest {
+  // 小程序用户 ID，值引用。申请退款的是本人，但冻哪几笔由订单域按退款范围拆。
+  string user_id = 1;
+  // 这次退款要冻的那几笔发放的幂等键（`order:{orderId}:base` 之类），由订单域给。
+  // 空列表是常态：这一单没承诺福卡，或者退的是不送福卡的会员套餐——那时预览恒为 0，
+  // 调用方不该拿它去拒一次申请。
+  repeated string entry_keys = 2;
+}
+
+message PreviewFortuneCardFreezeResponse {
+  // 这几笔发放**还挂着**多少张（没被冲正过的）。
+  //
+  // 0 表示发放还没落库，而不是「卡被用掉了」：一张订单可以先申请退款再完成，那时冻结行是
+  // 个空壳，等发放落库时补上。调用方必须把这两种情形分开——只给 freezable 的话它们都是 0，
+  // 而前者该放行、后者该拒。
+  int64 granted = 1;
+  // 此刻真的冻得上的张数：min(granted, 账户可用)。申请退款要的是它等于订单承诺的张数。
+  int64 freezable = 2;
 }
 
 message ReverseFortuneCardEntryResponse {

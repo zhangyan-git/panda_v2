@@ -30,15 +30,22 @@ type BeginPaymentParams struct {
 	OrderNo   string
 	UserID    string
 	// Amount 单位为分，由调用方权威给出。
-	Amount      int64
-	FundingType string
-	ChannelID   string
-	MethodID    string
+	Amount int64
+	// Provider 是渠道名（如 `ums`），账户出资没有渠道，传空串落库。
+	Provider string
+	// Method 是用户在收银台上选的支付方式的 code（catalog 里的常量，如 `ums_h5_wechat`）。
+	Method      string
 	Subject     string
 	Attach      map[string]string
 	RequestID   string
 	ExpiresAt   time.Time
 	RequestHash string
+	// Settlement 是这次发起算好的分账计划，与支付单**同一个事务**落成 settlement_tasks +
+	// settlement_receivers（方案 B：任务在发起支付时建，支付成功之后只剩推进状态）。
+	//
+	// nil 表示这次不发分账，只有一种情形：账户出资（咖啡豆）。渠道分账分的是渠道里的钱。
+	// 「没命中规则」不是 nil——那照样建任务，整单归平台。
+	Settlement *SettlementPlan
 }
 
 // BeginPayment 在**一个事务里**抢占幂等键、建支付单、写状态流水。
@@ -85,12 +92,14 @@ func (r *PostgresRepository) BeginPayment(ctx context.Context, p BeginPaymentPar
 		}
 	}
 
+	// 两个渠道列的 NULLIF(...)::uuid 没了：它们今天是 TEXT，空串就是「没有渠道」本身
+	// （账户出资那条路），不再需要一个 NULL 去表示同一件事。
 	payment, err := scanPayment(tx.QueryRow(ctx, `INSERT INTO payments
-		(payment_no, order_no, user_id, amount, funding_type, channel_id, payment_method_id,
+		(payment_no, order_no, user_id, amount, provider, payment_method,
 		 status, subject, attach, request_id, expires_at)
-		VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')::uuid,NULLIF($7,'')::uuid,'created',$8,$9,$10,$11)
+		VALUES ($1,$2,$3,$4,$5,$6,'created',$7,$8,$9,$10)
 		RETURNING `+paymentColumns,
-		p.PaymentNo, p.OrderNo, p.UserID, p.Amount, p.FundingType, p.ChannelID, p.MethodID,
+		p.PaymentNo, p.OrderNo, p.UserID, p.Amount, p.Provider, p.Method,
 		p.Subject, attach, p.RequestID, p.ExpiresAt))
 	if err != nil {
 		// 走 mapPGError：撞上 payments_request_id_key 或 payments_one_succeeded_per_order
@@ -102,6 +111,12 @@ func (r *PostgresRepository) BeginPayment(ctx context.Context, p BeginPaymentPar
 	// 建单那一步的写法一致，让聚合的完整历史从第一行起就能读出来。
 	if err := recordTransition(ctx, tx, model.AggregatePayment, payment.ID, "",
 		model.PaymentCreated, "payment created", p.RequestID, model.ActorSystem, nil, nil); err != nil {
+		return nil, nil, false, err
+	}
+
+	// 分账任务与支付单同生共死：分在两个事务里，中间那一小段就是「支付单在、任务不在」——
+	// 那一笔永远不会有分账，而且没有任何报错（缺口 A 那种「安静地建不出来」的形状）。
+	if err := insertSettlementTask(ctx, tx, payment, p.Settlement); err != nil {
 		return nil, nil, false, err
 	}
 
@@ -140,6 +155,73 @@ func retireAbandonedPayment(ctx context.Context, tx pgx.Tx, requestID string) er
 	_, err := tx.Exec(ctx, `UPDATE payments SET request_id='', updated_at=NOW()
 		WHERE request_id=$1 AND status <> 'succeeded'`, requestID)
 	return err
+}
+
+// AbandonPaymentAttempt 把一次**没走完**的发起尝试退回去，让同一个幂等键能立刻重开。
+//
+// 什么时候调它：BeginPayment 已经把幂等行写成 processing、支付单也落了库，而这次发起在那之后
+// 失败了（渠道没注册、调用根本没发出去、结果不明、账户域不可达——见 service 的 dispatchCreate）。
+// 这些尝试**没有产生任何结论**，而幂等行的语义是「有结论才有得回放」：留一条 processing 在那儿，
+// 同一个 Idempotency-Key 在 IdempotencyRecoveryWindow 之内重试只会拿到 ErrIdempotencyInProgress，
+// 而那个窗口里并没有任何东西真的在跑。
+//
+// 它与 beginIdempotentOperation 里那条「陈旧记录回收」是同一件事（同一对动作：把支付单从幂等键
+// 上摘下来 + 把幂等行清掉），只是不等那 15 分钟——区别在于我们**知道**这次尝试已经结束了，
+// 不需要靠时间来推断。两次实现共用 retireAbandonedPayment 那条「摘」的规矩。
+//
+// 三条硬约束与它们各自的落点：
+//
+//   - **不会产生两张有效支付单**。摘下来的那张单留在 payments 里、状态仍是 created，由超时关单
+//     收走；它收不到钱，而 payments_one_succeeded_per_order 在库上钉死了「一张订单只能有一笔
+//     成功」。新版尝试走的是新的 payment_no，两者不会同时有效。
+//   - **不会把一个已经成功/终态的单标成失败**。这条语句一个字都不改 payments.status，只摘
+//     request_id；`status <> 'succeeded'` 那半句是安全阀——一次成功收款与它的幂等键之间不能断
+//     （与 retireAbandonedPayment 同一条规矩），那种情况下**整件事都不做**。
+//   - **支付单仍然看得见**。它没有被删：后台列表与详情页照常查得到，「这一次发起存在过」这件事
+//     不该因为没人付款就消失（payments 表的注释）。被摘掉的只是「这个幂等键属于它」。
+//
+// **`account_entry_id IS NULL` 是第二个安全阀**，它管的是账户出资那条路的结尾：豆**已经扣走**
+// 而结算没成的那些单（createAccountPayment 第 2 步成功、第 3 步失败）。这种单不能放开——
+// 它必须留在原处、由补偿任务结算掉（见 service 的 SettleOverdueAccountPayments，筛选条件正是
+// 「account_entry_id 非空」）。放开它会有两个后果，都在钱上：账户域那边只有一笔账变（扣豆的
+// 幂等键是 order:{orderId}，重试只会回放），而本地会多出一张同订单的候选单去竞争那笔结算，
+// 输的那张落成 failed + account_funded_without_settlement，让运营去还一笔根本没多扣的豆。
+// 留下来的代价只是这一个 request_id 在回收窗口内重试会拿到 Aborted——那正是今天的行为，而它
+// 换来的是「一张出了账的单只有一个结算者」。其余每一条出口（连不上账户域、渠道侧的任何失败）
+// 那时候 account_entry_id 都还是空的，照常放开、照常可以立刻重试。
+func (r *PostgresRepository) AbandonPaymentAttempt(ctx context.Context, requestID, paymentID string) error {
+	if requestID == "" || paymentID == "" {
+		return nil
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	detached, err := tx.Exec(ctx, `UPDATE payments SET request_id='', updated_at=NOW()
+		WHERE id=$1 AND request_id=$2 AND status <> 'succeeded' AND account_entry_id IS NULL`,
+		paymentID, requestID)
+	if err != nil {
+		return err
+	}
+	if detached.RowsAffected() == 0 {
+		// 两种情况都落在这里，且都**不动幂等行**：
+		//   - 那张单已经不是「半截尝试」了：并发下回调或另一条路径已经把它推成了 succeeded
+		//     （MarkPaymentPending 那条 ErrPaymentNotPending 就是这个形状），或者另一次回收先
+		//     摘走了它。前者要让同一个 key 回放那张单，把行删掉才是真正的错。
+		//   - 豆已经扣走、只差结算（见上面第二个安全阀）：那张单要留在原处等补偿任务。
+		return nil
+	}
+	// 只删还在 processing 的那一行。succeeded / failed 是**结论**，删掉等于把「上次的答复」抹了；
+	// 那两行该被回放，不该被重开（见 beginIdempotentOperation 的 switch）。
+	_, err = tx.Exec(ctx, `DELETE FROM payment_idempotency_keys
+		WHERE scope=$1 AND idempotency_key=$2 AND status=$3`,
+		ScopeCreatePayment, requestID, model.IdempotencyProcessing)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // MarkPaymentPendingParams 是发起支付成功那一段的输入。
@@ -254,6 +336,12 @@ func (r *PostgresRepository) MarkPaymentFailed(ctx context.Context, p MarkPaymen
 		model.PaymentFailed, p.FailureMessage, p.RequestID, model.ActorSystem, nil, nil); err != nil {
 		return nil, err
 	}
+	// 支付单进终态，还停在 pending 的分账任务跟着作废。**必须与这次失败同一个事务**：
+	// 分开了就可能出现「支付单是 failed、任务是 pending」——那条任务会被扫待发起的任务捞出来，
+	// 把一笔从没收到的钱发去分账（见 008 的 settlement_tasks_unfinished_idx 那段警告）。
+	if err := cancelPendingSettlementInTx(ctx, tx, payment.ID); err != nil {
+		return nil, err
+	}
 	// 幂等行也要标 failed。order-service 那边失败时幂等行会随事务回滚消失（重试 = 全新
 	// 一次尝试），支付这边失败会提交，所以必须显式标它——否则同一个 request_id 重试时
 	// 会看到一条 processing，白等 15 分钟才被回收。
@@ -355,18 +443,18 @@ func (r *PostgresRepository) SettleAccountPayment(ctx context.Context, p SettleA
 	if _, err := tx.Exec(ctx, `INSERT INTO payment_fundings
 		(payment_id, line_no, line_type, amount, status, account_entry_id, succeeded_at)
 		VALUES ($1,1,$2,$3,'succeeded',NULLIF($4,'')::uuid,$5)`,
-		payment.ID, payment.FundingType, payment.Amount, p.AccountEntryID, p.PaidAt); err != nil {
+		payment.ID, payment.PaymentMethod, payment.Amount, p.AccountEntryID, p.PaidAt); err != nil {
 		return nil, err
 	}
 
 	// 资金流水是**不可变的对账基准**（方案 5.9），与渠道那条路同一张表、同一形状。
-	// channel_id 落 NULL：账户出资没有渠道行，这正是 channel_id 可空的原因。
+	// provider 落空串：账户出资没有第三方，这正是这一列可空的原因。
 	// account_entry_id 也一起写：这一行单独拿出来就能指回账户域那笔扣减，不必 join 出资行。
 	if _, err := tx.Exec(ctx, `INSERT INTO payment_transactions
 		(kind, payment_no, refund_no, funding_line_no, line_type, direction, amount,
-		 channel_id, provider_transaction_id, account_entry_id, occurred_at)
+		 provider, provider_transaction_id, account_entry_id, occurred_at)
 		VALUES ('payment',$1,'',1,$2,'in',$3,$4,'',NULLIF($5,'')::uuid,$6)`,
-		payment.PaymentNo, payment.FundingType, payment.Amount, payment.ChannelID,
+		payment.PaymentNo, payment.PaymentMethod, payment.Amount, payment.Provider,
 		p.AccountEntryID, p.PaidAt); err != nil {
 		return nil, err
 	}
@@ -402,10 +490,15 @@ func (r *PostgresRepository) SettleAccountPayment(ctx context.Context, p SettleA
 
 // ProviderCallParams 是一次渠道调用的留痕（方案 6：所有第三方适配器都要有调用流水）。
 type ProviderCallParams struct {
-	ChannelID       string
-	Provider        string
-	Operation       string
-	PaymentNo       string
+	Provider  string
+	Operation string
+	PaymentNo string
+	// AgreementNo 是签约这条链路上的定位键（payment_agreements.agreement_no）。
+	//
+	// 它走**列**而不是像 refund_no 那样进摘要：退款那次进摘要是因为同一个 payment_no 上
+	// 可以挂多张退款单、摘要里必须带一个能区分它们的值，而签约这边一张协议号就能定死一行，
+	// 而且后台的调用流水列表按这一列筛（见 query.go 的 providerCallColumns）。
+	AgreementNo     string
 	RequestID       string
 	TraceID         string
 	AttemptNo       int
@@ -437,11 +530,43 @@ func (r *PostgresRepository) RecordProviderCall(ctx context.Context, p ProviderC
 		attempt = 1
 	}
 	_, err = r.pool.Exec(ctx, `INSERT INTO payment_provider_calls
-		(channel_id, provider, operation, payment_no, request_id, trace_id, attempt_no,
+		(provider, operation, payment_no, agreement_no, request_id, trace_id, attempt_no,
 		 request_summary, response_summary, http_status, provider_code, provider_message,
 		 result, duration_ms)
-		VALUES (NULLIF($1,'')::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-		p.ChannelID, p.Provider, p.Operation, p.PaymentNo, p.RequestID, p.TraceID, attempt,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		p.Provider, p.Operation, p.PaymentNo, p.AgreementNo, p.RequestID, p.TraceID, attempt,
+		request, response, p.HTTPStatus, p.ProviderCode, p.ProviderMessage, p.Result, p.DurationMS)
+	return err
+}
+
+// insertProviderCallInTx 是 RecordProviderCall 的事务内版本，列完全一样。
+//
+// 为什么签约那条路需要它：RecordProviderCall 刻意**不走业务事务**（流水是给运维查的，
+// 钱的状态比它重要，见上面那段注释），那条规矩针对的是**出网调用**——一次发出去的请求即使
+// 事务回滚也真的发生过了，流水必须留下。而纯签约**没有出网调用**：服务端只算了一个签名，
+// 把参数交给客户端（见 wechatpay 的 Sign）。所以那次「调用」的流水与协议行必须同生共死：
+// 事务回滚时协议本就不存在，留一条描述它的流水只会让排查的人去找一份没有过的协议。
+//
+// 幂等重放那条路也靠它才干净：命中回放时这一行不写（见 CreateAgreement）。
+func insertProviderCallInTx(ctx context.Context, tx pgx.Tx, p ProviderCallParams) error {
+	request, err := json.Marshal(p.RequestSummary)
+	if err != nil {
+		return fmt.Errorf("encode provider call request: %w", err)
+	}
+	response, err := json.Marshal(p.ResponseSummary)
+	if err != nil {
+		return fmt.Errorf("encode provider call response: %w", err)
+	}
+	attempt := p.AttemptNo
+	if attempt <= 0 {
+		attempt = 1
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO payment_provider_calls
+		(provider, operation, payment_no, agreement_no, request_id, trace_id, attempt_no,
+		 request_summary, response_summary, http_status, provider_code, provider_message,
+		 result, duration_ms)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		p.Provider, p.Operation, p.PaymentNo, p.AgreementNo, p.RequestID, p.TraceID, attempt,
 		request, response, p.HTTPStatus, p.ProviderCode, p.ProviderMessage, p.Result, p.DurationMS)
 	return err
 }

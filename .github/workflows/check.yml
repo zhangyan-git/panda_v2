@@ -21,6 +21,11 @@ jobs:
           - backend/services/account-service
           - backend/services/lottery-service
           - backend/services/gateway-service
+          # Both were added after this list was written and neither is reachable
+          # from another entry: `go test ./...` in backend/ stops at their nested
+          # go.mod. That is the same way the services above drifted out before.
+          - backend/services/membership-service
+          - backend/services/partner-service
           # The migration sets are their own module too, and they are what every
           # other module's schema assumes: a syntax error here surfaces as a
           # failed deploy, not a failed build, unless it is checked here.

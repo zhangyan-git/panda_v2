@@ -66,17 +66,53 @@ type BeginResult struct {
 // 它**不扣卡**。跨服务调用在任何 PG 事务之外（payment-service 的先例：一次跨服务往返
 // 不该让数据库事务一直开着锁），所以顺序是「先落本地记录、再扣卡、再确认」三段。
 //
+// **幂等回放的判定排在期次可参与性判定之前**，这是这个函数的第二条入口：键已经见过就
+// 原样回放那一行，根本不看期次还收不收人。反过来写会让一个**卡已经扣了**的用户在重发时
+// 拿到 ErrRoundClosed ——他既看不到自己那条参与，也拿不回那张卡。期次校验挡的是**新的**
+// 参与，不是一条早就存在的参与的回放。
+//
 // 锁是 FOR UPDATE 而不是普通的 SELECT：期次的行锁同时被开奖持有（draw.go 里同样
 // FOR UPDATE），两者互斥。没有它，一个用户可以在「worker 已经取完参与名单、还没提交」
-// 的窗口里被记进来，然后拿到一张不属于任何一期开奖的参与记录。
+// 的窗口里被记进来，然后拿到一张不属于任何一期开奖的参与记录。回放那条路**不加锁**：
+// 它只有读，没有可以被开奖插队的写入。
 func (r *PostgresRepository) Begin(ctx context.Context, p BeginParams) (*BeginResult, error) {
 	result := &BeginResult{}
 	err := r.inTx(ctx, func(tx pgx.Tx) error {
+		// 先按键查一次。这一步不加锁、也不能代替下面那次 ON CONFLICT：两个并发请求会
+		// 一起走到 miss，最后仍然只有一个能插进去（唯一索引 + DO NOTHING）。它的作用
+		// 是让「已经存在的参与」不必过期次那一关。
+		existing, err := readParticipationByKey(ctx, tx, p.IdempotencyKey)
+		switch {
+		case err == nil:
+			// 语义与插入撞唯一索引那条回放路径逐字相同：同一个键换了人仍然是事故。
+			if existing.UserID != p.UserID {
+				return ErrIdempotencyKeyConflict
+			}
+			// Round 从这一行自己的 round_id 读，而不是用调用方传的 p.RoundID：回放要
+			// 说的是「你当初参与的是哪一期」，不是「你现在请求的是哪一期」。两者不同
+			// （客户端拿着旧链接重发）时，回放的答案必须还是原来那一期。
+			round, err := readRound(ctx, tx, existing.RoundID)
+			if err != nil {
+				return err
+			}
+			campaign, err := readCampaign(ctx, tx, round.CampaignID)
+			if err != nil {
+				return err
+			}
+			result.Round, result.Campaign, result.Created = round, campaign, false
+			result.Participation = existing
+			return nil
+		case errors.Is(err, ErrParticipationNotFound):
+			// 键没见过，是**新的**参与，往下走正常路径（期次校验 + 落库）。
+		default:
+			return err
+		}
+
 		round, err := lockRound(ctx, tx, p.RoundID)
 		if err != nil {
 			return err
 		}
-		if !round.AcceptsParticipation(p.Now) {
+		if !round.AcceptsParticipation() {
 			return ErrRoundClosed
 		}
 		campaign, err := readCampaign(ctx, tx, round.CampaignID)
@@ -122,19 +158,21 @@ func (r *PostgresRepository) Begin(ctx context.Context, p BeginParams) (*BeginRe
 			return nil
 		}
 
-		// 幂等键命中：回读那一行，交给 service 决定是回放还是接着往下走（扣减本身幂等，
-		// 所以一条 pending 的行重跑第二段是安全的）。
-		existing, err := readParticipationByKey(ctx, tx, p.IdempotencyKey)
+		// 唯一索引上撞了：只有当上面那次「按键先查」与这次插入之间**插进来另一个同样的键**
+		// 时才会走到这里（正常路径上键已经见过，第一次查就返回了）。回读那一行，交给
+		// service 决定是回放还是接着往下走（扣减本身幂等，所以一条 pending 的行重跑第二段
+		// 是安全的）。
+		raced, err := readParticipationByKey(ctx, tx, p.IdempotencyKey)
 		if err != nil {
 			return err
 		}
 		// 同一个键换了人 —— 只可能是调用方把号发重了（订单号撞车）。这不是幂等命中，
 		// 是一次真的事故，必须让人看见，而不是把别人的参与记录回放给这个人。
-		if existing.UserID != p.UserID {
+		if raced.UserID != p.UserID {
 			return ErrIdempotencyKeyConflict
 		}
 		result.Round, result.Campaign, result.Created = round, campaign, false
-		result.Participation = existing
+		result.Participation = raced
 		return nil
 	})
 	if err != nil {

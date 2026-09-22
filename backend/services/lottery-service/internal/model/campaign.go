@@ -26,9 +26,7 @@ type Campaign struct {
 	Description       string `db:"description"`
 	// 开通抽奖时按内置模板自动建的那一个。一个开通记录只能有一个
 	// （lottery_campaigns_one_default_per_activation 部分唯一索引）。
-	IsDefault bool      `db:"is_default"`
-	StartAt   time.Time `db:"start_at"`
-	EndAt     time.Time `db:"end_at"`
+	IsDefault bool `db:"is_default"`
 	// draft / enabled / paused / ended，见下面的常量。
 	Status    string    `db:"status"`
 	CreatedBy *string   `db:"created_by"`
@@ -47,7 +45,8 @@ const (
 	// 「暂停」停的是下一期，不是这一期——已经收了 N 个人的参与，不能因为运营点了暂停
 	// 就把他们手里的卡吞掉。
 	CampaignPaused = "paused"
-	// CampaignEnded 是终态：窗口结束或被人为结束，不再开期。
+	// CampaignEnded 是终态：**只能被人为结束**（活动不再有时间窗口，所以没有自动结束
+	// 这条路了），不再开期。
 	CampaignEnded = "ended"
 )
 

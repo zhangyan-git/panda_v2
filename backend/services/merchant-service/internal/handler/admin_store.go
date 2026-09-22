@@ -40,14 +40,18 @@ type storeResponse struct {
 	ContactPhone  string   `json:"contactPhone"`
 	Detail        string   `json:"detail"`
 	BusinessHours string   `json:"businessHours"`
-	Status        string   `json:"status"`
-	AuditStatus   string   `json:"auditStatus"`
-	AuditRemark   string   `json:"auditRemark"`
-	AuditAt       string   `json:"auditAt"`
-	AuditBy       string   `json:"auditBy"`
-	Remark        string   `json:"remark"`
-	Visible       bool     `json:"visible"`
-	CreatedAt     string   `json:"createdAt"`
+	// 订货系统 xlsx「客户」页三列（merchant/004）；列表与详情都回，出库单的门店下拉要用编码
+	CustomerCode string `json:"customerCode"`
+	DMSCode      string `json:"dmsCode"`
+	CustomerType string `json:"customerType"`
+	Status       string `json:"status"`
+	AuditStatus  string `json:"auditStatus"`
+	AuditRemark  string `json:"auditRemark"`
+	AuditAt      string `json:"auditAt"`
+	AuditBy      string `json:"auditBy"`
+	Remark       string `json:"remark"`
+	Visible      bool   `json:"visible"`
+	CreatedAt    string `json:"createdAt"`
 }
 
 func toStoreResponse(s *model.Store) storeResponse {
@@ -82,6 +86,9 @@ func toStoreResponse(s *model.Store) storeResponse {
 		ContactPhone:  s.ContactPhone,
 		Detail:        s.Detail,
 		BusinessHours: s.BusinessHours,
+		CustomerCode:  s.CustomerCode,
+		DMSCode:       s.DMSCode,
+		CustomerType:  s.CustomerType,
 		Status:        s.Status,
 		AuditStatus:   s.AuditStatus,
 		AuditRemark:   s.AuditRemark,
@@ -176,8 +183,13 @@ type storeRequest struct {
 	ContactPhone  string   `json:"contactPhone"`
 	Detail        string   `json:"detail"`
 	BusinessHours string   `json:"businessHours"`
-	Remark        string   `json:"remark"`
-	Visible       bool     `json:"visible"`
+	// 客户三列。编码为空串表示「还没编码」，**不是**「清空」——库上两个部分唯一索引
+	// 都是 WHERE 编码 <> ''，所以空串可以并存，而重复的非空编码会被唯一索引拦下。
+	CustomerCode string `json:"customerCode"`
+	DMSCode      string `json:"dmsCode"`
+	CustomerType string `json:"customerType"`
+	Remark       string `json:"remark"`
+	Visible      bool   `json:"visible"`
 }
 
 func (q storeRequest) toInput() service.StoreInput {
@@ -201,6 +213,9 @@ func (q storeRequest) toInput() service.StoreInput {
 		ContactPhone:  q.ContactPhone,
 		Detail:        q.Detail,
 		BusinessHours: q.BusinessHours,
+		CustomerCode:  q.CustomerCode,
+		DMSCode:       q.DMSCode,
+		CustomerType:  q.CustomerType,
 		Remark:        q.Remark,
 		Visible:       q.Visible,
 	}

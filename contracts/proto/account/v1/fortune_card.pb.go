@@ -342,6 +342,120 @@ func (x *ReverseFortuneCardEntryRequest) GetRemark() string {
 	return ""
 }
 
+type PreviewFortuneCardFreezeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 小程序用户 ID，值引用。申请退款的是本人，但冻哪几笔由订单域按退款范围拆。
+	UserId string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// 这次退款要冻的那几笔发放的幂等键（`order:{orderId}:base` 之类），由订单域给。
+	// 空列表是常态：这一单没承诺福卡，或者退的是不送福卡的会员套餐——那时预览恒为 0，
+	// 调用方不该拿它去拒一次申请。
+	EntryKeys     []string `protobuf:"bytes,2,rep,name=entry_keys,json=entryKeys,proto3" json:"entry_keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PreviewFortuneCardFreezeRequest) Reset() {
+	*x = PreviewFortuneCardFreezeRequest{}
+	mi := &file_account_v1_fortune_card_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreviewFortuneCardFreezeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreviewFortuneCardFreezeRequest) ProtoMessage() {}
+
+func (x *PreviewFortuneCardFreezeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_fortune_card_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreviewFortuneCardFreezeRequest.ProtoReflect.Descriptor instead.
+func (*PreviewFortuneCardFreezeRequest) Descriptor() ([]byte, []int) {
+	return file_account_v1_fortune_card_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *PreviewFortuneCardFreezeRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *PreviewFortuneCardFreezeRequest) GetEntryKeys() []string {
+	if x != nil {
+		return x.EntryKeys
+	}
+	return nil
+}
+
+type PreviewFortuneCardFreezeResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 这几笔发放**还挂着**多少张（没被冲正过的）。
+	//
+	// 0 表示发放还没落库，而不是「卡被用掉了」：一张订单可以先申请退款再完成，那时冻结行是
+	// 个空壳，等发放落库时补上。调用方必须把这两种情形分开——只给 freezable 的话它们都是 0，
+	// 而前者该放行、后者该拒。
+	Granted int64 `protobuf:"varint,1,opt,name=granted,proto3" json:"granted,omitempty"`
+	// 此刻真的冻得上的张数：min(granted, 账户可用)。申请退款要的是它等于订单承诺的张数。
+	Freezable     int64 `protobuf:"varint,2,opt,name=freezable,proto3" json:"freezable,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PreviewFortuneCardFreezeResponse) Reset() {
+	*x = PreviewFortuneCardFreezeResponse{}
+	mi := &file_account_v1_fortune_card_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreviewFortuneCardFreezeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreviewFortuneCardFreezeResponse) ProtoMessage() {}
+
+func (x *PreviewFortuneCardFreezeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_account_v1_fortune_card_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreviewFortuneCardFreezeResponse.ProtoReflect.Descriptor instead.
+func (*PreviewFortuneCardFreezeResponse) Descriptor() ([]byte, []int) {
+	return file_account_v1_fortune_card_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *PreviewFortuneCardFreezeResponse) GetGranted() int64 {
+	if x != nil {
+		return x.Granted
+	}
+	return 0
+}
+
+func (x *PreviewFortuneCardFreezeResponse) GetFreezable() int64 {
+	if x != nil {
+		return x.Freezable
+	}
+	return 0
+}
+
 type ReverseFortuneCardEntryResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// 冲正流水的 ID（重放时是已有的那一笔）。
@@ -356,7 +470,7 @@ type ReverseFortuneCardEntryResponse struct {
 
 func (x *ReverseFortuneCardEntryResponse) Reset() {
 	*x = ReverseFortuneCardEntryResponse{}
-	mi := &file_account_v1_fortune_card_proto_msgTypes[5]
+	mi := &file_account_v1_fortune_card_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -368,7 +482,7 @@ func (x *ReverseFortuneCardEntryResponse) String() string {
 func (*ReverseFortuneCardEntryResponse) ProtoMessage() {}
 
 func (x *ReverseFortuneCardEntryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_account_v1_fortune_card_proto_msgTypes[5]
+	mi := &file_account_v1_fortune_card_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -381,7 +495,7 @@ func (x *ReverseFortuneCardEntryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReverseFortuneCardEntryResponse.ProtoReflect.Descriptor instead.
 func (*ReverseFortuneCardEntryResponse) Descriptor() ([]byte, []int) {
-	return file_account_v1_fortune_card_proto_rawDescGZIP(), []int{5}
+	return file_account_v1_fortune_card_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ReverseFortuneCardEntryResponse) GetEntryId() string {
@@ -431,15 +545,23 @@ const file_account_v1_fortune_card_proto_rawDesc = "" +
 	"\x1eReverseFortuneCardEntryRequest\x12\x19\n" +
 	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x16\n" +
-	"\x06remark\x18\x03 \x01(\tR\x06remark\"}\n" +
+	"\x06remark\x18\x03 \x01(\tR\x06remark\"Y\n" +
+	"\x1fPreviewFortuneCardFreezeRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1d\n" +
+	"\n" +
+	"entry_keys\x18\x02 \x03(\tR\tentryKeys\"Z\n" +
+	" PreviewFortuneCardFreezeResponse\x12\x18\n" +
+	"\agranted\x18\x01 \x01(\x03R\agranted\x12\x1c\n" +
+	"\tfreezable\x18\x02 \x01(\x03R\tfreezable\"}\n" +
 	"\x1fReverseFortuneCardEntryResponse\x12\x19\n" +
 	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12#\n" +
 	"\rbalance_after\x18\x02 \x01(\x03R\fbalanceAfter\x12\x1a\n" +
-	"\breplayed\x18\x03 \x01(\bR\breplayed2\xff\x02\n" +
+	"\breplayed\x18\x03 \x01(\bR\breplayed2\x83\x04\n" +
 	"\x12FortuneCardService\x12x\n" +
 	"\x15GetFortuneCardBalance\x12..panda.account.v1.GetFortuneCardBalanceRequest\x1a/.panda.account.v1.GetFortuneCardBalanceResponse\x12o\n" +
 	"\x12DeductFortuneCards\x12+.panda.account.v1.DeductFortuneCardsRequest\x1a,.panda.account.v1.DeductFortuneCardsResponse\x12~\n" +
-	"\x17ReverseFortuneCardEntry\x120.panda.account.v1.ReverseFortuneCardEntryRequest\x1a1.panda.account.v1.ReverseFortuneCardEntryResponseB:Z8github.com/panda-dev/panda-v2/contracts/proto/account/v1b\x06proto3"
+	"\x17ReverseFortuneCardEntry\x120.panda.account.v1.ReverseFortuneCardEntryRequest\x1a1.panda.account.v1.ReverseFortuneCardEntryResponse\x12\x81\x01\n" +
+	"\x18PreviewFortuneCardFreeze\x121.panda.account.v1.PreviewFortuneCardFreezeRequest\x1a2.panda.account.v1.PreviewFortuneCardFreezeResponseB:Z8github.com/panda-dev/panda-v2/contracts/proto/account/v1b\x06proto3"
 
 var (
 	file_account_v1_fortune_card_proto_rawDescOnce sync.Once
@@ -453,24 +575,28 @@ func file_account_v1_fortune_card_proto_rawDescGZIP() []byte {
 	return file_account_v1_fortune_card_proto_rawDescData
 }
 
-var file_account_v1_fortune_card_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_account_v1_fortune_card_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_account_v1_fortune_card_proto_goTypes = []any{
-	(*GetFortuneCardBalanceRequest)(nil),    // 0: panda.account.v1.GetFortuneCardBalanceRequest
-	(*GetFortuneCardBalanceResponse)(nil),   // 1: panda.account.v1.GetFortuneCardBalanceResponse
-	(*DeductFortuneCardsRequest)(nil),       // 2: panda.account.v1.DeductFortuneCardsRequest
-	(*DeductFortuneCardsResponse)(nil),      // 3: panda.account.v1.DeductFortuneCardsResponse
-	(*ReverseFortuneCardEntryRequest)(nil),  // 4: panda.account.v1.ReverseFortuneCardEntryRequest
-	(*ReverseFortuneCardEntryResponse)(nil), // 5: panda.account.v1.ReverseFortuneCardEntryResponse
+	(*GetFortuneCardBalanceRequest)(nil),     // 0: panda.account.v1.GetFortuneCardBalanceRequest
+	(*GetFortuneCardBalanceResponse)(nil),    // 1: panda.account.v1.GetFortuneCardBalanceResponse
+	(*DeductFortuneCardsRequest)(nil),        // 2: panda.account.v1.DeductFortuneCardsRequest
+	(*DeductFortuneCardsResponse)(nil),       // 3: panda.account.v1.DeductFortuneCardsResponse
+	(*ReverseFortuneCardEntryRequest)(nil),   // 4: panda.account.v1.ReverseFortuneCardEntryRequest
+	(*PreviewFortuneCardFreezeRequest)(nil),  // 5: panda.account.v1.PreviewFortuneCardFreezeRequest
+	(*PreviewFortuneCardFreezeResponse)(nil), // 6: panda.account.v1.PreviewFortuneCardFreezeResponse
+	(*ReverseFortuneCardEntryResponse)(nil),  // 7: panda.account.v1.ReverseFortuneCardEntryResponse
 }
 var file_account_v1_fortune_card_proto_depIdxs = []int32{
 	0, // 0: panda.account.v1.FortuneCardService.GetFortuneCardBalance:input_type -> panda.account.v1.GetFortuneCardBalanceRequest
 	2, // 1: panda.account.v1.FortuneCardService.DeductFortuneCards:input_type -> panda.account.v1.DeductFortuneCardsRequest
 	4, // 2: panda.account.v1.FortuneCardService.ReverseFortuneCardEntry:input_type -> panda.account.v1.ReverseFortuneCardEntryRequest
-	1, // 3: panda.account.v1.FortuneCardService.GetFortuneCardBalance:output_type -> panda.account.v1.GetFortuneCardBalanceResponse
-	3, // 4: panda.account.v1.FortuneCardService.DeductFortuneCards:output_type -> panda.account.v1.DeductFortuneCardsResponse
-	5, // 5: panda.account.v1.FortuneCardService.ReverseFortuneCardEntry:output_type -> panda.account.v1.ReverseFortuneCardEntryResponse
-	3, // [3:6] is the sub-list for method output_type
-	0, // [0:3] is the sub-list for method input_type
+	5, // 3: panda.account.v1.FortuneCardService.PreviewFortuneCardFreeze:input_type -> panda.account.v1.PreviewFortuneCardFreezeRequest
+	1, // 4: panda.account.v1.FortuneCardService.GetFortuneCardBalance:output_type -> panda.account.v1.GetFortuneCardBalanceResponse
+	3, // 5: panda.account.v1.FortuneCardService.DeductFortuneCards:output_type -> panda.account.v1.DeductFortuneCardsResponse
+	7, // 6: panda.account.v1.FortuneCardService.ReverseFortuneCardEntry:output_type -> panda.account.v1.ReverseFortuneCardEntryResponse
+	6, // 7: panda.account.v1.FortuneCardService.PreviewFortuneCardFreeze:output_type -> panda.account.v1.PreviewFortuneCardFreezeResponse
+	4, // [4:8] is the sub-list for method output_type
+	0, // [0:4] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -487,7 +613,7 @@ func file_account_v1_fortune_card_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_account_v1_fortune_card_proto_rawDesc), len(file_account_v1_fortune_card_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

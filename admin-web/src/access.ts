@@ -130,6 +130,69 @@ export default function access(initialState: {
     canManageLottery: has('lottery:manage'),
     canDrawLottery: has('lottery:draw'),
 
+    // 会员域（membership-service）。三枚，权限数据见 migrations/identity/025：
+    //   read   看套餐、看会员列表与详情、看变更流水。这一档迟早要发给客服——用户问
+    //          「我是不是会员、什么时候到期、为什么被冻了」，答这三句只需要它。
+    //   manage 建改套餐、上下架。改的是**接下来卖什么**，已购会员的条款在快照列上，
+    //          所以这是本域唯一一处「改了也不用怕」的写入口。
+    //   adjust 冻结 / 解冻 / 撤销 / 直接改有效期。**它直接白送钱**：把一个人的到期时间
+    //          往后挪一年，没有任何订单、支付或流水跟着发生。所以它刻意不与 manage 合并
+    //          ——「能改套餐文案的人也能给人加一年会员」是不该发生的事。它也**不在**小程序
+    //          那条路上（那条路只能碰调用者自己的会员，且只能开关自动续费）。
+    // 「能看」单独一枚，理由同订单域与库存域：客服要能查「这个人还是不是会员」而不必拿到
+    // 动他权益的权力。
+    canViewMembership: has('membership:read'),
+    canManageMembership: has('membership:manage'),
+    canAdjustMembership: has('membership:adjust'),
+
+    // 支付域（payment-service）。**只剩一枚**：read 看支付单列表与详情。权限数据见
+    // migrations/identity/026（027 发过第二枚，032 又把它删了）。
+    //
+    // 这里**没有 manage**，别照旧版把 canManagePayments 加回来：它原来管「接下来怎么收钱」
+    // ——新增/修改/启停支付方式与渠道——而收钱的方式已经从运营数据变成了 internal/catalog
+    // 里的常量表，那两张表连同两个写接口一起删了，032 也就把 `payment:manage` 从
+    // admin_permissions 里删了。一枚已不存在的码写在这里**不报错**：它永远算 false，
+    // 结果是某个按钮静默不出现——不是 403，控制台也没有一行线索。
+    //
+    // 「能看订单」不等于「能看支付单」：订单域只有一份快照式的 payment_no，渠道、出资行、
+    // 记账流水与回调报文全在这个域里，所以是单独一枚码。
+    canViewPayments: has('payment:read'),
+
+    // 分账（同一个 payment-service 的另一半，identity/035 发的两枚）。权限数据见
+    // migrations/identity/035_settlement_admin.sql：
+    //   read   看分账规则、看收款账户、看分账明细（每条任务分给了谁、分了多少）。
+    //          这一档迟早要发给运营——「这笔钱分给谁了」答这一句只需要它。
+    //   manage 新增 / 修改 / 删除规则与账户，包括每一档分法的比例、固定额与收款方。
+    //          **它决定的是「接下来这笔钱怎么分」**：把一条按门店的规则的比例从 45% 改成 90%，
+    //          下一笔订单就开始按新的分，没有任何东西会拦一下。所以它与 read 分开。
+    //
+    // **它们刻意不并进 payment:read / payment:manage**，这是 008 的文件头（第 11–13 行）定死的
+    // 三分：「谁能看支付单」与「谁能改分账配置」是两件事。前者是所有客服都要的（用户问
+    // 「我这笔钱扣了没」就得看），后者决定钱分给谁——并进去之后，一次「给他开个支付单查询吧」
+    // 会连带把分账的写权限一起送出去，而那是这个后台里最不该顺手送人的一枚。
+    //
+    // 这里**没有第三枚**（008 那三分里的 settlement:payout）：分账在 V2 是**随支付一次下发**的
+    // （下单报文里带 divisionFlag / subOrders，支付成功即分账成功），没有一个「向渠道发起打款」
+    // 的动作可以授权。identity/035 里写着为什么不发它——发一个永远勾不出对应行为、勾了也没有
+    // 任何接口认的码，只会让权限页在骗人。
+    canViewSettlement: has('settlement:read'),
+    canManageSettlement: has('settlement:manage'),
+
+    // 开放平台 / 合作方（partner-service）。两枚，权限数据见 migrations/identity/028：
+    //   read   看合作方、看密钥（**只有掩码**）、看调用日志。这一档是给客服与排查用的：
+    //          「他到底调没调进来、被哪一条挡了」答这一句只需要它。
+    //   manage 新增改合作方、签发新密钥、启停、改 IP 白名单与限流。**它动的不是数据，是
+    //          「谁能打进来」**：停用一家合作方会让名下所有密钥当场失效，一份写坏的白名单
+    //          会让对方从下一个请求起全部 401。所以它与 read 分开，与 payment 那一对同一个
+    //          切法。
+    //
+    // manage **不等于能看到明文密钥**：明文只在签发那一次的响应里出现，之后读接口只回掩码
+    // （后端 dto 与 controller 上都钉着这一条）。manage 能做的最后一件事是「再签发一把」，
+    // 不是「把已有的那把读出来」——所以页面上的「密钥」按钮不区分这两个码，抽屉里的写按钮
+    // 才判 manage。
+    canViewPartners: has('partner:read'),
+    canManagePartners: has('partner:manage'),
+
     // 原始检查——当需要用权限码直接判断时
     can: (code: string) => has(code),
   };

@@ -5,7 +5,7 @@ import {
   ProTable,
 } from '@ant-design/pro-components';
 import type { ActionType, ProColumns } from '@ant-design/pro-components';
-import { useAccess } from '@umijs/max';
+import { useAccess, useSearchParams } from '@umijs/max';
 import {
   Button,
   Descriptions,
@@ -39,7 +39,6 @@ import {
 import {
   DRAW_MODE,
   DRAW_TRIGGER,
-  PRIZE_KIND,
   ROUND_STATUS,
   roundProgressLabel,
   winnerCountLabel,
@@ -76,6 +75,19 @@ function hasDrawRecord(result: DrawResult | EmptyDrawResult): result is DrawResu
 export default function LotteryRoundsPage() {
   const access = useAccess();
   const actionRef = useRef<ActionType>();
+
+  // 活动列表页的那一行「看期次」跳过来时带着 ?campaignId=xxx，这里把它当成搜索区里
+  // 「活动」那个下拉的初值。
+  //
+  // 用 form.initialValues 而不是 ProTable 的 params 属性：params 在内部是**最后**一层
+  // 合并（pageParams → formSearch → params），它会盖掉用户在下拉里改的值——那样从活动
+  // 跳进来以后，这个筛选就再也换不了活动了。initialValues 只在表单初始化时生效（pro-form
+  // 在挂载时用 getFieldsValue(true) 取一次，含初值），第一次请求就带上了 campaignId，
+  // 之后下拉完全归用户。代价是**本页停留期间 URL 变了不会重筛**——从活动页跳过来是整页
+  // 重新挂载，没有这个问题。
+  const [searchParams] = useSearchParams();
+  const campaignIdFromUrl = exact(searchParams.get('campaignId'));
+
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   // 正在开奖的那一期。候选值是**表格里那一行**（见文件头），所以存整行而不是 id。
   const [drawing, setDrawing] = useState<Round>();
@@ -153,19 +165,9 @@ export default function LotteryRoundsPage() {
       render: (_, row) => winnerCountLabel(row),
     },
     {
-      title: '窗口',
-      dataIndex: 'endsAt',
-      search: false,
-      width: 220,
-      render: (_, row) => (
-        <Typography.Text type="secondary">
-          {time(row.startsAt)} ~ {time(row.endsAt)}
-        </Typography.Text>
-      ),
-    },
-    {
-      // 「为什么这一期昨天就开了」的答案在这一列：人数达标是**人先到了**（在确认那一刻把
-      // 期次置 closed），到点是**时间先到了**（由 worker 扫出来）。
+      // 「这一期为什么开了」的答案在这一列：threshold 是参与**次数**收满了门槛（在确认那
+      // 一刻把期次置 closed，worker 随后开掉），manual 是管理员直接开的。这里原本还有一档
+      // 「到点」，2026-09-15 随期次窗口一起删了。
       title: '开奖方式',
       dataIndex: 'drawMode',
       search: false,
@@ -186,7 +188,7 @@ export default function LotteryRoundsPage() {
     {
       title: '操作',
       valueType: 'option',
-      // fixed 的列必须显式给宽度，且下面的 scroll.x 必须等于各列宽度之和（见下面的 1400）。
+      // fixed 的列必须显式给宽度，且下面的 scroll.x 必须等于各列宽度之和（见下面的 1180）。
       // 190 是量出来的：三个 link 按钮（看开奖 / 开奖 / 作废）并排内容宽约 174，加左右各
       // 8px 内边距。这一列**只有部分行**会渲染满三个按钮，但宽度必须按满的情况留——
       // 钉右列的溢出会把表格 scrollWidth 顶大，与 scroll.x 对不上。
@@ -206,8 +208,11 @@ export default function LotteryRoundsPage() {
             </Button>,
           );
         }
-        // 只有能开奖的期次才给开奖按钮：open（还没到门槛，但可以人工提前开）与 closed
-        // （已达标待开）。只让这一条路出现，是为了不把 409 做成一个能点到的按钮。
+        // 只有能开奖的期次才给开奖按钮：open（还没收满，但可以人工提前开）与 closed
+        // （已收满待开）。只让这一条路出现，是为了不把 409 做成一个能点到的按钮。
+        //
+        // open 这一档是**收不满时的唯一出路**：没有到点必开之后，一个没收满的期次会一直
+        // 开着，运营只能人工开掉或者作废它。
         if (access.canDrawLottery && (row.status === 'open' || row.status === 'closed')) {
           actions.push(
             <Button key="draw" type="link" size="small" onClick={() => setDrawing(row)}>
@@ -248,34 +253,31 @@ export default function LotteryRoundsPage() {
       ),
     },
     {
+      // 这里原先还有一个奖品类型的 Tag（PRIZE_KIND）。类型那一列 2026-09-15 删了——它从
+      // 落地起就只存不消费，中奖记录上那份快照也跟着一起没了。
       title: '奖品',
       dataIndex: 'prizeId',
       width: 200,
       ellipsis: true,
-      render: (_, row) => {
-        const meta = enumMeta(PRIZE_KIND, row.prizeKind);
-        return (
-          <span>
-            <Tag color={meta.color}>{meta.text}</Tag>
-            {row.currentPrizeName}
-          </span>
-        );
-      },
+      render: (_, row) => row.currentPrizeName,
     },
   ];
 
   return (
     <PageContainer
       title="期次"
-      content="期次由活动滚动产生：收满门槛或到点就自动开奖，开奖的那一刻同一事务里开出下一期。人工开奖与作废只绑给超级管理员。"
+      content="期次由活动滚动产生：收满门槛就自动开奖，开奖的那一刻同一事务里开出下一期。没满就一直开着等，不会有东西因为时间到了把它开掉——收不满只能人工开奖或作废。人工开奖与作废只绑给超级管理员。"
     >
       <ProTable<Round>
         actionRef={actionRef}
         rowKey="id"
         columns={columns}
-        // 1400 = 150+160+130+120+150+220+110+170+190，各列 width 之和。
-        scroll={{ x: 1400 }}
+        // 1180 = 150+160+130+120+150+110+170+190，各列 width 之和（原「窗口」列的 220
+        // 随窗口一起删了）。
+        scroll={{ x: 1180 }}
         search={{ labelWidth: 'auto' }}
+        // 从活动页跳过来时预选那一个活动（见上面 campaignIdFromUrl 那段）。
+        form={{ initialValues: { campaignId: campaignIdFromUrl } }}
         options={false}
         request={async (params) => {
           const query: RoundQuery = {
@@ -370,7 +372,7 @@ export default function LotteryRoundsPage() {
               <Descriptions.Item label="触发">
                 {enumMeta(DRAW_TRIGGER, drawDetail.trigger).text}
               </Descriptions.Item>
-              <Descriptions.Item label="参与人数">
+              <Descriptions.Item label="参与次数">
                 {drawDetail.participantCount}
               </Descriptions.Item>
               <Descriptions.Item label="中奖人数">{drawDetail.winnerCount}</Descriptions.Item>

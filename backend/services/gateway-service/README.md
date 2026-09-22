@@ -11,7 +11,7 @@ The gateway is a thin HTTP compatibility facade. It routes browser API paths to 
 - `GATEWAY_REQUEST_TIMEOUT_MS` optional integer from 0 through 9223372036854 milliseconds; absent or zero uses the 10000 ms default; out-of-range values are rejected before duration conversion
 - `GATEWAY_UPLOAD_TIMEOUT_MS` same bounds and defaulting rules, applied **only** to the upload path; the default is 120000 ms. It is deliberately a second budget rather than a raised global one: this deadline spans the client's upload *and* the upstream write, and 10 MiB at 1 Mbps upstream is ~80 s, so the 10 s default would produce a steady stream of 504s. Raising the global value instead would pin a gateway goroutine to a stuck route of any kind for two minutes. Keep it above merchant-service's `HTTP_TIMEOUT_MS` — this is the outer of the two.
 
-Run with `go run ./cmd/gateway`. Upstream services must be started separately. When embedding the handler, `Config.HTTPClient` supplies only its transport, not its cookie jar, redirect policy, or client timeout; `Config.RequestTimeout` controls the request deadline.
+Run with `go run ./cmd`. Upstream services must be started separately. When embedding the handler, `Config.HTTPClient` supplies only its transport, not its cookie jar, redirect policy, or client timeout; `Config.RequestTimeout` controls the request deadline.
 
 ## Routing
 

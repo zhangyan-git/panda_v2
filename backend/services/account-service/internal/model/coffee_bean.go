@@ -14,7 +14,7 @@ const (
 	BeanEntryTypeAdjust = "adjust"
 	// BeanEntryTypeConsume 是纯豆出资的扣减：一张订单全额用豆支付，落流水时是负数。
 	BeanEntryTypeConsume = "consume"
-	// BeanEntryTypeReverse 是冲正：售后审核通过，新增一条反向记录，不原地改数。
+	// BeanEntryTypeReverse 是冲正：退款成功，新增一条反向记录，不原地改数。
 	BeanEntryTypeReverse = "reverse"
 )
 
@@ -85,7 +85,7 @@ type CoffeeBeanEntry struct {
 // 与 migrations/account/005、006 的列注释是同一套说法。
 //
 // 它们必须全局唯一（那把唯一索引是幂等性的全部依据），所以进键的都是 UUID 而不是序号：
-// 重发一次后台调整、重试一次扣减、重投一条 order.after_sale.reviewed，都撞在同一个键上，
+// 重发一次后台调整、重试一次扣减、重投一条 order.after_sale.refunded，都撞在同一个键上，
 // 回放原样而不是新增第二行。
 //
 // 这几个形状刻意不在库里做约束：「键长什么样」是服务侧的规则，改它不该要一次迁移。
@@ -93,7 +93,7 @@ func BeanAdjustKey(requestID string) string { return "adjust:" + requestID }
 
 // BeanConsumeKey 用**订单 ID 而不是支付单号**。
 //
-// 冲正要从 order.after_sale.reviewed 反查「这单扣了多少豆」，而那条事件带的是 orderId；
+// 冲正要从 order.after_sale.refunded 反查「这单扣了多少豆」，而那条事件带的是 orderId；
 // 用订单做键，账户域自己就能查到那笔扣减，不必让订单域把账变 ID 塞进事件载荷。
 // payments_one_succeeded_per_order 保证一张订单只会有一条成功的扣减，所以订单做键不会撞。
 func BeanConsumeKey(orderID string) string { return "order:" + orderID }

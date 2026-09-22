@@ -42,6 +42,35 @@ func writeOrderError(w http.ResponseWriter, err error, message string) {
 		// 问不到设备是我们这侧暂时答不上来，不是请求有错：回 503 而不是 400，
 		// 否则客户端会以为「这台机器不能下单」而不再重试。
 		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, err.Error())
+	// —— 下单买饮品：结论来自咖啡机域与会员域 ——
+	//
+	// 这一组与设备、会员那两组是同一条判据（「调用方该做什么」），只是问的对象换了：
+	// 饮品行的名称与价格要向咖啡机域现查，会员价资格要向会员域现问。
+	case errors.Is(err, service.ErrDrinkNotFound):
+		// 目录里没有这个 itemId（客户端手里的菜单过期了）。与 ErrMembershipPlanNotFound
+		// 同一条理由回 400 而不是 404：`/orders` 这个资源的 404 已经给了「订单不存在」，
+		// 借它来表示「商品不存在」会让客户端把一次下单失败读成「这单没了」。
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+	case errors.Is(err, service.ErrDrinkOffShelf):
+		// 这一杯还在目录里，只是下架了。东西还在、现在卖不了，与设备停用同一档，
+		// 所以是 409 不是 400——客户端该做的是让用户换一杯，重发一模一样的一次没用。
+		api.Error(w, http.StatusConflict, "DRINK_OFF_SHELF", err.Error())
+	case errors.Is(err, service.ErrDrinkLookupUnavailable), errors.Is(err, service.ErrMemberPriceUnavailable):
+		// 目录服务或会员服务没答上来。**不能退回原价继续下单**：那会把一次下游抖动变成
+		// 「悄悄按原价卖给了会员」（或者按我们临时查到的价卖），用户不会知道，我们也不会。
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, err.Error())
+	// —— 下单买会员：结论来自会员域 ——
+	//
+	// 与设备那一组逐条对应，判据也一样是「调用方该做什么」：
+	case errors.Is(err, service.ErrMembershipPlanNotFound):
+		// 这个套餐此刻买不了（不存在，或者已经下架）。它既不是「请求体写错了」（光看请求
+		// 看不出来），也不是「我们答不上来」——所以不进 ValidationErrors，在这里单独回 400：
+		// 客户端该做的是刷新套餐列表让用户重挑，重发一模一样的一次没用。
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+	case errors.Is(err, service.ErrMembershipPlanUnavailable):
+		// 问不到会员域：这一单成不了，但**不是用户选错了东西**。回 503 让他稍后重试，
+		// 而不是回 400 让他换一个套餐——后者会让他真的买错。
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, err.Error())
 	case errors.Is(err, service.ErrOrderNotPending), errors.Is(err, service.ErrOrderNotCompletable):
 		api.Error(w, http.StatusConflict, "CONFLICT", err.Error())
 	case errors.Is(err, service.ErrOrderNotPayable):
@@ -65,6 +94,10 @@ func writeOrderError(w http.ResponseWriter, err error, message string) {
 		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, err.Error())
 	case errors.Is(err, service.ErrPaymentServiceUnavailable):
 		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, err.Error())
+	case errors.Is(err, service.ErrWalletIdentityUnavailable):
+		// 问不到付款人的微信身份。与设备、会员那两条同一条判据：这是我们这侧暂时答不上来，
+		// 不是请求有错，也不是「他没绑微信」——后者由支付侧按支付方式落成 failed。
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, err.Error())
 	// —— 售后：判据在仓储的事务里，所以不经过 IsValidationError ——
 	//
 	// 这一组里有几个确实是「请求不合法」（按行退的那一行不是这一单的），但判不判得了要看
@@ -73,17 +106,51 @@ func writeOrderError(w http.ResponseWriter, err error, message string) {
 	case errors.Is(err, service.ErrAfterSaleLineMismatch), errors.Is(err, service.ErrAfterSaleNothingToRefund),
 		errors.Is(err, service.ErrAfterSaleExceedsRefundable):
 		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+	case errors.Is(err, service.ErrAfterSaleFortuneCardsUsed):
+		// 这一单赠送的福卡已经被用过了，**不受理**这次申请。
+		//
+		// 单独一个码而不是并进 INVALID_ARGUMENT：这不是「请求体写错了」，是「这一单现在
+		// 退不了」——用户什么都没写错，是那张卡的状态变了。客户端据此说一句人话
+		// （「本单赠送的福卡已使用，无法申请退款」），而不是「参数错误」。
+		api.Error(w, http.StatusConflict, "FORTUNE_CARDS_USED", err.Error())
+	case errors.Is(err, service.ErrFortuneCardQuoteUnavailable):
+		// 问不到账户域「这一单的福卡还冻得上吗」。**是故障，不是结论**：既不能当没用过
+		// 放行，也不能说卡用过了。与设备、会员那两条同一条判据，回 503 让人重试。
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, err.Error())
 	case errors.Is(err, service.ErrFortuneCardConfirmationRequired):
 		// 单独一个码而不是并进 INVALID_ARGUMENT：这不是「请求体写错了」，是「这一单有个
 		// 必须由人来确认的前提」。审核页面要靠它把确认框摆出来，而不是把审核人钉在一句
 		// 报错上——用人话描述合同，靠的是码，不是 message 的措辞。
 		api.Error(w, http.StatusBadRequest, "FORTUNE_CARD_CONFIRMATION_REQUIRED", err.Error())
-	case errors.Is(err, service.ErrOrderNotRefundable), errors.Is(err, service.ErrAfterSaleNotPending):
+	case errors.Is(err, service.ErrOrderNotRefundable), errors.Is(err, service.ErrAfterSaleNotPending),
+		errors.Is(err, service.ErrAfterSaleNotApproved), errors.Is(err, service.ErrAfterSaleNotRefunding),
+		errors.Is(err, service.ErrAfterSaleRefundMismatch):
 		api.Error(w, http.StatusConflict, "CONFLICT", err.Error())
 	case errors.Is(err, service.ErrAfterSaleAlreadyOpen):
 		api.Error(w, http.StatusConflict, "AFTER_SALE_ALREADY_OPEN", err.Error())
 	case errors.Is(err, service.ErrAfterSaleAlreadyRefunded):
 		api.Error(w, http.StatusConflict, "AFTER_SALE_ALREADY_REFUNDED", err.Error())
+	case errors.Is(err, service.ErrOrderHasNoPayment):
+		// 这一单没有支付单（设备单），退款这条链装不下它。**不是请求写错了**：申请售后的
+		// 那个人什么都没做错，是这一类订单还没有退款语义（要退到设备余额里还是原路返回，
+		// 规则在设备域）。所以它单独一个码，后台据此说一句「这类订单暂不支持线上退款」，
+		// 而不是让客服以为是自己填错了什么。
+		api.Error(w, http.StatusConflict, "ORDER_HAS_NO_PAYMENT", err.Error())
+	// —— 退款：审核已生效，钱还没上路 ——
+	//
+	// 这一条**必须排在下面那两条的前面**：ErrRefundNotStarted 用 %w 包着
+	// ErrRefundRejected / ErrRefundServiceUnavailable 里的一个，errors.Is 对两者都成立，
+	// 而先命中的那一条决定回哪句话。回一句「退款被拒绝」是错的——审核已经落库了，
+	// 后台该做的是去重试退款，不是重新审一次。
+	case errors.Is(err, service.ErrRefundNotStarted):
+		api.Error(w, http.StatusConflict, "REFUND_NOT_STARTED", err.Error())
+	case errors.Is(err, service.ErrRefundRejected), errors.Is(err, service.ErrRefundConflict):
+		// 支付侧明确不接受这笔退款（支付单没收妥、超过可退余额、渠道不支持；或者上一笔
+		// 还在推进）。重发一模一样的一次没用，所以是 409 不是 503。
+		api.Error(w, http.StatusConflict, "REFUND_REJECTED", err.Error())
+	case errors.Is(err, service.ErrRefundUncertain), errors.Is(err, service.ErrRefundServiceUnavailable):
+		// 没结论或没答上来：稍后重试同一张售后单是安全的（退款单的幂等键就是售后单号）。
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, err.Error())
 	case errors.Is(err, service.ErrPaymentAmountMismatch):
 		api.Error(w, http.StatusConflict, "PAYMENT_AMOUNT_MISMATCH", err.Error())
 	default:
@@ -237,6 +304,7 @@ func afterSaleView(item *repository.AfterSaleRow) dto.AfterSaleView {
 		RefundAmount:         sale.RefundAmount,
 		RefundNo:             sale.RefundNo,
 		FailureCode:          sale.FailureCode,
+		FailureMessage:       sale.FailureMessage,
 		ReviewedBy:           sale.ReviewedBy,
 		ReviewedAt:           sale.ReviewedAt,
 		ReviewRemark:         sale.ReviewRemark,

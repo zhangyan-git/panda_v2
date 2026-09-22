@@ -7,7 +7,6 @@ import {
   LOTTERY_ACTOR_TYPE,
   PARTICIPATION_FAILURE,
   PARTICIPATION_STATUS,
-  PRIZE_KIND,
   ROUND_STATUS,
   WIN_EVENT_TYPE,
   WIN_STATUS,
@@ -57,9 +56,8 @@ describe('抽奖枚举文案表', () => {
     ]);
   });
 
-  it('覆盖 prize_kind 的四个取值', () => {
-    expect(Object.keys(PRIZE_KIND).sort()).toEqual(['coffee', 'coupon', 'custom', 'physical']);
-  });
+  // 这里原先还有一条「覆盖 prize_kind 的四个取值」。prize_kind 那一列 2026-09-15 随
+  // migrations/lottery/005 删了（类型从落地起就只存不消费），文案表跟着删——不是改值。
 
   it('覆盖 lottery_wins.status 的六个取值', () => {
     // 本轮只有 pending 可达，其余五个是最终状态机的一部分——登记它们是为了下一轮加核销时
@@ -96,7 +94,7 @@ describe('抽奖枚举文案表', () => {
   });
 
   it('覆盖 lottery_draws.trigger 的三个取值', () => {
-    expect(Object.keys(DRAW_TRIGGER).sort()).toEqual(['deadline', 'manual', 'threshold']);
+    expect(Object.keys(DRAW_TRIGGER).sort()).toEqual(['manual', 'threshold']);
   });
 });
 

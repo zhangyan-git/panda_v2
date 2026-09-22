@@ -38,8 +38,15 @@ const (
 const (
 	// FreezeStatusFrozen 是冻结中：这一单有退款申请在跑，这些卡不能拿去抽奖。
 	FreezeStatusFrozen = "frozen"
-	// FreezeStatusReleased 是已解冻：申请被驳回或用户撤销了。
+	// FreezeStatusReleased 是已解冻：申请被驳回、用户撤销、或者退款失败。三种情况下
+	// 钱都没出去，冻着的卡凭什么锁着。
 	FreezeStatusReleased = "released"
+	// FreezeStatusRecovered 是已追回：退款成功，这一单送出去的卡已经从账上冲回。
+	//
+	// 它与 released 分开而不是合成一个「结束」：解冻与追回在账上是**相反**的两件事——
+	// 解冻只是「这些卡又能抽了」，余额一分不动；追回是「这些卡收回去了」，余额真的少了。
+	// 合成一个取值会让这一格在页面上同时指两件事，而这一格正是客服照着回答问题的词。
+	FreezeStatusRecovered = "recovered"
 )
 
 // FortuneCardAccount 对应 fortune_card_accounts：一个用户一行，第一次发放时懒创建。
@@ -64,6 +71,8 @@ func (a FortuneCardAccount) Available() int64 { return a.Balance - a.FrozenBalan
 //
 // 它不是账本（Status/Amount 会变），所以那张表上没有只追加触发器。Amount 允许为 0：
 // 申请可能早于发放，或者这张卡已经被抽掉了——后者正是「追不回来」在余额上的样子。
+//
+// ReleasedAt 与 RecoveredAt 互斥：一条冻结行只会走到两者之一，走到哪个由 Status 说。
 type FortuneCardFreeze struct {
 	ID          string     `db:"id"`
 	UserID      string     `db:"user_id"`
@@ -76,6 +85,7 @@ type FortuneCardFreeze struct {
 	Reason      string     `db:"reason"`
 	OccurredAt  time.Time  `db:"occurred_at"`
 	ReleasedAt  *time.Time `db:"released_at"`
+	RecoveredAt *time.Time `db:"recovered_at"`
 	CreatedAt   time.Time  `db:"created_at"`
 	UpdatedAt   time.Time  `db:"updated_at"`
 }

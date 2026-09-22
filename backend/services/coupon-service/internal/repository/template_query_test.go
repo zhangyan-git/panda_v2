@@ -95,6 +95,21 @@ func TestTemplateListWhereNumbersPlaceholdersInOrder(t *testing.T) {
 			wantSQL:  "1=1 AND status=$1",
 			wantArgs: []any{"draft"},
 		},
+		{
+			// 券类型筛的是 code，落到 SQL 上是子查询（模板表存的是 id）。
+			// 这里连括号一起钉住：少一个括号整条 where 的语义就变了，而语法仍然成立。
+			name:     "按券类型编码筛",
+			q:        dto.CouponTemplateQuery{CouponTypeCode: "MEMBERSHIP_PRICE_EXPERIENCE"},
+			wantSQL:  "1=1 AND coupon_type_id=(SELECT id FROM coupon_types WHERE code=$1)",
+			wantArgs: []any{"MEMBERSHIP_PRICE_EXPERIENCE"},
+		},
+		{
+			// 类型编码排在最后，但它前面的三个仍然依次占 1/2/3。
+			name:     "四个都筛时编号依次是 1/2/3/4",
+			q:        dto.CouponTemplateQuery{Name: "会员价", Status: "active", AuditStatus: "approved", CouponTypeCode: "MEMBERSHIP_PRICE_EXPERIENCE"},
+			wantSQL:  "1=1 AND name ILIKE '%' || $1 || '%' AND status=$2 AND audit_status=$3 AND coupon_type_id=(SELECT id FROM coupon_types WHERE code=$4)",
+			wantArgs: []any{"会员价", "active", "approved", "MEMBERSHIP_PRICE_EXPERIENCE"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

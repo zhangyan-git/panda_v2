@@ -2,7 +2,12 @@ package model
 
 import "time"
 
-// UserSession 对应 user_sessions 表，一枚已签发的 Refresh Token。
+// UserSession 是一枚已签发的 Refresh Token 在库里的那一行。
+//
+// 两张表共用它：user_sessions（小程序顾客，UserID 是 users.id）与 admin_sessions
+// （平台管理员，UserID 是 admin_users.id，见 identity/031）。两表同形，字段含义
+// 逐字相同，所以没有第二个结构体；**读代码时要注意 UserID 指向哪张账号表，
+// 取决于这一行是从哪个仓库取回来的**。
 //
 // 表里存的是 RefreshTokenHash 而不是 token 本身：这一行一旦随备份或导出泄露，
 // 明文就等于可直接冒用的登录态。

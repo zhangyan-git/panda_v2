@@ -101,7 +101,22 @@ func (s *FortuneCardService) ReverseFortuneCardEntry(ctx context.Context, req *a
 	}, nil
 }
 
-// fortuneCardError 把业务错误翻成 gRPC 状态码。集中在一处，三个方法才能给出同一套回答。
+// PreviewFortuneCardFreeze 预览一次冻结：现在把这批发放冻起来冻得上几张。只算不写。
+//
+// 订单域在受理退款申请之前问它（规则：这一单赠送的福卡一张都没被用过才允许申请）。
+// 两个字段都要读：granted 为 0 是「发放还没落库」，不是「用掉了」——判定在调用方那侧。
+func (s *FortuneCardService) PreviewFortuneCardFreeze(ctx context.Context, req *accountv1.PreviewFortuneCardFreezeRequest) (*accountv1.PreviewFortuneCardFreezeResponse, error) {
+	if err := auth.RequireService(ctx); err != nil {
+		return nil, err
+	}
+	granted, freezable, err := s.accounts.PreviewFreeze(ctx, req.GetUserId(), req.GetEntryKeys())
+	if err != nil {
+		return nil, fortuneCardError(err)
+	}
+	return &accountv1.PreviewFortuneCardFreezeResponse{Granted: granted, Freezable: freezable}, nil
+}
+
+// fortuneCardError 把业务错误翻成 gRPC 状态码。集中在一处，四个方法才能给出同一套回答。
 //
 // 「本服务认识的业务结果」与「服务端故障」必须分开：前者调用方知道该说什么（余额不足、
 // 这笔已经冲过），后者只能重试或告警。混成 Internal 会让一次正常的余额不足变成一次告警。

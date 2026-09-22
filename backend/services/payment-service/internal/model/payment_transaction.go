@@ -24,8 +24,11 @@ type PaymentTransaction struct {
 	LineType      string `db:"line_type"`
 	Direction     string `db:"direction"`
 	Amount        int64  `db:"amount"`
-	// 这里**不建外键**：流水是对账基准，渠道配置行将来怎样都不该让已发生的流水对不上。
-	ChannelID             *string `db:"channel_id"`
+	// 走哪条渠道，值是渠道名（同 payments.provider），账户出资的那条流水是空串。
+	//
+	// 这里**从前也没有外键**（见 001），理由今天反而变成了它的常态：流水是对账基准，
+	// 而渠道已经不在库里了——它写在这里是一个**事实的快照**，不是一个引用。
+	Provider              string  `db:"provider"`
 	ProviderTransactionID string  `db:"provider_transaction_id"`
 	AccountEntryID        *string `db:"account_entry_id"`
 	// 渠道给的成交时间，不是我们记账的时间。

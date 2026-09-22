@@ -197,7 +197,7 @@ func TestSweepTreatsACompensatedParticipationAsAConclusion(t *testing.T) {
 // 扫刚落下的记录」，把一段毫秒级的三段事务当成卡住了。
 func TestSweepUsesTheConfiguredBatchAndRepairWindow(t *testing.T) {
 	repo, cards := newSweepFixture(nil, nil)
-	svc := New(repo, cards, Options{
+	svc := New(repo, cards, existingStores(), Options{
 		Now:         func() time.Time { return testNow },
 		RepairAfter: 90 * time.Second,
 	})

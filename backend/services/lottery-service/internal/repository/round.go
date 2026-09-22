@@ -10,14 +10,14 @@ import (
 )
 
 const roundColumns = `id::text, campaign_id::text, seq, round_no, status, participant_target,
-	participant_count, winner_count, starts_at, ends_at, drawn_at, cancelled_at,
+	participant_count, winner_count, drawn_at, cancelled_at,
 	cancel_reason, cancelled_by::text, created_at, updated_at`
 
 func scanRound(row scanner) (*model.Round, error) {
 	round := &model.Round{}
 	err := row.Scan(&round.ID, &round.CampaignID, &round.Seq, &round.RoundNo, &round.Status,
 		&round.ParticipantTarget, &round.ParticipantCount, &round.WinnerCount,
-		&round.StartsAt, &round.EndsAt, &round.DrawnAt, &round.CancelledAt,
+		&round.DrawnAt, &round.CancelledAt,
 		&round.CancelReason, &round.CancelledBy, &round.CreatedAt, &round.UpdatedAt)
 	if err != nil {
 		return nil, err

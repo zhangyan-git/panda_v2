@@ -14,10 +14,13 @@ import (
 
 type MerchantAuthHandler struct {
 	authSvc *service.MerchantAuthService
+	// scope 与 authSvc 是同一件事的两半：authSvc 回答「这个账号能不能用」，
+	// scope 回答「能用的话，边界在哪」。两者都必须现取，不能只取一个。
+	scope *service.MerchantAccessService
 }
 
-func NewMerchantAuthHandler(authSvc *service.MerchantAuthService) *MerchantAuthHandler {
-	return &MerchantAuthHandler{authSvc: authSvc}
+func NewMerchantAuthHandler(authSvc *service.MerchantAuthService, scope *service.MerchantAccessService) *MerchantAuthHandler {
+	return &MerchantAuthHandler{authSvc: authSvc, scope: scope}
 }
 
 type merchantLoginRequest struct {
@@ -48,7 +51,9 @@ func (h *MerchantAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.authSvc.Login(r.Context(), req.Username, req.Password, r.RemoteAddr)
+	// 与 C 端两条登录路径一致，走 loginIP(r)：r.RemoteAddr 带端口，且经网关后
+	// 是网关自己的地址，记进 last_login_ip 就再也按地址聚合不出任何东西。
+	result, err := h.authSvc.Login(r.Context(), req.Username, req.Password, loginIP(r))
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidCredentials):
@@ -76,18 +81,25 @@ type merchantMeResponse struct {
 	Email        string `json:"email"`
 	MerchantID   string `json:"merchantId"`
 	MerchantName string `json:"merchantName"`
+	// 数据范围三列回显的就是列表接口真正用来过滤的那个边界，不是另算的一份描述。
+	ScopeType string `json:"scopeType"`
+	ScopeID   string `json:"scopeId"`
+	// ScopeName 是范围目标的名称：品牌档与门店档能查到，商户档留空——那一档的名字
+	// （「全部门店」）是界面文案，由前端自己出，服务端不替它定。
+	// 范围目标在授权之后被删除时同样留空，那是展示数据，不该把一次登录态查询变成错误。
+	ScopeName string `json:"scopeName"`
 }
 
 // Me godoc
 //
-//	@Summary     获取当前商户账号信息（含所属商户名称）
+//	@Summary     获取当前商户账号信息（含所属商户名称与数据范围）
 //	@Tags        merchant-auth
 //	@Produce     json
 //	@Security    BearerAuth
 //	@Success     200 {object} api.Response{data=merchantMeResponse}
 //	@Failure     401 {object} api.Response "身份无效或账号不存在"
 //	@Failure     403 {object} api.Response "租户不符、账号禁用或商户不存在/待审核/已暂停"
-//	@Failure     503 {object} api.Response "账号或商户查询不可用"
+//	@Failure     503 {object} api.Response "账号、商户或数据范围查询不可用"
 //	@Router      /v1/merchant/users/me [get]
 func (h *MerchantAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	identity, ok := auth.IdentityFromRequest(r)
@@ -134,6 +146,25 @@ func (h *MerchantAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "商户服务暂不可用")
 		return
 	}
+	// 数据范围现取，不缓存也不签进令牌：商户端要拿它显示「你的数据范围」，而这一列
+	// 必须是列表接口下一个请求真正会用的那个边界，否则界面会显示一个已经不成立的承诺。
+	//
+	// 边界给不出来时整条 Me 失败，而不是少回两列：少回两列会让界面显示成「没有范围」，
+	// 而事实是「不知道范围」——那两句在用户那里读起来一样，在这里必须分开。
+	access, err := h.scope.ScopeOf(r.Context(), user)
+	if err != nil {
+		if errors.Is(err, service.ErrScopeTypeInvalid) {
+			api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "数据范围无法识别")
+			return
+		}
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "数据范围暂不可用")
+		return
+	}
+	scopeName, err := h.scope.MerchantScopeName(r.Context(), access)
+	if err != nil {
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "数据范围暂不可用")
+		return
+	}
 	api.Success(w, merchantMeResponse{
 		ID:           identity.UserID,
 		Username:     user.Username,
@@ -141,5 +172,8 @@ func (h *MerchantAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		Email:        user.Email,
 		MerchantID:   user.MerchantID,
 		MerchantName: merchantName,
+		ScopeType:    access.ScopeType,
+		ScopeID:      access.ScopeID,
+		ScopeName:    scopeName,
 	})
 }

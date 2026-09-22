@@ -23,7 +23,13 @@ type Participation struct {
 	// 这一笔参与是从哪张订单的福卡来的（原型参与详情里的「来源订单」）。为空 =
 	// 「直接参与」。同样是值引用，不建外键。
 	SourceOrderID *string `db:"source_order_id"`
-	SourceOrderNo string  `db:"source_order_no"`
+	// SourceOrderNo 是给后台看的订单号快照。**目前没有任何写入方，这一列一直是空的**：
+	// 请求体里只有 sourceOrderId，订单号在 order-service 那边，而本服务没有对它的出向依赖
+	// （contracts/proto/order/v1 只有 CreateDeviceOrder，没有按 id 读单的 RPC）。要填它得先
+	// 有一个数据源——给请求体加一个字段（它会变成小程序能随便填的展示文本），或者加一次同步
+	// 查询（本服务第一条对订单域的出向依赖）。在那之前它保持为空，而不是编一个看起来像订单
+	// 号的字符串。
+	SourceOrderNo string `db:"source_order_no"`
 	// 参与当时这台设备 / 这个点位的快照，用于中奖记录里的「来源点位」。
 	SourceMachineID  *string `db:"source_machine_id"`
 	SourceLocationID *string `db:"source_location_id"`
@@ -76,7 +82,8 @@ const (
 	// FailureInvalidRequest：账户域说这个请求本身不合法。这是 bug 不是用户错，
 	// 所以它同时配一条 ERROR 级日志。
 	FailureInvalidRequest = "invalid_request"
-	// FailureRoundNotOpen：入口就发现期次不在收人窗口内，一次扣卡都没发生。
+	// FailureRoundNotOpen：入口就发现期次已经不再收人（收满转 closed、已开奖、已作废），
+	// 一次扣卡都没发生。
 	FailureRoundNotOpen = "round_not_open"
 )
 

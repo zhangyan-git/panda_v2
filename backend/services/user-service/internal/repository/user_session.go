@@ -3,16 +3,18 @@ package repository
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/model"
 )
 
-// UserSessionRepository 是 Refresh Token 会话的数据访问接口。
+// UserSessionRepository 是**小程序顾客** Refresh Token 会话的数据访问接口。
 //
 // 撤销用「置 revoked_at」而不是删行：一枚已经轮换掉的 token 再被使用时，那一行
 // 还在才能识别出「盗用」这件事。行删了，攻击者拿着旧 token 来换，系统看到的只
 // 是一个查不到的哈希，和有人的 token 打错字完全没法区分。
+//
+// 实现是 sessionStore（见 session_store.go），与后台管理员的 AdminSessionRepository
+// 共用同一段 SQL：两张表同形，差别只有表名。这里只留接口与构造函数。
 type UserSessionRepository interface {
 	CreateSession(ctx context.Context, s *model.UserSession) error
 	// FindSessionByHash 按 refresh token 的确定性哈希反查。用哈希而不是原文，
@@ -42,90 +44,7 @@ type UserSessionRepository interface {
 	TouchSessionUsed(ctx context.Context, id string) error
 }
 
-type pgUserSessionRepo struct {
-	pool *pgxpool.Pool
-}
-
-// NewUserSessionRepository 构造会话仓库。
+// NewUserSessionRepository 构造小程序顾客的会话仓库（user_sessions 表）。
 func NewUserSessionRepository(pool *pgxpool.Pool) UserSessionRepository {
-	return &pgUserSessionRepo{pool: pool}
-}
-
-// userSessionColumns 顺序必须与 scanUserSession 对齐。revoked_at / last_used_at
-// 保持指针语义：扫描进 *time.Time 时 NULL 就是 nil，不需要 COALESCE——
-// 「没撤销」和「撤销于零时刻」是两件事，用空值顶替会把这个区别抹掉。
-const userSessionColumns = `id, user_id, refresh_token_hash, issued_at, expires_at,
-	revoked_at, revoke_reason, last_used_at, COALESCE(ip, ''), COALESCE(user_agent, ''),
-	created_at, updated_at`
-
-func (r *pgUserSessionRepo) CreateSession(ctx context.Context, s *model.UserSession) error {
-	const q = `
-		INSERT INTO user_sessions (id, user_id, refresh_token_hash, issued_at, expires_at,
-			revoked_at, revoke_reason, last_used_at, ip, user_agent, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
-	_, err := r.pool.Exec(ctx, q,
-		s.ID, s.UserID, s.RefreshTokenHash, s.IssuedAt, s.ExpiresAt,
-		s.RevokedAt, s.RevokeReason, s.LastUsedAt, s.IP, s.UserAgent,
-		s.CreatedAt, s.UpdatedAt,
-	)
-	return err
-}
-
-func (r *pgUserSessionRepo) FindSessionByHash(ctx context.Context, hash string) (*model.UserSession, error) {
-	q := `SELECT ` + userSessionColumns + `
-		FROM user_sessions
-		WHERE refresh_token_hash = $1
-		LIMIT 1`
-	s := &model.UserSession{}
-	err := r.pool.QueryRow(ctx, q, hash).Scan(
-		&s.ID, &s.UserID, &s.RefreshTokenHash, &s.IssuedAt, &s.ExpiresAt,
-		&s.RevokedAt, &s.RevokeReason, &s.LastUsedAt, &s.IP, &s.UserAgent,
-		&s.CreatedAt, &s.UpdatedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func (r *pgUserSessionRepo) RevokeSession(ctx context.Context, id, reason string) error {
-	// revoked_at IS NULL 这个条件是整条语句的关键，不是优化：
-	// 它让「撤销」变成一次原子的抢占，并发刷新里只有一个调用方能成功。
-	const q = `
-		UPDATE user_sessions
-		SET revoked_at = NOW(), revoke_reason = $2, updated_at = NOW()
-		WHERE id = $1 AND revoked_at IS NULL`
-	tag, err := r.pool.Exec(ctx, q, id, reason)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return pgx.ErrNoRows
-	}
-	return nil
-}
-
-func (r *pgUserSessionRepo) RevokeUserSessions(ctx context.Context, userID, reason string) error {
-	const q = `
-		UPDATE user_sessions
-		SET revoked_at = NOW(), revoke_reason = $2, updated_at = NOW()
-		WHERE user_id = $1 AND revoked_at IS NULL`
-	_, err := r.pool.Exec(ctx, q, userID, reason)
-	return err
-}
-
-func (r *pgUserSessionRepo) CountActiveByUser(ctx context.Context, userID string) (int64, error) {
-	const q = `
-		SELECT count(*)
-		FROM user_sessions
-		WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW()`
-	var n int64
-	err := r.pool.QueryRow(ctx, q, userID).Scan(&n)
-	return n, err
-}
-
-func (r *pgUserSessionRepo) TouchSessionUsed(ctx context.Context, id string) error {
-	const q = `UPDATE user_sessions SET last_used_at = NOW(), updated_at = NOW() WHERE id = $1`
-	_, err := r.pool.Exec(ctx, q, id)
-	return err
+	return &sessionStore{pool: pool, table: "user_sessions"}
 }

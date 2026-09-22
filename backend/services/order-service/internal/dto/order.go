@@ -31,9 +31,11 @@ type OrderQuery struct {
 // OrderSummary 是订单列表里的一行。列表不带行明细与出资分摊：那是详情的事，
 // 列表里带上去会让「一页 20 单」变成一次上百行的 join。
 type OrderSummary struct {
-	ID                string     `json:"id"`
-	OrderNo           string     `json:"orderNo"`
-	UserID            string     `json:"userId"`
+	ID      string `json:"id"`
+	OrderNo string `json:"orderNo"`
+	// UserID 可空：**设备单没有用户**（order/005），那一格是 null 而不是空串。线上刷卡机卖出去
+	// 的那一单不属于任何用户，编成 "" 会让读的人以为「有一个用户，他的 id 是空」。
+	UserID            *string    `json:"userId"`
 	Source            string     `json:"source"`
 	Status            string     `json:"status"`
 	FulfillmentStatus string     `json:"fulfillmentStatus"`

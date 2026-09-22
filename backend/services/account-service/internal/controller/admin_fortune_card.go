@@ -115,7 +115,7 @@ func (c *AdminFortuneCardController) freezes(w http.ResponseWriter, r *http.Requ
 	if q.Status != "" && !isFreezeStatus(q.Status) {
 		// 与 entryType 同一条规矩：放过一个拼错的状态只会得到一页空数据，
 		// 看起来像「这个人的卡没被冻过」。
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "status must be frozen or released")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "status must be frozen, released or recovered")
 		return
 	}
 
@@ -159,7 +159,7 @@ func isEntryType(value string) bool {
 
 func isFreezeStatus(value string) bool {
 	switch value {
-	case model.FreezeStatusFrozen, model.FreezeStatusReleased:
+	case model.FreezeStatusFrozen, model.FreezeStatusReleased, model.FreezeStatusRecovered:
 		return true
 	default:
 		return false

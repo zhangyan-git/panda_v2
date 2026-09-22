@@ -17,3 +17,13 @@ export const fenToYuan = (fen?: number | null) => Number(fen ?? 0) / 100;
 
 /** 展示用，固定两位小数。**不拼 ¥**：有的列本来就没有币种前缀，拼了就得多一个开关。 */
 export const formatYuan = (fen?: number | null) => fenToYuan(fen).toFixed(2);
+
+/**
+ * 带符号的展示：`+¥12.34` / `-¥0.10`。
+ *
+ * 给**流水**那种有方向的金额列用（充值为正、扣减为负）。只显示绝对值会让一次扣减看起来
+ * 像又进了一笔钱，所以符号必须跟着数走。颜色不在这里给——同一个数在有的页是绿色进账、
+ * 在有的页是红色出账，那是各页自己的事。
+ */
+export const formatSignedYuan = (fen: number) =>
+  `${fen < 0 ? '-' : '+'}¥${formatYuan(Math.abs(fen))}`;

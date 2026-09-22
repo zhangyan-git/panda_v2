@@ -6,10 +6,14 @@
  * 就退回显示原始码。
  *
  * 集中放一个文件，理由与 couponLabels 相同：同一个码会出现在好几个页面（订单状态在列表、
- * 详情、售后的订单里都有；出资方式在订单详情的出资 tab 里），分开写一定漂移，而漂移的表现
- * 是同一笔单在两处显示成两种状态——不报错，只让人怀疑数据本身。
+ * 详情、售后的订单里都有），分开写一定漂移，而漂移的表现是同一笔单在两处显示成两种状态——
+ * 不报错，只让人怀疑数据本身。
  *
  * 表在这里，翻码的那两个函数在 services/labels.ts。
+ *
+ * **支付方式不在这里**：那一列的值（catalog 的 code 与订单侧两个设备标签）与支付域共用一个
+ * 来源，所以文案在 services/paymentMethodLabels.ts。同一个码在订单页和支付页必须叫同一个
+ * 名字，两边各留一份就是漂移的起点。
  */
 
 import type { EnumMeta } from './labels';
@@ -45,6 +49,14 @@ export const FULFILLMENT_STATUS: Record<string, EnumMeta> = {
 export const ORDER_SOURCE: Record<string, EnumMeta> = {
   miniapp: { text: '小程序', color: 'blue' },
   screen_qr: { text: '屏幕扫码', color: 'geekblue' },
+  // 线下刷卡机设备回调建的单（partner-service 验签后经 gRPC 建单，直接落成已支付，没有
+  // 下单用户）。取值与 order/005 放宽后的 orders_source_check 逐字对应——那张表漏登记
+  // 时，来源列会退回显示原始码 `device`，筛选下拉里也没有这一项。
+  device: { text: '设备下单', color: 'purple' },
+  // 会员续费代扣建的单（membership-service 收到渠道扣款成功的通知后经 gRPC 建单，同样是
+  // 钱已在别处收过、直接落成已支付）。文案照老后台那一列：它在业务阶段显示的就是
+  // 「自动续费」。取值与 order/009 放宽后的 orders_source_check 逐字对应。
+  renewal: { text: '自动续费', color: 'gold' },
 };
 
 /** order_lines.line_type */
@@ -52,21 +64,6 @@ export const ORDER_LINE_TYPE: Record<string, EnumMeta> = {
   drink: { text: '饮品', color: 'blue' },
   addon: { text: '加购', color: 'geekblue' },
   membership: { text: '会员套餐', color: 'purple' },
-};
-
-/**
- * order_payment_lines.line_type：这一块钱是谁出的。
- *
- * **没有福卡**：福卡是下单赠送的抽奖凭证，不是出资渠道（余额归 account-service、消耗只有
- * 抽奖一条路）。规划里没有这一项，是词表凭空写上了它；order/003 与 payment/004 已把两侧
- * CHECK 收窄。别把它加回来。
- */
-export const PAYMENT_LINE_TYPE: Record<string, EnumMeta> = {
-  wechat: { text: '微信支付', color: 'green' },
-  unionpay: { text: '银联', color: 'blue' },
-  coffee_bean: { text: '咖啡豆', color: 'orange' },
-  wallet: { text: '消费金', color: 'cyan' },
-  other: { text: '其他', color: 'default' },
 };
 
 /** order_payment_lines.status：一次出资分摊走到哪一步 */
@@ -83,8 +80,10 @@ export const PAYMENT_LINE_STATUS: Record<string, EnumMeta> = {
 /**
  * order_after_sales.status。
  *
- * approved 的文案是「已通过」而不是「已退款」：后端 approve 只把申请标成 approved，
- * 钱由 payment-service 退（还没建）。写「已退款」是在说一件没发生的事。
+ * 「已通过」与「退款中」「已退款」是三件事，不能省掉中间那两个：通过是**同意退**，通过之后
+ * 服务端才去向支付域发起退款（refunding），钱真回去了才是 refunded。发起没成时会停在
+ * 「已通过」——那不是卡住，而是一句准确的描述（同意退、退款单还没建成），等人在列表里点
+ * 「发起退款」重试。把「已通过」写成「已退款」就是在这三件事里跳过了两件。
  */
 export const AFTER_SALE_STATUS: Record<string, EnumMeta> = {
   pending: { text: '待审核', color: 'gold' },
@@ -121,32 +120,6 @@ export const AGGREGATE_TYPE: Record<string, EnumMeta> = {
 };
 
 // 下面这个不是枚举表的用法，单独说明。
-
-/**
- * 支付方式的显示文案。
- *
- * **不做映射**：`orders.payment_method` 是从支付事件里原样抄下来的自由字符串，后端没有
- * 对应的枚举、也没有 CHECK。这里的几项只是把已知的那几个值写成人话，认不出来的一律原样
- * 回显——与「未知枚举也要看得见」同一个道理，而且这条更硬：真去查库也查不到那份名单。
- * 一张写着 wechat_v3 的单子比一张写着「其他」的单子有用得多。
- */
-const PAYMENT_METHOD_TEXT: Record<string, string> = {
-  wechat: '微信支付',
-  wechat_pay: '微信支付',
-  unionpay: '银联',
-  coffee_bean: '咖啡豆',
-  wallet: '消费金',
-  balance: '余额',
-  cash: '现金',
-  other: '其他',
-};
-
-/** 支付方式 → 文案。空值给占位符，认不出来的原样返回。 */
-export function paymentMethodLabel(value?: string | null): string {
-  const raw = value?.trim();
-  if (!raw) return '—';
-  return PAYMENT_METHOD_TEXT[raw] ?? raw;
-}
 
 /** 订单上那三个「有没有某类行」的标记。列表行与详情都有这三个字段。 */
 export type LineFlags = {

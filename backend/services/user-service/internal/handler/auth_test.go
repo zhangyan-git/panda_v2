@@ -70,7 +70,7 @@ func TestAdminMeRejectsBeforeLiveAccess(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			users := &meUsers{user: tt.user, err: tt.err}
 			bindings := &meBindings{}
-			h := NewAdminAuthHandler(service.NewAdminAuthService(users, bindings, nil))
+			h := NewAdminAuthHandler(service.NewAdminAuthService(users, bindings, nil, nil))
 			r := httptest.NewRequest(http.MethodGet, "/v1/admin/users/me", nil)
 			if tt.identity != nil {
 				r = r.WithContext(auth.WithIdentity(r.Context(), *tt.identity))
@@ -90,7 +90,7 @@ func TestAdminMeRejectsBeforeLiveAccess(t *testing.T) {
 func TestAdminMeReturnsCurrentAccessCompatibleResponse(t *testing.T) {
 	users := &meUsers{user: &model.AdminUser{ID: "admin", Username: "alice", Name: "Alice", Email: "alice@example.test", Status: "active"}}
 	bindings := &meBindings{roles: []*model.AdminRole{{Code: "editor"}}, permissions: []string{"admin:brands:view"}}
-	h := NewAdminAuthHandler(service.NewAdminAuthService(users, bindings, nil))
+	h := NewAdminAuthHandler(service.NewAdminAuthService(users, bindings, nil, nil))
 	r := httptest.NewRequest(http.MethodGet, "/v1/admin/users/me", nil)
 	r = r.WithContext(auth.WithIdentity(r.Context(), auth.Identity{Subject: "admin", UserID: "admin", IsSuper: true, Roles: []string{"super_admin"}, Permissions: []string{"revoked"}}))
 	w := httptest.NewRecorder()
@@ -122,7 +122,7 @@ func TestAdminMeLiveAccessFailure(t *testing.T) {
 		} else {
 			bindings.permissionErr = errors.New("permissions unavailable")
 		}
-		h := NewAdminAuthHandler(service.NewAdminAuthService(&meUsers{user: &model.AdminUser{ID: "admin", Status: "active"}}, bindings, nil))
+		h := NewAdminAuthHandler(service.NewAdminAuthService(&meUsers{user: &model.AdminUser{ID: "admin", Status: "active"}}, bindings, nil, nil))
 		r := httptest.NewRequest(http.MethodGet, "/v1/admin/users/me", nil)
 		r = r.WithContext(auth.WithIdentity(r.Context(), auth.Identity{Subject: "admin", UserID: "admin"}))
 		w := httptest.NewRecorder()

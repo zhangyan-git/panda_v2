@@ -35,6 +35,18 @@ type stubRepository struct {
 	releaseParams []repository.ReleaseParams
 	releaseErr    error
 
+	// 预览冻结（只读）。三个回答值各自可设：默认是两个 0，与「这一单还没发放、账上也没有
+	// 可用」同一件事。
+	previewParams    []repository.PreviewFreezeParams
+	previewGranted   int64
+	previewFreezable int64
+	previewErr       error
+	// recoverParams 记的是追回那一次。recoverResult 是「追回了几张」的回答，默认 0——
+	// 事件侧不读它，但把它记下来能让「这一次到底动了没有」在断言里看得见。
+	recoverParams []repository.RecoverParams
+	recoverResult int64
+	recoverErr    error
+
 	// 咖啡豆那一半。与上面同一套记法：把调用方给的原样记下来，让测试去断言键怎么拼、
 	// 金额有没有取负、文案的兜底是哪一句。
 	consumeBeanParams []repository.BeanConsumeParams
@@ -78,9 +90,21 @@ func (s *stubRepository) FreezeAfterSale(_ context.Context, params repository.Fr
 	return false, s.freezeErr
 }
 
+// PreviewFreezeAfterSale 是只读的那一条：桩上只要把两个数原样交回，让「预览算出来的两个
+// 数怎么被翻译成 gRPC 响应」这件事能被测到——判定在订单域那侧，本服务不持有规则。
+func (s *stubRepository) PreviewFreezeAfterSale(_ context.Context, params repository.PreviewFreezeParams) (int64, int64, error) {
+	s.previewParams = append(s.previewParams, params)
+	return s.previewGranted, s.previewFreezable, s.previewErr
+}
+
 func (s *stubRepository) ReleaseAfterSale(_ context.Context, params repository.ReleaseParams) (bool, error) {
 	s.releaseParams = append(s.releaseParams, params)
 	return false, s.releaseErr
+}
+
+func (s *stubRepository) RecoverAfterSale(_ context.Context, params repository.RecoverParams) (int64, error) {
+	s.recoverParams = append(s.recoverParams, params)
+	return s.recoverResult, s.recoverErr
 }
 
 func (s *stubRepository) GetAccount(context.Context, string) (*model.FortuneCardAccount, error) {
@@ -420,21 +444,24 @@ func TestHandleOrderEventRejectsBadAfterSalePayloads(t *testing.T) {
 	}
 }
 
-func TestHandleOrderEventReleasesOnlyOnRejectedReview(t *testing.T) {
-	// 这一条是整轮的关键口径：**通过不解冻**。通过了只代表「同意退」，钱还没出去——
-	// 在这里解冻会让用户在拿到退款之前先拿到能用的卡，恰好把冻结想挡的那件事放出去。
+func TestHandleOrderEventDoesNothingOnApprovedReview(t *testing.T) {
+	// 审核这条事件上只剩一个动作：**驳回 ⇒ 解冻**。通过是一个空分支，两件事都不做：
 	//
-	// 同一条事件在咖啡豆那一半上的口径**相反**：通过即冲正（豆是已经收下的钱），驳回不动
-	// （豆已经扣走了，没有可放开的东西）。两件事在同一张表里分开断言，才不会有人「顺手」
-	// 把两边改成一样。
+	//	福卡  **通过不解冻**。通过了只代表「同意退」，钱还没出去——在这里解冻会让用户在
+	//	      拿到退款之前先拿到能用的卡，恰好把冻结想挡的那件事放出去；收走更没道理（钱
+	//	      还没退）。冻结一直保持到退款成功、追回福卡那一刻。
+	//	咖啡豆 **通过也不还**。豆是支付时就已经收下的钱，还回去就是退款本身，所以它跟着
+	//	      钱走：退成了才还（见 TestHandleOrderEventRecoversOnRefundSucceeded），
+	//	      退款失败时也就没有「已经还了要再扣回来」这回事。
+	//
+	// 两者都不动的那半个分支也要有断言，否则「顺手」在 approved 里加一句还会是绿的。
 	cases := []struct {
 		name        string
 		status      string
 		wantRelease bool
-		wantReverse bool
 	}{
 		{name: "rejected releases", status: dto.AfterSaleStatusRejected, wantRelease: true},
-		{name: "approved keeps the freeze but reverses the beans", status: dto.AfterSaleStatusApproved, wantReverse: true},
+		{name: "approved touches neither the freeze nor the beans", status: dto.AfterSaleStatusApproved},
 		{name: "an unknown status is left alone", status: "pending"},
 	}
 	for _, tc := range cases {
@@ -450,7 +477,8 @@ func TestHandleOrderEventReleasesOnlyOnRejectedReview(t *testing.T) {
 				Action:      "reject",
 				Scope:       "addon",
 				// 真实的 approved 事件一定带着订单域在申请时钳过的金额（order-service 在
-				// amount<=0 时就拒了申请），0 不会出现在这里。
+				// amount<=0 时就拒了申请）。这里仍然填上：审核这一拍不该读它，填了才能
+				// 证明「不是因为没有金额才没冲正」。
 				RefundAmount: 900,
 			})
 			if err := New(repo).HandleOrderEvent(context.Background(), event); err != nil {
@@ -459,29 +487,19 @@ func TestHandleOrderEventReleasesOnlyOnRejectedReview(t *testing.T) {
 			if got := len(repo.releaseParams); (got > 0) != tc.wantRelease {
 				t.Fatalf("status %q: want release=%v, got %d calls", tc.status, tc.wantRelease, got)
 			}
-			if got := len(repo.beanReverseParams); (got > 0) != tc.wantReverse {
-				t.Fatalf("status %q: want reverse=%v, got %d calls", tc.status, tc.wantReverse, got)
+			// 三种状态都不该碰豆：冲正挂在退款成功那一拍上。
+			if got := len(repo.beanReverseParams); got != 0 {
+				t.Fatalf("status %q: 审核不冲正豆，got %d calls", tc.status, got)
 			}
-			if tc.wantRelease {
-				release := repo.releaseParams[0]
-				if release.AfterSaleNo != "AS20260914001" {
-					t.Fatalf("want the event's afterSaleNo, got %q", release.AfterSaleNo)
-				}
-				if release.Reason != FreezeReasonRejected {
-					t.Fatalf("want reason %q, got %q", FreezeReasonRejected, release.Reason)
-				}
-			}
-			if !tc.wantReverse {
+			if !tc.wantRelease {
 				return
 			}
-			reverse := repo.beanReverseParams[0]
-			// 金额照抄事件里的 refundAmount，键由订单与售后单派生——两者都由事件给，
-			// 账户域不自己算（口径属于订单域）。
-			if reverse.Amount != 900 {
-				t.Fatalf("want the event's refundAmount, got %d", reverse.Amount)
+			release := repo.releaseParams[0]
+			if release.AfterSaleNo != "AS20260914001" {
+				t.Fatalf("want the event's afterSaleNo, got %q", release.AfterSaleNo)
 			}
-			if reverse.AfterSaleNo != "AS20260914001" {
-				t.Fatalf("want the event's afterSaleNo, got %q", reverse.AfterSaleNo)
+			if release.Reason != FreezeReasonRejected {
+				t.Fatalf("want reason %q, got %q", FreezeReasonRejected, release.Reason)
 			}
 		})
 	}
@@ -509,6 +527,190 @@ func TestHandleOrderEventReleasesOnCancelled(t *testing.T) {
 	}
 	if repo.releaseParams[0].Reason != FreezeReasonCancelled {
 		t.Fatalf("want reason %q, got %q", FreezeReasonCancelled, repo.releaseParams[0].Reason)
+	}
+}
+
+// TestHandleOrderEventRecoversOnRefundSucceeded 是冻结行那两条终局里更重的一条：
+// 钱退成了 ⇒ 卡不是「放回去」而是**追回**（解冻 + 冲正那几笔发放，余额真的少掉）。
+//
+// 与解冻放在同一个用例里对照：两个分支做的事不同（recover vs release），认错一个的
+// 表现都是静默的——余额差几张，而冻结行看起来都结束了。
+func TestHandleOrderEventRecoversOnRefundSucceeded(t *testing.T) {
+	payload := dto.AfterSaleRefundEventPayload{
+		AfterSaleID:    uuid.NewString(),
+		AfterSaleNo:    "AS20260914001",
+		OrderID:        uuid.NewString(),
+		OrderNo:        "CO20260914001",
+		UserID:         uuid.NewString(),
+		RefundNo:       "RF20260914001",
+		RefundAmount:   1800,
+		RefundedAtUnix: time.Date(2026, 9, 14, 3, 4, 5, 0, time.UTC).Unix(),
+	}
+	repo := &stubRepository{}
+	if err := New(repo).HandleOrderEvent(context.Background(), afterSaleEvent(t, dto.EventAfterSaleRefunded, payload)); err != nil {
+		t.Fatalf("a refunded event must be acked, got %v", err)
+	}
+	if len(repo.recoverParams) != 1 {
+		t.Fatalf("want exactly one recover, got %d", len(repo.recoverParams))
+	}
+	if len(repo.releaseParams) != 0 {
+		t.Fatalf("退款成功不能走解冻那条路，got %d releases", len(repo.releaseParams))
+	}
+	recover := repo.recoverParams[0]
+	if recover.AfterSaleNo != payload.AfterSaleNo {
+		t.Fatalf("want afterSaleNo %q, got %q", payload.AfterSaleNo, recover.AfterSaleNo)
+	}
+	if recover.Reason != FreezeReasonRecovered {
+		t.Fatalf("want reason %q, got %q", FreezeReasonRecovered, recover.Reason)
+	}
+	// 用钱的时刻而不是收到消息的那一刻：补投旧事件时流水上的顺序必须还是那几天。
+	if got := recover.OccurredAt.Unix(); got != payload.RefundedAtUnix {
+		t.Fatalf("occurredAt = %d, want %d（没用事件里的时刻）", got, payload.RefundedAtUnix)
+	}
+	// 退款单号只是「这一笔由谁退的」的证据，不进引用位——流水按订单号归集。
+	if recover.Title != titleReverseRecover {
+		t.Fatalf("want title %q, got %q", titleReverseRecover, recover.Title)
+	}
+
+	// 同一拍上还要把这一单扣掉的咖啡豆还回去——**这是豆唯一的冲正时点**：钱退成了，
+	// 出资那部分也该回到用户账上；钱没退成时它一分不动（见下一个用例）。
+	if len(repo.beanReverseParams) != 1 {
+		t.Fatalf("want exactly one bean reversal, got %d", len(repo.beanReverseParams))
+	}
+	reverse := repo.beanReverseParams[0]
+	// 金额照抄事件里的 refundAmount，键由订单与售后单派生——两者都由事件给，
+	// 账户域不自己算（口径属于订单域）。
+	if reverse.Amount != payload.RefundAmount {
+		t.Fatalf("want the event's refundAmount %d, got %d", payload.RefundAmount, reverse.Amount)
+	}
+	if reverse.AfterSaleNo != payload.AfterSaleNo {
+		t.Fatalf("want the event's afterSaleNo, got %q", reverse.AfterSaleNo)
+	}
+	if reverse.OrderID != payload.OrderID {
+		t.Fatalf("want the event's orderId, got %q", reverse.OrderID)
+	}
+	// 文案说清是哪一拍冲的：「审核通过」与「退款成功」是两个时刻，退款失败的那一单
+	// 只有前者没有后者，事后看流水要能一眼分出这笔豆是跟着什么回来的。
+	if want := "售后单 " + payload.AfterSaleNo + " 退款成功"; reverse.Remark != want {
+		t.Fatalf("want remark %q, got %q", want, reverse.Remark)
+	}
+	// 同一拍上的两处账变必须是同一个业务时刻，否则补投旧事件时它们的先后是乱的。
+	if got := reverse.OccurredAt.Unix(); got != payload.RefundedAtUnix {
+		t.Fatalf("豆冲正的 occurredAt = %d, want %d（与福卡那几笔用同一个时刻）", got, payload.RefundedAtUnix)
+	}
+}
+
+// TestHandleOrderEventDoesNotReverseBeansWhenTheRefundFails 是上一个用例的对面：钱没出去，
+// 豆就必须原封不动。
+//
+// 它同时钉住了「豆不再挂在审核通过上」这件事的收益——退款失败时没有任何要撤销的动作，
+// 因为没有发生过：不还豆、不需要再扣回来。
+func TestHandleOrderEventDoesNotReverseBeansWhenTheRefundFails(t *testing.T) {
+	repo := &stubRepository{}
+	payload := dto.AfterSaleRefundEventPayload{
+		AfterSaleID:    uuid.NewString(),
+		AfterSaleNo:    "AS20260914002",
+		OrderID:        uuid.NewString(),
+		OrderNo:        "CO20260914002",
+		UserID:         uuid.NewString(),
+		RefundNo:       "RF20260914002",
+		RefundAmount:   1800,
+		FailureCode:    "ACQ.SYSTEM_ERROR",
+		FailureMessage: "渠道超时",
+	}
+	if err := New(repo).HandleOrderEvent(context.Background(), afterSaleEvent(t, dto.EventAfterSaleRefundFailed, payload)); err != nil {
+		t.Fatalf("a refund_failed event must be acked, got %v", err)
+	}
+	if got := len(repo.beanReverseParams); got != 0 {
+		t.Fatalf("退款失败不还豆，got %d reversals", got)
+	}
+}
+
+// TestHandleOrderEventUsesServiceClockWhenRefundTimeIsMissing：失败事件里没有成功的时刻
+// （order-service 那边 unixOrZero 把它压成 0），追回这条路上不该出现 0。
+func TestHandleOrderEventUsesServiceClockWhenRefundTimeIsMissing(t *testing.T) {
+	before := time.Now().UTC()
+	repo := &stubRepository{}
+	payload := dto.AfterSaleRefundEventPayload{
+		AfterSaleNo: "AS20260914001",
+		OrderID:     uuid.NewString(),
+		OrderNo:     "CO20260914001",
+		UserID:      uuid.NewString(),
+		// 金额与订单 ID 必须给：追回那一步不读它们，但同一拍上的豆冲正要（金额是订单域
+		// 钳过的数，缺了它就是欠退；订单 ID 是那笔扣减的定位键）。这一条只问时钟，
+		// 别的字段照真实形状填。
+		RefundAmount: 1800,
+	}
+	if err := New(repo).HandleOrderEvent(context.Background(), afterSaleEvent(t, dto.EventAfterSaleRefunded, payload)); err != nil {
+		t.Fatalf("a refunded event without a timestamp must be acked, got %v", err)
+	}
+	if len(repo.recoverParams) != 1 {
+		t.Fatalf("want exactly one recover, got %d", len(repo.recoverParams))
+	}
+	if got := repo.recoverParams[0].OccurredAt; got.Before(before.Add(-time.Minute)) || got.After(time.Now().UTC().Add(time.Minute)) {
+		t.Fatalf("occurredAt = %v, 没有退回服务时钟", got)
+	}
+	// 豆那一笔也走同一个兜底（仓储那层原本自己取 NOW()，事件这条路要的是同一个时刻）。
+	if len(repo.beanReverseParams) != 1 {
+		t.Fatalf("want exactly one bean reversal, got %d", len(repo.beanReverseParams))
+	}
+	if got := repo.beanReverseParams[0].OccurredAt; got.Before(before.Add(-time.Minute)) || got.After(time.Now().UTC().Add(time.Minute)) {
+		t.Fatalf("豆冲正的 occurredAt = %v, 没有退回服务时钟", got)
+	}
+}
+
+// TestHandleOrderEventReleasesOnRefundFailed 盯的是那个「不修就永远补不回来」的洞：
+// 退款失败后**必须**解冻。
+//
+// 失败之后那张售后单是终态，用户要重新申请；而在途冻结已经把可用吃光，重开的那张冻结行
+// 只冻得到 0 张——不在这里解开，第二次退款成功时一张卡都追不回来。所以这条事件不是
+// 收尾工作，是下一个回合的前提。
+func TestHandleOrderEventReleasesOnRefundFailed(t *testing.T) {
+	repo := &stubRepository{}
+	event := afterSaleEvent(t, dto.EventAfterSaleRefundFailed, dto.AfterSaleRefundEventPayload{
+		AfterSaleID:    uuid.NewString(),
+		AfterSaleNo:    "AS20260914001",
+		OrderID:        uuid.NewString(),
+		OrderNo:        "CO20260914001",
+		UserID:         uuid.NewString(),
+		RefundNo:       "RF20260914001",
+		RefundAmount:   1800,
+		FailureCode:    "ACQ.TRADE_NOT_EXIST",
+		FailureMessage: "原交易不存在",
+	})
+
+	if err := New(repo).HandleOrderEvent(context.Background(), event); err != nil {
+		t.Fatalf("a refund_failed event must be acked, got %v", err)
+	}
+	if len(repo.releaseParams) != 1 {
+		t.Fatalf("want exactly one release, got %d", len(repo.releaseParams))
+	}
+	if len(repo.recoverParams) != 0 {
+		t.Fatalf("退款失败不能追回，got %d recovers", len(repo.recoverParams))
+	}
+	if repo.releaseParams[0].Reason != FreezeReasonRefundFailed {
+		t.Fatalf("want reason %q, got %q", FreezeReasonRefundFailed, repo.releaseParams[0].Reason)
+	}
+}
+
+func TestHandleOrderEventRejectsRefundEventsWithoutAfterSaleNo(t *testing.T) {
+	// 两条新事件共用同一个载荷，所以缺幂等键这一条也要一起钉：没有它就没有「只追一次」，
+	// 重投会冲第二遍（冲正有唯一索引兜着，但冻结行结不掉）。
+	for _, eventType := range []string{dto.EventAfterSaleRefunded, dto.EventAfterSaleRefundFailed} {
+		t.Run(eventType, func(t *testing.T) {
+			repo := &stubRepository{}
+			event := afterSaleEvent(t, eventType, dto.AfterSaleRefundEventPayload{
+				AfterSaleNo: "  ",
+				UserID:      uuid.NewString(),
+			})
+			if err := New(repo).HandleOrderEvent(context.Background(), event); !errors.Is(err, ErrInvalidEvent) {
+				t.Fatalf("want %v, got %v", ErrInvalidEvent, err)
+			}
+			if len(repo.recoverParams) != 0 || len(repo.releaseParams) != 0 {
+				t.Fatalf("a rejected event must not touch the freeze, got %d/%d",
+					len(repo.recoverParams), len(repo.releaseParams))
+			}
+		})
 	}
 }
 

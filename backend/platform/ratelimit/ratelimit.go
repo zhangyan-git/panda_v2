@@ -2,7 +2,7 @@
 // 没有 Redis 就退化成进程内令牌桶。
 //
 // 它只管「这个键此刻该不该放行」，键怎么取由调用方决定——网关用的是
-// 客户端 IP 加路由类别，见 services/gateway-service/cmd/gateway/ratelimit.go。
+// 客户端 IP 加路由类别，见 services/gateway-service/cmd/ratelimit.go。
 package ratelimit
 
 import (

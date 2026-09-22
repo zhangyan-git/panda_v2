@@ -44,8 +44,8 @@ var (
 
 // CreatePaymentInput 是发起一次支付要交给支付服务的事实。
 //
-// subject / attach / walletOpenID 都没有：它们要么由支付侧按渠道规则拼，要么本轮没有任何
-// 渠道消费得了。往一个没人读的字段里塞值，只会让人以为它被用上了。
+// subject / attach 没有：它们由支付侧按渠道规则拼。往一个没人读的字段里塞值，只会让人
+// 以为它被用上了。
 type CreatePaymentInput struct {
 	// OrderID 是 orders.id。它和 OrderNo 指的是同一张订单，之所以两个都给：账户出资
 	// （咖啡豆）的幂等键由**订单 ID** 派生（账户域按 `order:{orderId}` 建键，见
@@ -56,18 +56,37 @@ type CreatePaymentInput struct {
 	UserID  string
 	// Amount 是应付总额，单位为分，**由订单权威给出**：支付服务不读订单库，它拿到的就是
 	// 这个值。所以这个值必须是订单的行上算好的 payable_amount，不能是调用方传上来的数。
-	Amount          int64
-	PaymentMethodID string
+	Amount        int64
+	PaymentMethod string
 	// RequestID 是这次发起的幂等号，原样交给支付服务做支付单的幂等键。
 	RequestID string
+	// WalletOpenID 是付款人在微信小程序下的 openid，由 service 层从身份域取（见
+	// WalletIdentityReader），**不是客户端给的**。
+	//
+	// 它不参与幂等哈希（支付侧只哈希 order_no / user_id / amount / payment_method）：
+	// 同一个人换了 openid 仍然是一次重试，不该变成「换了请求体」的冲突。
+	//
+	// 为空是合法的：它要么表示这个用户没绑微信，要么表示这次选的支付方式不需要用户身份
+	// （扫码、H5、咖啡豆）。**要不要为空停下来是支付侧的事**——只有它知道那条支付方式的
+	// action，需要身份的渠道会把这笔落成 failed + failure_code，而不是拿空 openid 去试。
+	WalletOpenID string
+	// StoreID / DeviceID 是下单点位与设备的值引用（orders.store_id / orders.device_id），
+	// **可以为空**（纯会员订单没有点位）。它们只有一个用途：支付侧在建支付单的同一个事务里
+	// 按范围命中分账规则，所以必须在这里给出去——支付侧不读订单库，而支付成功那条事件是
+	// 反方向（Payment → Order），带不了这些维度。
+	StoreID  string
+	DeviceID string
+	// BizType 是这一单的分账业务分类（settlement_rules.biz_type），由订单行推出来，
+	// 见 service 的 settlementBizType。**必填**：它是规则命中键的第一段。
+	BizType string
 }
 
 // PaymentCreator 向支付服务发起一次支付。
 //
 // 带的是**服务令牌**（platform/auth.WithServiceToken）：这一次调用代表订单域去告诉支付域
 // 一个事实，不代表某个用户。用户的身份已经在这之前用过了——归属校验发生在 service 层，
-// 用的是他自己那张 access token 解出来的 userID。这里再传一次没有意义，也没有一个能装的
-// 字段。
+// 用的是他自己那张 access token 解出来的 userID。openid 同样来自身份域而不来自请求体，
+// 它是值引用，不是调用方声明的身份。
 type PaymentCreator struct {
 	payments paymentv1.PaymentServiceClient
 	token    string
@@ -101,13 +120,19 @@ func (p *PaymentCreator) Create(ctx context.Context, in CreatePaymentInput) (*dt
 	ctx, cancel := context.WithTimeout(auth.WithServiceToken(ctx, p.token), p.timeout)
 	defer cancel()
 	resp, err := p.payments.CreatePayment(ctx, &paymentv1.CreatePaymentRequest{
-		OrderId:         in.OrderID,
-		OrderNo:         in.OrderNo,
-		UserId:          in.UserID,
-		Amount:          in.Amount,
-		PaymentMethodId: in.PaymentMethodID,
-		RequestId:       in.RequestID,
-		// subject / wallet_open_id / attach 有意留空，见 CreatePaymentInput 的注释。
+		OrderId:       in.OrderID,
+		OrderNo:       in.OrderNo,
+		UserId:        in.UserID,
+		Amount:        in.Amount,
+		PaymentMethod: in.PaymentMethod,
+		RequestId:     in.RequestID,
+		// 这一项只有身份域给得出来，由 service 层取好之后传进来。
+		WalletOpenId: in.WalletOpenID,
+		// 分账的三个维度：范围两个、业务分类一个，都由 service 层从订单与订单行取好。
+		StoreId:  in.StoreID,
+		DeviceId: in.DeviceID,
+		BizType:  in.BizType,
+		// subject / attach 有意留空，见 CreatePaymentInput 的注释。
 	})
 	if err != nil {
 		return nil, mapPaymentError(err)

@@ -30,8 +30,16 @@ func writeBrandError(w http.ResponseWriter, err error, internalMsg string) {
 		errors.Is(err, service.ErrStoreNameRequired),
 		errors.Is(err, service.ErrBrandHasStores),
 		errors.Is(err, service.ErrStoreBrandMismatch),
-		errors.Is(err, service.ErrAuditNotPending):
+		errors.Is(err, service.ErrStoreMerchantImmutable),
+		errors.Is(err, repository.ErrAuditNotPending):
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, err.Error())
+	// 客户编码 / DMS 编码撞车是 409 而不是 400：请求本身是合法且完整的，是**当前数据**
+	// 让它做不成——换一个编码就过了。400 会被读成「表单填错了」，而用户会去挨个字段找错。
+	// 品牌重名同理：换个名字就过了。
+	case errors.Is(err, repository.ErrCustomerCodeTaken),
+		errors.Is(err, repository.ErrDMSCodeTaken),
+		errors.Is(err, repository.ErrBrandNameTaken):
+		api.Error(w, http.StatusConflict, api.CodeConflict, err.Error())
 	case errors.Is(err, pgx.ErrNoRows):
 		api.Error(w, http.StatusNotFound, api.CodeNotFound, "数据不存在")
 	default:

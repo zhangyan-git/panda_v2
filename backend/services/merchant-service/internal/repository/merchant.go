@@ -23,6 +23,10 @@ type MerchantRepository interface {
 	Update(ctx context.Context, m *model.Merchant) error
 	UpdateStatus(ctx context.Context, id, status string) error
 	Delete(ctx context.Context, id string) error
+	// HasBrandsOrStores 报告商户名下还有没有品牌或门店。brands / stores 对 merchants
+	// 都是 ON DELETE CASCADE（merchant/001），两个都在时删商户会把品牌、门店连同
+	// 它们的审核历史一起静默带走，所以删除前必须先问这一句。
+	HasBrandsOrStores(ctx context.Context, id string) (bool, error)
 }
 
 // merchantSnapshot 是写入审计 before_data / after_data 的形状。
@@ -214,6 +218,14 @@ func (r *pgMerchantRepo) UpdateStatus(ctx context.Context, id, status string) er
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func (r *pgMerchantRepo) HasBrandsOrStores(ctx context.Context, id string) (bool, error) {
+	const q = `SELECT EXISTS(SELECT 1 FROM brands WHERE merchant_id = $1)
+		OR EXISTS(SELECT 1 FROM stores WHERE merchant_id = $1)`
+	var exists bool
+	err := r.pool.QueryRow(ctx, q, id).Scan(&exists)
+	return exists, err
 }
 
 func (r *pgMerchantRepo) Delete(ctx context.Context, id string) error {

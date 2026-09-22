@@ -7,9 +7,19 @@ export type CurrentUser = {
   email: string;
   merchantId: string;
   merchantName: string;
+  /**
+   * 数据范围：merchant（全部门店）/ brand / store。
+   *
+   * 这三列回显的就是**列表接口真正用来过滤的那个边界**，不是另算的一份描述——服务端在
+   * 同一次请求里现取现算，所以界面上写着「门店「XX店」」时，列表拿到的必然也是那一家店。
+   */
+  scopeType: string;
+  scopeId: string;
+  /** 范围目标的名称。商户档为空（那是界面文案），目标被删除时也为空。 */
+  scopeName: string;
 };
 
-/** 获取当前登录商户用户信息 */
+/** 获取当前登录商户用户信息（含所属商户与数据范围） */
 export async function fetchCurrentUser(): Promise<CurrentUser> {
   return request<CurrentUser>('/api/v1/merchant/users/me');
 }
@@ -25,7 +35,16 @@ export async function login(params: { username: string; password: string }) {
   );
 }
 
-/** 刷新 token */
+/**
+ * 刷新 token。
+ *
+ * **这个函数没有任何调用点，服务端也不存在这条路由**：MerchantAuthService 只有 Login 与
+ * Me，`/v1/merchant/auth/refresh` 从来没有实现过。留着它只有一个作用——将来真要做续期时
+ * 有个明确的名字可以接。现在**不要**把它接到响应拦截器上：那会让一次 401 变成对一条不存
+ * 在的路径的请求，失败之后仍然要登出，只是多绕一圈。
+ *
+ * 也就是说：access token 过期（24 小时）就等于要重新登录。这是已知缺口，不是遗漏。
+ */
 export async function refreshToken(token: string) {
   return request<{ accessToken: string; refreshToken: string }>(
     '/api/v1/merchant/auth/refresh',

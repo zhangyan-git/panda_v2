@@ -15,10 +15,16 @@ import "github.com/panda-dev/panda-v2/backend/services/order-service/internal/mo
 //	pending_payment → cancelled（用户或后台取消）
 //	pending_payment → expired（超时关单扫描）
 //	paid → completed（后台标记完成，见 service/complete.go）
+//	paid/completed → refunding（售后审核通过、退款单建成）
+//	refunding → refunded（整单退款成功的事件）
+//	refunding → paid/completed（退款失败：回到退款前那个状态）
 //
-// 其余箭头是状态机的完整形状，驱动的服务还没到位：paid → refunding → refunded 要等
-// 退款单（payment-service）。它们写在这里是为了让「为什么 paid 不能直接取消」有一处可查，
-// 而不是让后来的人以为这份状态机只有四条边。
+// 三条出边里两条指向同一个状态不是冗余：**回到哪个状态要看当初是从哪来的**。原状态由
+// 仓储从状态流水里读回来（见 repository.orderStatusBeforeRefunding），一条已经取过杯的
+// 订单退失败之后应当还停在 completed，而不是被降回 paid。
+//
+// 只有整单退成功才落到 refunded：按行退（退一杯）的订单还活着，剩下的行还要履约。
+// 那个判断在 repository.AdvanceRefund 里，判据是售后单自己的 scope。
 //
 // paid → completed 那条边**本该**由履约完成事件驱动，而 fulfillment-service 还没建；
 // 在它到位之前，后台的「标记完成」是这条边唯一的触发源——两者发的是同一个
@@ -38,11 +44,11 @@ var orderTransitions = map[string][]string{
 	},
 	model.OrderStatusRefunding: {
 		model.OrderStatusRefunded,
-		// 退款被驳回：订单回到退款前的状态。这一版一律回 paid——完成了的订单被驳回后
-		// 应当回 completed，要按退款单上记录的原状态恢复。退款单归 payment-service，
-		// 售后这一版只到「审核通过」为止（见 after_sale_state.go），所以 paid/completed
-		// 已经退过款的路径仍然走不到 refunding：订单主状态不会因为一次审核通过而改变。
+		// 退款失败（渠道明确拒绝）：钱没退成，单回到退款前。
 		model.OrderStatusPaid,
+		// 同上，只是这一单当初已经取过杯了。少了这一条，一次失败的退款会把一张完成了的
+		// 订单降级成 paid——那是「还没做完」的意思，与事实正好相反。
+		model.OrderStatusCompleted,
 	},
 	// cancelled / expired / refunded 是终态，没有出边。
 	model.OrderStatusCancelled: nil,

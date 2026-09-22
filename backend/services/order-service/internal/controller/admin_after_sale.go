@@ -48,6 +48,8 @@ func (c *AdminAfterSaleController) AfterSales(w http.ResponseWriter, r *http.Req
 		c.review(w, r, strings.TrimSuffix(rest, "/approve"), model.AfterSaleActionApprove, identity)
 	case strings.HasSuffix(rest, "/reject") && r.Method == http.MethodPost:
 		c.review(w, r, strings.TrimSuffix(rest, "/reject"), model.AfterSaleActionReject, identity)
+	case strings.HasSuffix(rest, "/refund") && r.Method == http.MethodPost:
+		c.startRefund(w, r, strings.TrimSuffix(rest, "/refund"), identity)
 	default:
 		// 没有后台详情接口：列表返回的就是完整售后单（含凭证与福卡快照），点开只是为了看
 		// 同一份数据。等后台页面落地、真需要「详情里带订单行与出资分摊」时再加。
@@ -134,6 +136,31 @@ func (c *AdminAfterSaleController) review(w http.ResponseWriter, r *http.Request
 	})
 	if err != nil {
 		writeOrderError(w, err, "failed to review after sale")
+		return
+	}
+	api.Success(w, afterSaleView(row))
+}
+
+// startRefund 是**重试出口**：把一张已审核通过、但退款单没建起来的售后单再推一次。
+//
+// 它为什么是一个独立入口而不是「再点一次通过」：审核是一次决定，只该发生一次；而发起退款是
+// 那个决定的**执行**，它可以重试任意多次（幂等键是售后单号，重试不会退两次钱）。合成一个
+// 的话，审核人点第二次会拿到「这张单已经不在待审核状态」，那是个死胡同——单停在那儿，
+// 没有任何动作能把它推下去。
+//
+// 没有请求体：要退多少、退哪一张支付单，全都记在售后单上了。
+func (c *AdminAfterSaleController) startRefund(w http.ResponseWriter, r *http.Request, afterSaleNo string, identity auth.Identity) {
+	actor := identity.UserID
+	if actor == "" {
+		actor = identity.Subject
+	}
+	row, err := c.orders.StartRefund(r.Context(), service.StartRefundInput{
+		AfterSaleNo: afterSaleNo,
+		ActorID:     actor,
+		TraceID:     traceID(r),
+	})
+	if err != nil {
+		writeOrderError(w, err, "failed to start the refund")
 		return
 	}
 	api.Success(w, afterSaleView(row))

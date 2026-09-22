@@ -72,8 +72,9 @@ type AfterSaleAppliedEventPayload struct {
 
 // AfterSaleReviewedEventPayload 是 order.after_sale.reviewed 的事件体：管理员通过了或驳回了。
 //
-// 通过**不解冻**：通过了只代表「同意退」，钱还没出去（payment-service 未建）。冻结一直保持
-// 到退款成功、追回福卡那一刻。驳回则立刻解冻——钱不退，卡凭什么锁着。
+// 通过**不解冻**：通过了只代表「同意退」，钱还没出去（退款单是审核通过之后紧接着发起的，
+// 成没成由 payment.refund.* 回来）。冻结一直保持到退款成功、追回福卡那一刻。驳回则立刻
+// 解冻——钱不退，卡凭什么锁着。
 type AfterSaleReviewedEventPayload struct {
 	AfterSaleID  string  `json:"afterSaleId"`
 	AfterSaleNo  string  `json:"afterSaleNo"`
@@ -85,6 +86,35 @@ type AfterSaleReviewedEventPayload struct {
 	Scope        string  `json:"scope"`
 	OrderLineID  *string `json:"orderLineId"`
 	RefundAmount int64   `json:"refundAmount"`
+}
+
+// AfterSaleCancelledEventPayload 是 order.after_sale.cancelled 的事件体：用户撤销了自己那张
+// 还没被审核的申请。存在理由只有一个——**把冻结的福卡放回去**。撤销之后用户手上再没有
+// 任何能解开它的动作了，所以这条事件丢了就等于卡永远锁着；账户域那边因此把它做成幂等的
+// no-op（找不到冻结行也返回成功），让重投是安全的。
+// AfterSaleRefundEventPayload 是 order.after_sale.refunded / order.after_sale.refund_failed 的
+// 事件体：钱退成了，或者明确没退成。它是退款这条链在订单侧的**收口**——`refunding` 只有
+// 这两个出口，而结论只有 payment-service 知道。
+//
+// 两个类型共用一个形状（学 payment-service 发 payment.refund.* 的做法：失败那条里成功相关
+// 的字段为空，而不是两个几乎一样的结构体）。分成两个类型而不是一条带 status 的，是因为
+// 消费方要做的两件事是**相反**的：退成 ⇒ 追回福卡（余额真的少掉），没退成 ⇒ 解冻
+// （卡原样放回去，余额不动）。绑错一条不会报错，只会安静地把卡扣掉或者留着。
+type AfterSaleRefundEventPayload struct {
+	AfterSaleID string `json:"afterSaleId"`
+	AfterSaleNo string `json:"afterSaleNo"`
+	OrderID     string `json:"orderId"`
+	OrderNo     string `json:"orderNo"`
+	UserID      string `json:"userId"`
+	// RefundNo 是 payment-service 的退款单号，排查用的值引用。
+	RefundNo string `json:"refundNo"`
+	// RefundAmount 是这一笔退款的总额（分）。**失败事件里也是同一个数**，不是 0。
+	RefundAmount int64 `json:"refundAmount"`
+	// RefundedAtUnix 是钱退回去的时刻（秒）。0 表示事件没带，消费方用收到的那一刻。
+	RefundedAtUnix int64 `json:"refundedAtUnix"`
+	// FailureCode / FailureMessage 只在失败事件里有值。
+	FailureCode    string `json:"failureCode"`
+	FailureMessage string `json:"failureMessage"`
 }
 
 // AfterSaleCancelledEventPayload 是 order.after_sale.cancelled 的事件体：用户撤销了自己那张

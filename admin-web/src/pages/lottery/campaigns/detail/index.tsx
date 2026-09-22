@@ -1,20 +1,13 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { history, useParams } from '@umijs/max';
-import { Card, Descriptions, Empty, Table, Tag, Typography } from 'antd';
+import { Card, Descriptions, Empty, Image, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useState } from 'react';
 import { formatDateTime } from '../../../../services/datetime';
 import { enumMeta } from '../../../../services/labels';
-import {
-  getCampaign,
-  listRounds,
-  type Campaign,
-  type CampaignPrize,
-  type Round,
-} from '../../../../services/lottery';
+import { getCampaign, listRounds, type Campaign, type Round } from '../../../../services/lottery';
 import {
   CAMPAIGN_STATUS,
-  PRIZE_KIND,
   ROUND_STATUS,
   roundProgressLabel,
   winnerCountLabel,
@@ -23,10 +16,10 @@ import { FULL_PAGE_PARAMS } from '../../../../services/pagination';
 import { requestErrorMessage } from '../../../../services/requestError';
 
 /**
- * 活动详情：活动本身 + 它的奖池 + 它开过的期次。
+ * 活动详情：活动本身 + 它的奖品 + 它开过的期次。
  *
- * **奖池只有这一条路能看到**：列表接口有意不带 prizes（一次 20 个活动、每个带 5 个奖品，
- * 列表就成了奖池查询），所以想核对「名额配得对不对」必须进这一页。
+ * **奖品只有这一条路能看到**：列表接口有意不带它（一次 20 个活动、每个带两张图，列表响应
+ * 会白胖一圈），所以想看这个活动发的是什么必须进这一页。
  *
  * 期次是滚出来的，没有「建一期」的接口，所以这一页在这一块**只读**：能动的两个动作
  * （开奖 / 作废）在期次列表页上，因为它们作用于某**一期**而不是整个活动。
@@ -34,6 +27,17 @@ import { requestErrorMessage } from '../../../../services/requestError';
 
 const dash = (value?: string | null) => (value ? value : '—');
 const time = (value?: string | null) => (value ? formatDateTime(value) : '—');
+
+/**
+ * 一张图，空值时写「未设置」而不是留白——**开通模板建出来的奖品封面就是空的**
+ * （开通是一键动作，不该被「先找一张图」挡住），所以这不是异常局面，得看得出来。
+ */
+const imageOrNone = (src: string) =>
+  src ? (
+    <Image src={src} width={160} />
+  ) : (
+    <Typography.Text type="secondary">未设置</Typography.Text>
+  );
 
 export default function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -66,38 +70,8 @@ export default function CampaignDetailPage() {
     void load();
   }, [load]);
 
-  const prizeColumns: ColumnsType<CampaignPrize> = [
-    {
-      // 行序就是发奖顺序：第一档拿满自己的名额才轮到下一档（算法的输入顺序，
-      // 而那个顺序由这里的行序决定）。所以这一列要显示出来，它不是装饰。
-      title: '顺序',
-      dataIndex: 'sortOrder',
-      width: 70,
-      render: (_, row, index) => index + 1,
-    },
-    {
-      title: '类型',
-      dataIndex: 'prizeKind',
-      width: 100,
-      render: (_, row) => {
-        const meta = enumMeta(PRIZE_KIND, row.prizeKind);
-        return <Tag color={meta.color}>{meta.text}</Tag>;
-      },
-    },
-    { title: '奖品名称', dataIndex: 'name', width: 220, ellipsis: true },
-    {
-      title: '名额',
-      dataIndex: 'quantity',
-      width: 90,
-      render: (_, row) => `${row.quantity} 个`,
-    },
-    {
-      title: '领取说明',
-      dataIndex: 'claimInstructions',
-      ellipsis: true,
-      render: (_, row) => dash(row.claimInstructions),
-    },
-  ];
+  // 奖品原先是一张表（顺序 / 类型 / 名称 / 名额 / 领取说明）。一个活动一个奖品之后表格没了
+  // ——一行的表格不是表格，是一块 Descriptions。
 
   // 这几张表是 antd 的 Table（不是 ProTable），所以列类型是 ColumnsType——它**不认**
   // ProColumns 的 copyable。要能复制就自己包一层 Typography.Text。
@@ -139,16 +113,6 @@ export default function CampaignDetailPage() {
       render: (_, row) => winnerCountLabel(row),
     },
     {
-      title: '窗口',
-      dataIndex: 'endsAt',
-      width: 220,
-      render: (_, row) => (
-        <Typography.Text type="secondary">
-          {time(row.startsAt)} ~ {time(row.endsAt)}
-        </Typography.Text>
-      ),
-    },
-    {
       title: '开奖时间',
       dataIndex: 'drawnAt',
       width: 170,
@@ -185,13 +149,7 @@ export default function CampaignDetailPage() {
               {campaign.machineId ? campaign.machineId : '门店级（全门店可用）'}
             </Descriptions.Item>
             <Descriptions.Item label="参与门槛">
-              {campaign.participantTarget} 人
-            </Descriptions.Item>
-            <Descriptions.Item label="奖池总名额">
-              {campaign.prizeTotalQuantity} 个
-            </Descriptions.Item>
-            <Descriptions.Item label="活动窗口">
-              {time(campaign.startAt)} ~ {time(campaign.endAt)}
+              {campaign.participantTarget} 次
             </Descriptions.Item>
             <Descriptions.Item label="已开期数">{campaign.roundCount} 期</Descriptions.Item>
             <Descriptions.Item label="说明" span={2}>
@@ -200,19 +158,29 @@ export default function CampaignDetailPage() {
           </Descriptions>
         </Card>
 
-        <Card title="奖池" style={{ marginBottom: 16 }}>
+        <Card title="奖品" style={{ marginBottom: 16 }}>
           <Typography.Paragraph type="secondary">
-            开奖时按这里的顺序依次发放名额：排在前面的档拿满自己的名额，才轮到下一档。
-            所有档位的名额加起来就是每一期的中奖名额（开期时冻结到那一期上，之后改奖池不影响已开出的期次）。
+            每一期开出一名中奖者，发的就是这个奖品。改这里只影响之后的期次——奖品名在开奖时
+            就快照进了中奖记录。
           </Typography.Paragraph>
-          <Table<CampaignPrize>
-            rowKey="id"
-            size="small"
-            pagination={false}
-            columns={prizeColumns}
-            dataSource={campaign.prizes ?? []}
-            locale={{ emptyText: <Empty description="这个活动还没有奖品" /> }}
-          />
+          {campaign.prize ? (
+            <Descriptions column={2} size="small">
+              <Descriptions.Item label="奖品名称" span={2}>
+                {campaign.prize.name}
+              </Descriptions.Item>
+              <Descriptions.Item label="领取说明" span={2}>
+                {dash(campaign.prize.claimInstructions)}
+              </Descriptions.Item>
+              <Descriptions.Item label="封面图">
+                {imageOrNone(campaign.prize.coverImage)}
+              </Descriptions.Item>
+              <Descriptions.Item label="海报图">
+                {imageOrNone(campaign.prize.posterImage)}
+              </Descriptions.Item>
+            </Descriptions>
+          ) : (
+            <Empty description="这个活动还没有奖品" />
+          )}
         </Card>
 
         <Card title="期次">

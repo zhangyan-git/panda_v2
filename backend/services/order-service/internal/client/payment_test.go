@@ -58,12 +58,12 @@ func newPaymentCreator(t *testing.T, conn grpc.ClientConnInterface) *PaymentCrea
 // createInput 是一次最普通的发起：金额由订单给，其余只是过路。
 func createInput() CreatePaymentInput {
 	return CreatePaymentInput{
-		OrderID:         "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
-		OrderNo:         "SO202609150000000001",
-		UserID:          "11111111-2222-3333-4444-555555555555",
-		Amount:          3400,
-		PaymentMethodID: "22222222-3333-4444-5555-666666666666",
-		RequestID:       "req-20260915-0001",
+		OrderID:       "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+		OrderNo:       "SO202609150000000001",
+		UserID:        "11111111-2222-3333-4444-555555555555",
+		Amount:        3400,
+		PaymentMethod: "22222222-3333-4444-5555-666666666666",
+		RequestID:     "req-20260915-0001",
 	}
 }
 

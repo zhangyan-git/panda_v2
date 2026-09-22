@@ -55,6 +55,7 @@ func freezeResponse(freeze *model.FortuneCardFreeze) *dto.FreezeResponse {
 		Reason:      freeze.Reason,
 		OccurredAt:  freeze.OccurredAt,
 		ReleasedAt:  freeze.ReleasedAt,
+		RecoveredAt: freeze.RecoveredAt,
 		CreatedAt:   freeze.CreatedAt,
 		UpdatedAt:   freeze.UpdatedAt,
 	}

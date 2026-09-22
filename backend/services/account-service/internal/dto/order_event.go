@@ -44,11 +44,17 @@ type OrderFortuneGrant struct {
 	EntryKey string `json:"entryKey"`
 }
 
-// 售后这一段的三个事件类型。与 order-service 的 repository.EventAfterSale* 逐字一致。
+// 售后这一段的五个事件类型。与 order-service 的 repository.EventAfterSale* 逐字一致。
+//
+// 后两个是退款链的收口（refunding 只有这两个出口），本服务拿它们做最后半步：
+// refunded ⇒ 追回福卡，refund_failed ⇒ 解冻。两条都要绑，绑错一条不会报错，
+// 只会安静地把卡扣掉或者永远冻着。
 const (
-	EventAfterSaleApplied   = "order.after_sale.applied"
-	EventAfterSaleReviewed  = "order.after_sale.reviewed"
-	EventAfterSaleCancelled = "order.after_sale.cancelled"
+	EventAfterSaleApplied      = "order.after_sale.applied"
+	EventAfterSaleReviewed     = "order.after_sale.reviewed"
+	EventAfterSaleCancelled    = "order.after_sale.cancelled"
+	EventAfterSaleRefunded     = "order.after_sale.refunded"
+	EventAfterSaleRefundFailed = "order.after_sale.refund_failed"
 )
 
 // 售后单在 reviewed / cancelled 事件里的状态值，与 order-service 的 model.AfterSaleStatus*
@@ -82,9 +88,16 @@ type AfterSaleAppliedEventPayload struct {
 
 // AfterSaleReviewedEventPayload 是 order.after_sale.reviewed 的事件体。
 //
-// 只有 Status=rejected 会让本服务做事（解冻）；approved 什么都不做，冻结保持——通过了只
-// 代表「同意退」，钱还没出去（退款单在 payment-service，未建）。真正把钱退掉的那一步将来
-// 会另有一条事件（order.after_sale.refunded），那时才轮到解冻 + 冲正。
+// **驳回 ⇒ 解冻福卡；通过 ⇒ 什么都不做。**
+//
+//	rejected  解冻福卡——不退就不该继续冻着。
+//	approved  空分支。只代表「同意退」，钱还没出去（退款单紧接着才向渠道发起，成没成
+//	          由 order.after_sale.refunded / .refund_failed 回来）。福卡此时既不该解冻
+//	          （用户还没拿到钱）也不该收走（钱还没退），豆更不能还（退款可以失败）。
+//
+// 所以本服务在「钱的两种结局」上各做一个动作，中间那一拍不动任何一边：退成 ⇒ 追回福卡
+// + 冲正豆，没退成 ⇒ 解冻福卡、豆原样不动（它从未被动过）。这条事件因此只承担「驳回」
+// 这一种动作，refundAmount 等字段收下是为了与 order-service 那份逐字一致，无人读取。
 type AfterSaleReviewedEventPayload struct {
 	AfterSaleID  string  `json:"afterSaleId"`
 	AfterSaleNo  string  `json:"afterSaleNo"`
@@ -96,6 +109,31 @@ type AfterSaleReviewedEventPayload struct {
 	Scope        string  `json:"scope"`
 	OrderLineID  *string `json:"orderLineId"`
 	RefundAmount int64   `json:"refundAmount"`
+}
+
+// AfterSaleRefundEventPayload 是 order.after_sale.refunded / order.after_sale.refund_failed 的
+// 事件体，与 order-service 那一份逐字镜像。
+//
+// 本服务读它做两件事：
+//
+//	refunded       钱退成了 → 追回：解冻 + 冲正那几笔发放（余额真的少掉），
+//	                          并按 refundAmount 冲正这一单扣掉的咖啡豆
+//	refund_failed  钱没退成 → 解冻：卡原样放回去，余额一分不动；豆也一分不动
+//
+// 福卡那两件事只认 afterSaleNo：要冲哪几笔发放、总共几张，都在冻结行上（entry_keys 与
+// amount）——订单域在 applied 那一刻已经拆好送过来了，这边不重算。豆那件事要用
+// refundAmount 与 orderId。其余字段收下不用，是排查时要看的上下文。
+type AfterSaleRefundEventPayload struct {
+	AfterSaleID    string `json:"afterSaleId"`
+	AfterSaleNo    string `json:"afterSaleNo"`
+	OrderID        string `json:"orderId"`
+	OrderNo        string `json:"orderNo"`
+	UserID         string `json:"userId"`
+	RefundNo       string `json:"refundNo"`
+	RefundAmount   int64  `json:"refundAmount"`
+	RefundedAtUnix int64  `json:"refundedAtUnix"`
+	FailureCode    string `json:"failureCode"`
+	FailureMessage string `json:"failureMessage"`
 }
 
 // AfterSaleCancelledEventPayload 是 order.after_sale.cancelled 的事件体：用户撤销了自己那张

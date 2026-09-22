@@ -68,6 +68,10 @@ type fakeRepository struct {
 	activationView    *repository.ActivationListRow
 	activationViewErr error
 	viewCalls         int
+
+	activationRows    []*repository.ActivationListRow
+	activationRowsErr error
+	listCalls         int
 }
 
 func (f *fakeRepository) Activate(_ context.Context, p repository.ActivateParams) (*repository.ActivationCreated, error) {
@@ -79,6 +83,11 @@ func (f *fakeRepository) Activate(_ context.Context, p repository.ActivateParams
 func (f *fakeRepository) GetActivationView(_ context.Context, _ string) (*repository.ActivationListRow, error) {
 	f.viewCalls++
 	return f.activationView, f.activationViewErr
+}
+
+func (f *fakeRepository) ListActivations(_ context.Context, _ dto.ActivationQuery) ([]*repository.ActivationListRow, int, error) {
+	f.listCalls++
+	return f.activationRows, len(f.activationRows), f.activationRowsErr
 }
 
 func (f *fakeRepository) Begin(_ context.Context, p repository.BeginParams) (*repository.BeginResult, error) {
@@ -162,6 +171,38 @@ func (c *fakeCards) Balance(_ context.Context, _ string) (int64, error) {
 	return c.balance, c.balanceErr
 }
 
+// fakeStores 是商户域的测试替身：门店存不存在、名字解得出来吗，各摆一种结果。
+type fakeStores struct {
+	exists    bool
+	existsErr error
+	// names 是解出来的 id → 名字。商户域不认识的 id 会缺席，这里照抄那个行为——不在这里
+	// 兜底成空串，否则「商户域不认识这个门店」这条路径就永远测不到。
+	names    map[string]string
+	namesErr error
+
+	existsCalls  int
+	lastStoreID  string
+	namesCalls   int
+	lastStoreIDs []string
+}
+
+func (f *fakeStores) Exists(_ context.Context, storeID string) (bool, error) {
+	f.existsCalls++
+	f.lastStoreID = storeID
+	return f.exists, f.existsErr
+}
+
+func (f *fakeStores) Names(_ context.Context, storeIDs []string) (map[string]string, error) {
+	f.namesCalls++
+	f.lastStoreIDs = storeIDs
+	return f.names, f.namesErr
+}
+
+// existingStores 是「门店在、名字也解得出」的那一份，多数用例要的就是它。
+func existingStores() *fakeStores {
+	return &fakeStores{exists: true, names: map[string]string{testLocationID: "朝阳门店"}}
+}
+
 // ——— 夹具 ———
 
 // 固定的测试时刻。用字面量而不是 time.Now()：这一层有几处按时间判定（窗口、到点），
@@ -185,7 +226,15 @@ const (
 // 「装着空指针的非空接口」，而 service 的第一道检查（s.cards == nil = 这次部署没接账户域）
 // 正好认不出它——那个用例会以一次 nil 解引用结束，而它想验的是「明确失败」。
 func newTestService(repo *fakeRepository, cards FortuneCards) *LotteryService {
-	return New(repo, cards, Options{Now: func() time.Time { return testNow }})
+	return New(repo, cards, existingStores(), Options{Now: func() time.Time { return testNow }})
+}
+
+// newTestServiceWithStores 同上，但由用例决定商户域那一侧的事实。
+//
+// stores 收接口而不是 *fakeStores，理由与 cards 那一处逐字相同（见 newTestService 的
+// 说明）：传字面量 nil 时才真的是一份「没接商户域」的部署。
+func newTestServiceWithStores(repo *fakeRepository, cards FortuneCards, stores Stores) *LotteryService {
+	return New(repo, cards, stores, Options{Now: func() time.Time { return testNow }})
 }
 
 // pendingParticipation 是一条刚落库、还没扣卡的参与记录。
@@ -205,6 +254,9 @@ func pendingParticipation() *model.Participation {
 }
 
 // openRound 是一期正在收人的期次。
+//
+// 这里不再有 StartsAt / EndsAt（2026-09-15 随期次窗口一起删了）：一个 open 的期次会一直
+// 收人，直到收满门槛、被人工开奖、或被作废。
 func openRound(count int32) *model.Round {
 	return &model.Round{
 		ID: testRoundID, CampaignID: testCampaignID, Seq: 1, RoundNo: "LT0001-0001",
@@ -212,8 +264,6 @@ func openRound(count int32) *model.Round {
 		ParticipantTarget: 10,
 		ParticipantCount:  count,
 		WinnerCount:       2,
-		StartsAt:          testNow.Add(-time.Hour),
-		EndsAt:            testNow.Add(time.Hour),
 	}
 }
 

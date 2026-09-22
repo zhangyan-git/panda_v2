@@ -30,6 +30,7 @@ const (
 	MerchantService_GetStoreMerchant_FullMethodName  = "/panda.merchant.v1.MerchantService/GetStoreMerchant"
 	MerchantService_GetStore_FullMethodName          = "/panda.merchant.v1.MerchantService/GetStore"
 	MerchantService_ResolveScopeNames_FullMethodName = "/panda.merchant.v1.MerchantService/ResolveScopeNames"
+	MerchantService_ListStoreIDs_FullMethodName      = "/panda.merchant.v1.MerchantService/ListStoreIDs"
 )
 
 // MerchantServiceClient is the client API for MerchantService service.
@@ -49,6 +50,11 @@ type MerchantServiceClient interface {
 	// ResolveScopeNames replaces the brand/store join user-service used to run
 	// against merchant tables that no longer live in its database.
 	ResolveScopeNames(ctx context.Context, in *ResolveScopeNamesRequest, opts ...grpc.CallOption) (*ResolveScopeNamesResponse, error)
+	// ListStoreIDs is deliberately narrower than the declared-but-unimplemented
+	// ListStores above: the data-permission consumers want a boundary, not a store
+	// listing with paging, and answering one question with one RPC keeps the
+	// filtering contract identical across services.
+	ListStoreIDs(ctx context.Context, in *ListStoreIDsRequest, opts ...grpc.CallOption) (*ListStoreIDsResponse, error)
 }
 
 type merchantServiceClient struct {
@@ -169,6 +175,16 @@ func (c *merchantServiceClient) ResolveScopeNames(ctx context.Context, in *Resol
 	return out, nil
 }
 
+func (c *merchantServiceClient) ListStoreIDs(ctx context.Context, in *ListStoreIDsRequest, opts ...grpc.CallOption) (*ListStoreIDsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListStoreIDsResponse)
+	err := c.cc.Invoke(ctx, MerchantService_ListStoreIDs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MerchantServiceServer is the server API for MerchantService service.
 // All implementations must embed UnimplementedMerchantServiceServer
 // for forward compatibility.
@@ -186,6 +202,11 @@ type MerchantServiceServer interface {
 	// ResolveScopeNames replaces the brand/store join user-service used to run
 	// against merchant tables that no longer live in its database.
 	ResolveScopeNames(context.Context, *ResolveScopeNamesRequest) (*ResolveScopeNamesResponse, error)
+	// ListStoreIDs is deliberately narrower than the declared-but-unimplemented
+	// ListStores above: the data-permission consumers want a boundary, not a store
+	// listing with paging, and answering one question with one RPC keeps the
+	// filtering contract identical across services.
+	ListStoreIDs(context.Context, *ListStoreIDsRequest) (*ListStoreIDsResponse, error)
 	mustEmbedUnimplementedMerchantServiceServer()
 }
 
@@ -228,6 +249,9 @@ func (UnimplementedMerchantServiceServer) GetStore(context.Context, *GetStoreReq
 }
 func (UnimplementedMerchantServiceServer) ResolveScopeNames(context.Context, *ResolveScopeNamesRequest) (*ResolveScopeNamesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResolveScopeNames not implemented")
+}
+func (UnimplementedMerchantServiceServer) ListStoreIDs(context.Context, *ListStoreIDsRequest) (*ListStoreIDsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListStoreIDs not implemented")
 }
 func (UnimplementedMerchantServiceServer) mustEmbedUnimplementedMerchantServiceServer() {}
 func (UnimplementedMerchantServiceServer) testEmbeddedByValue()                         {}
@@ -448,6 +472,24 @@ func _MerchantService_ResolveScopeNames_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _MerchantService_ListStoreIDs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListStoreIDsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MerchantServiceServer).ListStoreIDs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MerchantService_ListStoreIDs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MerchantServiceServer).ListStoreIDs(ctx, req.(*ListStoreIDsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // MerchantService_ServiceDesc is the grpc.ServiceDesc for MerchantService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -498,6 +540,10 @@ var MerchantService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveScopeNames",
 			Handler:    _MerchantService_ResolveScopeNames_Handler,
+		},
+		{
+			MethodName: "ListStoreIDs",
+			Handler:    _MerchantService_ListStoreIDs_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

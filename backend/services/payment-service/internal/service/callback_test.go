@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/catalog"
 	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/provider"
 	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/repository"
@@ -62,8 +63,9 @@ func TestHandleRedeliveryDecidesByExistingStatusAndAge(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &PaymentService{}
-			result, handled, err := svc.handleRedelivery(
-				context.Background(), redeliveryRecord(tc.status, tc.ageSeconds), redeliveryNotification())
+			duplicate, handled, err := svc.decideRedelivery(
+				context.Background(), redeliveryRecord(tc.status, tc.ageSeconds),
+				redeliveryNotification().NotificationID)
 
 			if handled != tc.wantHandled {
 				t.Fatalf("handled = %v, want %v（false 表示这次要接手做完）", handled, tc.wantHandled)
@@ -75,12 +77,14 @@ func TestHandleRedeliveryDecidesByExistingStatusAndAge(t *testing.T) {
 			} else if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
-			// 接手的那些分支必须给出应答形状——除了报错的那几个，它们的结果就是错误本身。
-			if handled && tc.wantErr == nil && result == nil {
-				t.Fatal("接手的那些分支必须给出应答形状")
+			if duplicate != tc.wantDupe {
+				t.Fatalf("duplicate = %v, want %v", duplicate, tc.wantDupe)
 			}
-			if result != nil && result.Duplicate != tc.wantDupe {
-				t.Fatalf("Duplicate = %v, want %v", result.Duplicate, tc.wantDupe)
+			// 不报错又拦下的那些分支必须回**成功应答**（duplicate），不能既不报错又不认下来：
+			// 那样调用方会以为该静默返回，而渠道那边什么都没收到。报错的那几个另说——它们的
+			// 答复就是那个错误。
+			if handled && tc.wantErr == nil && !duplicate {
+				t.Fatal("拦下又不报错的那些分支必须回成功应答（duplicate）")
 			}
 		})
 	}
@@ -96,7 +100,7 @@ func TestHandleNotificationTakesOverAnAbandonedNotification(t *testing.T) {
 	settled := func(t *testing.T, svc *PaymentService) (*CallbackResult, error) {
 		t.Helper()
 		return svc.HandleNotification(context.Background(), CallbackRequest{
-			ChannelCode: "stub_dev", Body: []byte(`{"notification":"body"}`),
+			ChannelCode: catalog.ChannelCodeUMS, Body: []byte(`{"notification":"body"}`),
 		})
 	}
 
@@ -122,22 +126,13 @@ func TestHandleNotificationTakesOverAnAbandonedNotification(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &fakeRepository{
-				// 回调这条路第一步就是按 URL 里那段查渠道；不摆这一行，HandleNotification
-				// 会在读渠道字段时直接空指针。
-				channel: &repository.ChannelRecord{
-					Channel: &model.PaymentChannel{
-						ID: testChannel, Code: "stub_dev", Provider: "stub",
-						Mode: "sandbox", Status: model.ChannelEnabled, SecretRef: "TEST_SECRET",
-					},
-					Config: map[string]string{},
-				},
 				notification: redeliveryRecord(model.NotificationReceived, tc.age),
 				settle: &repository.PaymentSettlement{
 					Payment: &model.Payment{PaymentNo: "PAY20260915120000000001", Status: model.PaymentSucceeded},
 				},
 			}
 			stub := &stubProvider{verifyOK: true, notification: redeliveryNotification()}
-			svc := newTestService(t, repo, stub, model.ActionNativePay)
+			svc := newTestService(t, repo, stub, catalog.CodeUMSMiniappWechat)
 
 			result, err := settled(t, svc)
 
@@ -156,4 +151,38 @@ func TestHandleNotificationTakesOverAnAbandonedNotification(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCallbackAsksForExactlyTheDeclaredSlots 与下单那条同形，但这条路上取错槽的**表现**不一样，
+// 所以值得自己一条：下单取错槽是签名被对方拒（有一句明确的错误），回调取错槽是「这条回调验不过」
+// ——渠道会照着重投，而我们的日志上只有签名不匹配，看不出根因是配置。
+//
+// 断言的是集合与顺序，不是「至少问过一次」：一个「声明的槽解析成空串」的渠道必须在名单上
+// 就看得出来（见 resolveSecrets）——今天没有兜底那一把了，落空就是落空。
+func TestCallbackAsksForExactlyTheDeclaredSlots(t *testing.T) {
+	stub := &stubProvider{
+		verifyOK:     true,
+		notification: redeliveryNotification(),
+		slots:        []string{"platformCertificate", "apiV3Key"},
+	}
+	secrets := &stubSecretResolver{values: map[string]string{
+		"platformCertificate": "cert", "apiV3Key": "key",
+	}}
+	repo := &fakeRepository{
+		// 孤儿行（落在窗口外），这一次接手把它做完——与上面那条用例里的同一档，好让这条
+		// 用例只在「问了哪些槽」上有所断言，不掺别的分叉。
+		notification: redeliveryRecord(model.NotificationReceived, 3600),
+		settle: &repository.PaymentSettlement{
+			Payment: &model.Payment{PaymentNo: "PAY20260915120000000001", Status: model.PaymentSucceeded},
+		},
+	}
+	svc := newServiceWith(t, repo, stub, catalog.CodeUMSMiniappWechat, nil, secrets.resolve)
+
+	if _, err := svc.HandleNotification(context.Background(), CallbackRequest{
+		ChannelCode: catalog.ChannelCodeUMS, Body: []byte(`{"notification":"body"}`),
+	}); err != nil {
+		t.Fatalf("HandleNotification: %v", err)
+	}
+
+	secrets.askedOnly(t, "platformCertificate", "apiV3Key")
 }

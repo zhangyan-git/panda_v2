@@ -120,6 +120,16 @@ func (s *CouponService) Revoke(ctx context.Context, id, requestID, actorID, reas
 	}
 	return r.Revoke(ctx, id, requestID, actorID, reason)
 }
+
+// Redeem 核销一张用户券。
+//
+// actorID 是可变参数，因为不是每个调用方都有操作人：后台核销带的是登录账号的
+// subject，内部调用（如履约回调）没有。传了就必须是非空串（空串是「调错了」，
+// 不是「没有操作人」）；不传则记为 NULL。
+//
+// 校验完之后要**一路带到 repository**：这里以前校验完就把它丢了，于是
+// coupon_state_transitions 的 actor_id 对核销恒为 NULL，同表的 Revoke 却有值——
+// 那条流水是事后回答「这张券是谁核销的」唯一的地方。
 func (s *CouponService) Redeem(ctx context.Context, couponID, requestID string, actorID ...string) (*model.UserCoupon, error) {
 	couponID = strings.TrimSpace(couponID)
 	requestID = strings.TrimSpace(requestID)
@@ -132,12 +142,14 @@ func (s *CouponService) Redeem(ctx context.Context, couponID, requestID string, 
 	if len(actorID) > 1 {
 		return nil, ErrInvalidActorID
 	}
+	actor := ""
 	if len(actorID) == 1 {
 		if strings.TrimSpace(actorID[0]) == "" {
 			return nil, ErrInvalidActorID
 		}
+		actor = strings.TrimSpace(actorID[0])
 	}
-	return s.coupons.Redeem(ctx, couponID, requestID)
+	return s.coupons.Redeem(ctx, couponID, requestID, actor)
 }
 
 func (s *CouponService) ListBatches(ctx context.Context, q dto.CouponBatchQuery) ([]*model.CouponBatch, int64, error) {

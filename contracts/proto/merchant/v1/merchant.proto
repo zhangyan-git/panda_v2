@@ -142,6 +142,31 @@ message ResolveScopeNamesResponse {
   map<string, string> store_names = 2;
 }
 
+// ListStoreIDsRequest expands a merchant account's data scope into the set of
+// stores it authorizes.
+//
+// It is the one place that knows how scope_type maps onto this service's own
+// tables, so every consumer downstream can filter on a plain list of ids instead
+// of re-deriving what "brand-scoped" means.
+//
+// merchant_id is not optional and is not derived from scope_id: a brand id or a
+// store id from another tenant must not widen the answer, so every branch of the
+// query is anchored on it.
+message ListStoreIDsRequest {
+  string merchant_id = 1;
+  // scope_type is "merchant", "brand" or "store". Anything else is rejected
+  // rather than treated as merchant-level — guessing wide on an unrecognized
+  // value is how a typo becomes a full listing.
+  string scope_type = 2;
+  // scope_id is the brand or store; it must be empty at merchant level and
+  // present otherwise.
+  string scope_id = 3;
+}
+
+// ListStoreIDsResponse carries ids only. Callers need the set to filter their own
+// tables, and returning whole Store rows would ship fields nothing reads.
+message ListStoreIDsResponse { repeated string store_ids = 1; }
+
 service MerchantService {
   rpc ListMerchants(ListMerchantsRequest) returns (ListMerchantsResponse);
   rpc GetMerchant(GetMerchantRequest) returns (GetMerchantResponse);
@@ -156,4 +181,9 @@ service MerchantService {
   // ResolveScopeNames replaces the brand/store join user-service used to run
   // against merchant tables that no longer live in its database.
   rpc ResolveScopeNames(ResolveScopeNamesRequest) returns (ResolveScopeNamesResponse);
+  // ListStoreIDs is deliberately narrower than the declared-but-unimplemented
+  // ListStores above: the data-permission consumers want a boundary, not a store
+  // listing with paging, and answering one question with one RPC keeps the
+  // filtering contract identical across services.
+  rpc ListStoreIDs(ListStoreIDsRequest) returns (ListStoreIDsResponse);
 }

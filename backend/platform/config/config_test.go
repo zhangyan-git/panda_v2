@@ -187,6 +187,8 @@ func TestResolveDatabaseReadsTheServiceOwnedURL(t *testing.T) {
 		{"payment service reads its own database", "payment-service", "PAYMENT_DATABASE_URL"},
 		{"account service reads its own database", "account-service", "ACCOUNT_DATABASE_URL"},
 		{"lottery service reads its own database", "lottery-service", "LOTTERY_DATABASE_URL"},
+		{"membership service reads its own database", "membership-service", "MEMBERSHIP_DATABASE_URL"},
+		{"partner service reads its own database", "partner-service", "PARTNER_DATABASE_URL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// 共享的那个变量同时设着，且刻意设成另一个值：这条用例要证的就是
@@ -241,6 +243,9 @@ func TestLoadRefusesAServiceWithNoDatabase(t *testing.T) {
 	t.Setenv("PANDA_ENV", "test")
 	t.Setenv("USER_GRPC_ADDR", "127.0.0.1:19081")
 	t.Setenv("ACCOUNT_GRPC_ADDR", "127.0.0.1:19098")
+	// 商户域那条也是必填项（抽奖只存门店 id，名字与存在性都要现场问），所以这里也要设上
+	// ——否则这条用例会因为先撞上它而绿得毫无意义。
+	t.Setenv("MERCHANT_GRPC_ADDR", "127.0.0.1:19093")
 	t.Setenv("MERCHANT_INTERNAL_TOKEN", "test-only-internal-credential-32-bytes")
 	t.Setenv("LOTTERY_DATABASE_URL", "")
 	// 共享的那份设着：它正是以前会兜住这个缺口的东西。
@@ -262,6 +267,33 @@ func TestLoadRefusesAServiceWithNoDatabase(t *testing.T) {
 	}
 	if cfg.ServiceDatabaseURL != "postgres://localhost/panda_lottery" {
 		t.Fatalf("ServiceDatabaseURL = %q", cfg.ServiceDatabaseURL)
+	}
+}
+
+// TestLoadPaymentServiceDoesNotNeedACredentialMasterKey：PAYMENT_SECRET_KEY 已经不是
+// 一个启动条件了。
+//
+// 它从前是：渠道凭据以密文存在 payment_channels.config 里，没有主密钥就解不开，于是那个实例
+// 每一笔走渠道的支付都会在运行期失败。那张表连同「渠道是数据」这件事一起没了——凭据改成按
+// 名字读环境变量（见 payment-service 的 catalog.Channel.SecretEnv），没有密文要解，也就没有
+// 主密钥要配。
+//
+// 留这条用例是因为**「多一个必填变量」是最容易被顺手加回来的东西**：它只要在部署清单里补
+// 一行就能通过，谁也看不见那一行已经没有用途了。这里钉住的是「不设它也能起来」。
+func TestLoadPaymentServiceDoesNotNeedACredentialMasterKey(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("REDIS_DB", "")
+	t.Setenv("PANDA_ENV", "test")
+	t.Setenv("USER_GRPC_ADDR", "127.0.0.1:19091")
+	t.Setenv("ACCOUNT_GRPC_ADDR", "127.0.0.1:19098")
+	t.Setenv("MERCHANT_INTERNAL_TOKEN", "test-token-which-is-at-least-32-bytes-long")
+	t.Setenv("PAYMENT_NOTIFY_BASE_URL", "http://gateway.test:8080")
+	t.Setenv("PAYMENT_DATABASE_URL", "postgres://localhost/panda_payment")
+	// 三种写法都算「没配」：不设、设成空、设成空白。它们过去都是拒绝启动的理由。
+	t.Setenv("PAYMENT_SECRET_KEY", "   ")
+
+	if _, err := Load("payment-service"); err != nil {
+		t.Fatalf("PAYMENT_SECRET_KEY 不该再是启动条件：%v", err)
 	}
 }
 

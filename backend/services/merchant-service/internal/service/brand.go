@@ -18,7 +18,10 @@ var (
 	ErrStoreNameRequired  = errors.New("门店名称不能为空")
 	ErrBrandHasStores     = errors.New("品牌下存在门店，无法删除")
 	ErrStoreBrandMismatch = errors.New("品牌不属于该商户")
-	ErrAuditNotPending    = errors.New("当前审核状态不可审核")
+	// ErrStoreMerchantImmutable 编辑门店的请求带了一个与库上不同的商户 ID。门店换商户
+	// 不是这个接口支持的动作（后台 UI 把商户选择框禁掉了），静默忽略会让调用方以为
+	// 改成功了，所以直接拒绝。
+	ErrStoreMerchantImmutable = errors.New("门店所属商户不可变更")
 )
 
 // BrandInput 品牌创建/编辑的可编辑字段
@@ -44,10 +47,12 @@ type AdminBrandService struct {
 	merchants repository.MerchantRepository
 	audits    repository.AuditRecordRepository
 	users     repository.MerchantUserRepository
+	// tx 让「品牌写入 + 待审核记录」落在同一次提交里，见 Create / Audit。
+	tx repository.Transactor
 }
 
-func NewAdminBrandService(brands repository.BrandRepository, merchants repository.MerchantRepository, audits repository.AuditRecordRepository, users repository.MerchantUserRepository) *AdminBrandService {
-	return &AdminBrandService{brands: brands, merchants: merchants, audits: audits, users: users}
+func NewAdminBrandService(brands repository.BrandRepository, merchants repository.MerchantRepository, audits repository.AuditRecordRepository, users repository.MerchantUserRepository, tx repository.Transactor) *AdminBrandService {
+	return &AdminBrandService{brands: brands, merchants: merchants, audits: audits, users: users, tx: tx}
 }
 
 // List 返回一页品牌及其总数，筛选条件由调用方在 f 里给定。
@@ -92,10 +97,9 @@ func (s *AdminBrandService) Create(ctx context.Context, in BrandInput, operator 
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	if err := s.brands.Create(ctx, b); err != nil {
-		return nil, err
-	}
-	if err := s.audits.Create(ctx, &model.AuditRecord{
+	// 品牌与它的待审核记录必须一次提交：分开提交时进程死在中间，列表里就多出一个
+	// 永远不进待审队列的品牌——它看着正常，却再也不会被审。
+	rec := &model.AuditRecord{
 		ID:          uuid.NewString(),
 		TargetID:    b.ID,
 		Type:        "create",
@@ -103,6 +107,12 @@ func (s *AdminBrandService) Create(ctx context.Context, in BrandInput, operator 
 		NewData:     in.snapshot(),
 		SubmittedBy: operator,
 		CreatedAt:   now,
+	}
+	if err := s.tx.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.brands.CreateInTx(ctx, tx, b); err != nil {
+			return err
+		}
+		return s.audits.CreateInTx(ctx, tx, rec)
 	}); err != nil {
 		return nil, err
 	}
@@ -165,23 +175,31 @@ func (s *AdminBrandService) Audit(ctx context.Context, id string, approve bool, 
 	if err != nil {
 		return err
 	}
+	// 这一次读没有锁，只是把绝大多数重复点击挡在事务之外；并发下的权威判定在
+	// SetAuditInTx 的 WHERE audit_status = 'pending' 上（0 行 → ErrAuditNotPending）。
 	if b.AuditStatus != "pending" {
-		return ErrAuditNotPending
+		return repository.ErrAuditNotPending
 	}
 	status := "rejected"
 	if approve {
 		status = "approved"
 	}
-	if err := s.brands.SetAudit(ctx, id, status, remark, operator); err != nil {
-		return err
-	}
-	if rec, err := s.audits.FindLatestPending(ctx, id); err == nil && rec != nil {
-		return s.audits.SetAudited(ctx, rec.ID, status, remark, operator)
-	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		// 审核记录查询失败时应返回错误，避免实体与审核记录状态不一致
-		return err
-	}
-	return nil
+	// 品牌与审核记录一起提交：分开提交时，第一次提交失败会留下一个「审核状态已改、
+	// 待审记录还挂着」的品牌，列表上永远显示一条待办，点进去再审核又会被谓词拦下。
+	return s.tx.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.brands.SetAuditInTx(ctx, tx, id, status, remark, operator); err != nil {
+			return err
+		}
+		rec, err := s.audits.FindLatestPendingInTx(ctx, tx, id)
+		if err != nil {
+			// 没有待审记录（历史数据）：实体已经落章，不作为失败。
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		return s.audits.SetAuditedInTx(ctx, tx, rec.ID, status, remark, operator)
+	})
 }
 
 // Delete 删除品牌；名下有门店时拒绝，指向它的账号范围回收为商户级

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/panda-dev/panda-v2/backend/platform/audit"
 	"github.com/panda-dev/panda-v2/backend/services/coupon-service/internal/dto"
 	"github.com/panda-dev/panda-v2/backend/services/coupon-service/internal/model"
 )
@@ -31,8 +32,11 @@ type BatchRepository interface {
 }
 
 // UserCouponRepository 提供用户券的行锁核销操作。
+//
+// Redeem 收 actorID（操作人，空串 = 没有操作人，落库为 NULL），与 Revoke 的
+// 同一个口径：核销与作废都会写一条 coupon_state_transitions，两条都该记操作人。
 type UserCouponRepository interface {
-	Redeem(ctx context.Context, couponID, requestID string) (*model.UserCoupon, error)
+	Redeem(ctx context.Context, couponID, requestID, actorID string) (*model.UserCoupon, error)
 }
 
 // CouponTypeRepository 提供优惠券类型字典的管理操作。
@@ -48,12 +52,46 @@ type IdempotencyRepository interface {
 	Find(ctx context.Context, scope, idempotencyKey string) (*model.IdempotencyKey, error)
 }
 
-type postgresRepository struct{ pool *pgxpool.Pool }
+// postgresRepository 是优惠券库的数据访问实现。
+//
+// recorder 只用在**后台的人工操作**上：发券、核销、作废、券类型与券模板的增删改审。领券、
+// 到期、系统发券不记——那些每天都在发生，记进审计表只会把要看的几条淹掉，它们的痕迹在
+// coupon_state_transitions 里（那张表本来就只增不改）。
+//
+// 审计走平台的 admin.operation.logged → 身份库的 admin_operation_logs，**本库不建自己的
+// 审计表**（见 platform/audit 的包说明）。
+type postgresRepository struct {
+	pool *pgxpool.Pool
+	// recorder 为 nil 时用 audit.Noop：调用点的审计语句保持无条件执行，不留「忘了传 recorder
+	// 就没有审计」的分支。
+	recorder audit.Recorder
+}
 
 // NewPostgresRepository 创建 PostgreSQL 数据访问实现。
-func NewPostgresRepository(pool *pgxpool.Pool) (BatchRepository, UserCouponRepository, IdempotencyRepository) {
-	r := &postgresRepository{pool: pool}
+func NewPostgresRepository(pool *pgxpool.Pool, recorder audit.Recorder) (BatchRepository, UserCouponRepository, IdempotencyRepository) {
+	if recorder == nil {
+		recorder = audit.Noop{}
+	}
+	r := &postgresRepository{pool: pool, recorder: recorder}
 	return r, r, r
+}
+
+// inTx 跑一个事务，出错即回滚。
+//
+// 「改了券」与「记下改了什么」必须整体成功或整体不动：券被发出去而日志没写，事后就没有任何
+// 东西能解释这批券是谁发的；日志写了而操作回滚，那是一条凭空捏造的记录。所以审计条目走
+// platform/audit，由它在**调用方的事务**里追加一条 outbox（它拒绝 nil tx，见那个包）。
+func (r *postgresRepository) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	// 提交后这次 Rollback 是无操作（返回 ErrTxClosed），所以不必判断返回值。
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *postgresRepository) ListCouponTypes(ctx context.Context) ([]*model.CouponType, error) {
@@ -73,16 +111,78 @@ func (r *postgresRepository) ListCouponTypes(ctx context.Context) ([]*model.Coup
 	return result, rows.Err()
 }
 
-func (r *postgresRepository) CreateCouponType(ctx context.Context, typ *model.CouponType) (*model.CouponType, error) {
-	result := &model.CouponType{}
-	err := r.pool.QueryRow(ctx, `INSERT INTO coupon_types(code,name,description,status) VALUES($1,$2,$3,$4) RETURNING id::text,code,name,description,status,created_at,updated_at`, typ.Code, typ.Name, typ.Description, typ.Status).Scan(&result.ID, &result.Code, &result.Name, &result.Description, &result.Status, &result.CreatedAt, &result.UpdatedAt)
-	return result, err
+// couponTypeSnapshot 是券类型写进审计的那几个字段。
+//
+// 不用 model.CouponType：它只有 db tag，直接快照出来是一串大写的列名。字段与后台表单一一
+// 对应，id / created_at 不进——它们不可改，记下来只是把日志撑长。
+type couponTypeSnapshot struct {
+	Code        string `json:"code"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
 }
 
+func couponTypeSnapshotOf(t *model.CouponType) couponTypeSnapshot {
+	return couponTypeSnapshot{Code: t.Code, Name: t.Name, Description: t.Description, Status: t.Status}
+}
+
+const couponTypeColumns = `id::text,code,name,description,status,created_at,updated_at`
+
+// selectCouponTypeSnapshot 锁住这一行并读出待审字段。FOR UPDATE 的理由见 template.go 的
+// selectTemplateSnapshot：它保证 before 与 after 之间不会有别人插进来。
+func selectCouponTypeSnapshot(ctx context.Context, tx pgx.Tx, id string) (couponTypeSnapshot, error) {
+	var s couponTypeSnapshot
+	err := tx.QueryRow(ctx, `SELECT code,name,description,status FROM coupon_types WHERE id=$1 FOR UPDATE`, id).
+		Scan(&s.Code, &s.Name, &s.Description, &s.Status)
+	return s, err
+}
+
+// CreateCouponType 新增一个券类型。
+//
+// 写与审计同一个事务：券类型是**别的域的引用目标**（会员套餐的会员价券模板就挂在
+// MEMBERSHIP_PRICE_EXPERIENCE 这个 code 上），谁在什么时候加了一个、改了一个，只有审计能回答。
+func (r *postgresRepository) CreateCouponType(ctx context.Context, typ *model.CouponType) (*model.CouponType, error) {
+	result := &model.CouponType{}
+	err := r.inTx(ctx, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `INSERT INTO coupon_types(code,name,description,status) VALUES($1,$2,$3,$4) RETURNING `+couponTypeColumns, typ.Code, typ.Name, typ.Description, typ.Status).
+			Scan(&result.ID, &result.Code, &result.Name, &result.Description, &result.Status, &result.CreatedAt, &result.UpdatedAt); err != nil {
+			return err
+		}
+		return r.recorder.Record(ctx, tx, audit.Entry{
+			Module: "coupon_types", Action: "create", Operation: "新增优惠券类型",
+			TargetType: "coupon_type", TargetID: result.ID, TargetName: result.Name,
+			After: audit.Snapshot(couponTypeSnapshotOf(result)),
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// UpdateCouponType 改一个券类型的展示与状态。**code 不可改**：它是跨域的引用键（会员套餐按
+// MEMBERSHIP_PRICE_EXPERIENCE 找券模板），改了它上面那句 UPDATE 也不会写——它压根不在 SET 里。
 func (r *postgresRepository) UpdateCouponType(ctx context.Context, typ *model.CouponType) (*model.CouponType, error) {
 	result := &model.CouponType{}
-	err := r.pool.QueryRow(ctx, `UPDATE coupon_types SET name=$2,description=$3,status=$4,updated_at=NOW() WHERE id=$1 RETURNING id::text,code,name,description,status,created_at,updated_at`, typ.ID, typ.Name, typ.Description, typ.Status).Scan(&result.ID, &result.Code, &result.Name, &result.Description, &result.Status, &result.CreatedAt, &result.UpdatedAt)
-	return result, err
+	err := r.inTx(ctx, func(tx pgx.Tx) error {
+		before, err := selectCouponTypeSnapshot(ctx, tx, typ.ID)
+		if err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `UPDATE coupon_types SET name=$2,description=$3,status=$4,updated_at=NOW() WHERE id=$1 RETURNING `+couponTypeColumns, typ.ID, typ.Name, typ.Description, typ.Status).
+			Scan(&result.ID, &result.Code, &result.Name, &result.Description, &result.Status, &result.CreatedAt, &result.UpdatedAt); err != nil {
+			return err
+		}
+		return r.recorder.Record(ctx, tx, audit.Entry{
+			Module: "coupon_types", Action: "update", Operation: "修改优惠券类型",
+			TargetType: "coupon_type", TargetID: result.ID, TargetName: result.Name,
+			Before: audit.Snapshot(before), After: audit.Snapshot(couponTypeSnapshotOf(result)),
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // ReserveInventory 使用带条件的 UPDATE，确保并发请求不会超卖库存。
@@ -105,7 +205,11 @@ func (r *postgresRepository) ReserveInventory(ctx context.Context, batchID strin
 }
 
 // Redeem 在事务中锁定用户券行，校验状态和有效期后完成核销。
-func (r *postgresRepository) Redeem(ctx context.Context, couponID, requestID string) (*model.UserCoupon, error) {
+//
+// actorID 与 Revoke 的同一个含义：后台账号的 subject，写进 coupon_state_transitions
+// 的 actor_id。它只是留痕，不参与任何判断，所以允许为空串（内部调用方没有操作人时
+// 落成 NULL），与 reason/request_id 那几个「必须有值」的参数不同。
+func (r *postgresRepository) Redeem(ctx context.Context, couponID, requestID, actorID string) (*model.UserCoupon, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return nil, errors.New("request id is required")
@@ -141,6 +245,10 @@ func (r *postgresRepository) Redeem(ctx context.Context, couponID, requestID str
 	if coupon.Status != "claimed" {
 		return nil, ErrCouponNotRedeemable
 	}
+	// 在改之前留一份 before：下面几行会把这个结构体的 Status 就地改成 redeemed，
+	// 改完再拼快照，两边的 status 就都是 redeeemed 了——一条「从 redeemed 改成 redeemed」
+	// 的日志比没有日志更坏，它会让人以为核销没生效。
+	before := userCouponSnapshotOf(coupon)
 	var valid bool
 	if err := tx.QueryRow(ctx, `SELECT NOW() >= $1 AND NOW() < $2`, coupon.ValidFrom, coupon.ExpiredAt).Scan(&valid); err != nil {
 		return nil, err
@@ -157,10 +265,21 @@ func (r *postgresRepository) Redeem(ctx context.Context, couponID, requestID str
 	if _, err := tx.Exec(ctx, `INSERT INTO coupon_redemptions (user_coupon_id, template_id, request_id, redemption_method, status, completed_at) VALUES ($1, $2, $3, 'platform', 'succeeded', NOW())`, coupon.ID, coupon.TemplateID, requestID); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO coupon_state_transitions(aggregate_type,aggregate_id,from_status,to_status,reason,request_id) VALUES('user_coupon',$1,'claimed','redeemed','',$2)`, coupon.ID, requestID); err != nil {
+	// actor_id 的写法与 Revoke 那条逐字一致（NULLIF($n,'')::uuid）：核销也是人工动作，
+	// 「谁核销的」与「谁作废的」在同一条时间线上，缺一个就得去后台审计里对时间戳。
+	if _, err := tx.Exec(ctx, `INSERT INTO coupon_state_transitions(aggregate_type,aggregate_id,from_status,to_status,reason,request_id,actor_id) VALUES('user_coupon',$1,'claimed','redeemed','',$2,NULLIF($3,'')::uuid)`, coupon.ID, requestID, actorID); err != nil {
 		return nil, err
 	}
 	coupon.Status = "redeemed"
+	// 审计只在这条路上记：上面那个 `done` 分支是同一个 request_id 的重放，第一次已经记过了，
+	// 再记一条会让日志上长出一串看起来像重复核销的记录。
+	if err := r.recorder.Record(ctx, tx, audit.Entry{
+		Module: "coupons", Action: "redeem", Operation: "核销优惠券",
+		TargetType: "user_coupon", TargetID: coupon.ID, TargetName: coupon.CouponTypeCode,
+		Before: audit.Snapshot(before), After: audit.Snapshot(userCouponSnapshotOf(coupon)),
+	}); err != nil {
+		return nil, err
+	}
 	response, err := json.Marshal(coupon)
 	if err != nil {
 		return nil, err
@@ -216,6 +335,28 @@ func beginIdempotentOperation(ctx context.Context, tx pgx.Tx, scope, key, hash, 
 }
 
 const userCouponColumns = `id::text,template_id::text,batch_id::text,user_id::text,coupon_type_code,claim_type,issue_reason,status,face_value,min_purchase_amount,redemption_type,valid_from,expired_at,claimed_at,held_at,redeemed_at,refunded_at,invalidated_at,created_at,updated_at`
+
+// userCouponAuditSnapshot 是用户券写进审计的那几个字段。
+//
+// 一张券的其余列（有效期、门槛、核销方式）都是发券那一刻从模板快照过来的**历史事实**，
+// 后台这两条路改不动它们，记下来只会让日志里全是两份一模一样的长文本。要看的只有「这张券
+// 现在是什么状态、什么时候变的、为什么」。
+type userCouponAuditSnapshot struct {
+	UserID         string     `json:"userId"`
+	CouponTypeCode string     `json:"couponTypeCode"`
+	FaceValue      int64      `json:"faceValue"`
+	Status         string     `json:"status"`
+	RedeemedAt     *time.Time `json:"redeemedAt,omitempty"`
+	InvalidatedAt  *time.Time `json:"invalidatedAt,omitempty"`
+	Reason         string     `json:"reason,omitempty"`
+}
+
+func userCouponSnapshotOf(c *model.UserCoupon) userCouponAuditSnapshot {
+	return userCouponAuditSnapshot{
+		UserID: c.UserID, CouponTypeCode: c.CouponTypeCode, FaceValue: c.FaceValue,
+		Status: c.Status, RedeemedAt: c.RedeemedAt, InvalidatedAt: c.InvalidatedAt,
+	}
+}
 
 func scanUserCoupon(row interface{ Scan(...any) error }) (*model.UserCoupon, error) {
 	c := &model.UserCoupon{}
@@ -321,6 +462,9 @@ func (r *postgresRepository) Revoke(ctx context.Context, id, requestID, actorID,
 	if c.Status != "claimed" && c.Status != "held" {
 		return nil, ErrCouponNotRedeemable
 	}
+	// 与 Redeem 同一个理由：下面那行只回写 invalidated_at，c.Status 靠手工赋值翻新，
+	// before 必须在这一行之前取。
+	before := userCouponSnapshotOf(c)
 	if e = tx.QueryRow(ctx, `UPDATE user_coupons SET status='invalidated',invalidated_at=NOW(),updated_at=NOW() WHERE id=$1 RETURNING invalidated_at`, id).Scan(&c.InvalidatedAt); e != nil {
 		return nil, e
 	}
@@ -328,6 +472,17 @@ func (r *postgresRepository) Revoke(ctx context.Context, id, requestID, actorID,
 		return nil, e
 	}
 	c.Status = "invalidated"
+	after := userCouponSnapshotOf(c)
+	// 作废的原因跟着记：这张券为什么没了，是事后最常被问的那一句，而 user_coupons 上
+	// 只有一个状态列，reason 只落在状态迁移表里。
+	after.Reason = reason
+	if e := r.recorder.Record(ctx, tx, audit.Entry{
+		Module: "coupons", Action: "revoke", Operation: "作废优惠券",
+		TargetType: "user_coupon", TargetID: c.ID, TargetName: c.CouponTypeCode,
+		Before: audit.Snapshot(before), After: audit.Snapshot(after),
+	}); e != nil {
+		return nil, e
+	}
 	response, e := json.Marshal(c)
 	if e != nil {
 		return nil, e
@@ -336,117 +491,6 @@ func (r *postgresRepository) Revoke(ctx context.Context, id, requestID, actorID,
 		return nil, e
 	}
 	return c, tx.Commit(ctx)
-}
-
-// IssueCoupons 直接使用调用方传来的 hash，不自己再算一份。
-//
-// 这里原本写成 json.Marshal(req) 重新算一遍、把形参丢掉。改 tag 之前两份哈希
-// 碰巧相等，所以看不出问题；一旦 service 侧把哈希换成冻结 tag 的渲染，两者就
-// 分叉了——service 拿旧哈希做预检、这里拿新哈希写库，同一个 key 重放会被判成
-// 冲突。哈希只能有一个来源。
-func (r *postgresRepository) IssueCoupons(ctx context.Context, key, actorID, hash string, req dto.IssueCouponsRequest) (*dto.IssueCouponsResponse, error) {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-	var existingHash string
-	var existingResponse []byte
-	err = tx.QueryRow(ctx, `SELECT request_hash,response FROM coupon_idempotency_keys WHERE scope='admin.coupons.issue' AND idempotency_key=$1 FOR UPDATE`, key).Scan(&existingHash, &existingResponse)
-	if err == nil {
-		if existingHash != hash {
-			return nil, errors.New("idempotency key request hash conflict")
-		}
-		var out dto.IssueCouponsResponse
-		if err := json.Unmarshal(existingResponse, &out); err != nil {
-			return nil, err
-		}
-		return &out, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO coupon_idempotency_keys(scope,idempotency_key,request_hash,resource_type,status) VALUES('admin.coupons.issue',$1,$2,'coupon_batch','processing')`, key, hash); err != nil {
-		return nil, err
-	}
-	var templateID, typeCode string
-	var face, minPurchase int64
-	var redemptionType, validityMode string
-	var validFrom, validTo *time.Time
-	var validDays *int
-	var total int64
-	err = tx.QueryRow(ctx, `SELECT t.id, ct.code, t.face_value,t.min_purchase_amount,t.redemption_type,t.validity_mode,t.valid_from,t.valid_to,t.valid_days,t.total_quantity FROM coupon_templates t JOIN coupon_types ct ON ct.id=t.coupon_type_id WHERE t.id=$1 AND t.status='active' AND t.audit_status='approved' FOR UPDATE`, req.TemplateID).Scan(&templateID, &typeCode, &face, &minPurchase, &redemptionType, &validityMode, &validFrom, &validTo, &validDays, &total)
-	if err != nil {
-		return nil, err
-	}
-	quantity := int64(len(req.UserIDs) * req.QuantityPerUser)
-	if quantity > total {
-		return nil, ErrInsufficientInventory
-	}
-	batchID := ""
-	err = tx.QueryRow(ctx, `INSERT INTO coupon_batches(template_id,batch_no,source,total_quantity,reserved_quantity,issued_quantity,status,request_id,created_by) VALUES($1,'admin-'||substr(gen_random_uuid()::text,1,12),'admin',$2,0,$2,'exhausted',$3,$4) RETURNING id::text`, templateID, quantity, key, actorID).Scan(&batchID)
-	if err != nil {
-		return nil, err
-	}
-	result, err := tx.Exec(ctx, `UPDATE coupon_templates SET issued_quantity=issued_quantity+$2,updated_at=NOW() WHERE id=$1 AND issued_quantity+reserved_quantity+$2<=total_quantity`, templateID, quantity)
-	if err != nil {
-		return nil, err
-	}
-	if result.RowsAffected() != 1 {
-		return nil, ErrInsufficientInventory
-	}
-	var scopeRows []struct{ typ, id string }
-	rows, err := tx.Query(ctx, `SELECT scope_type,scope_id::text FROM coupon_template_scopes WHERE template_id=$1`, templateID)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var x struct{ typ, id string }
-		if err := rows.Scan(&x.typ, &x.id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		scopeRows = append(scopeRows, x)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	rows.Close()
-	ids := make([]string, 0, quantity)
-	for _, userID := range req.UserIDs {
-		for j := 0; j < req.QuantityPerUser; j++ {
-			var id string
-			err = tx.QueryRow(ctx, `INSERT INTO user_coupons(template_id,batch_id,user_id,coupon_type_code,claim_type,issue_reason,face_value,min_purchase_amount,redemption_type,valid_from,expired_at) VALUES($1,$2,$3,$4,'admin_assign',$5,$6,$7,$8,COALESCE($9,NOW()),COALESCE($10,NOW()+make_interval(days=>COALESCE($11,30)))) RETURNING id::text`, templateID, batchID, userID, typeCode, req.Reason, face, minPurchase, redemptionType, validFrom, validTo, validDays).Scan(&id)
-			if err != nil {
-				return nil, err
-			}
-			ids = append(ids, id)
-			for _, sc := range scopeRows {
-				if _, err = tx.Exec(ctx, `INSERT INTO user_coupon_scopes(user_coupon_id,scope_type,scope_id) VALUES($1,$2,$3)`, id, sc.typ, sc.id); err != nil {
-					return nil, err
-				}
-			}
-		}
-	}
-	payload, _ := json.Marshal(map[string]any{"batch_id": batchID, "user_coupon_ids": ids, "actor_id": actorID})
-	if _, err = tx.Exec(ctx, `INSERT INTO coupon_inventory_ledger(template_id,batch_id,reference_type,reference_id,quantity,operation,request_id) VALUES($1,$2,'admin_issue',$2,$3,'issue',$4)`, templateID, batchID, quantity, key); err != nil {
-		return nil, err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO coupon_state_transitions(aggregate_type,aggregate_id,from_status,to_status,reason,request_id,metadata) VALUES('batch',$1,'','active',$2,$3,$4)`, batchID, req.Reason, key, payload); err != nil {
-		return nil, err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO message_outbox(event_id,event_type,event_version,trace_id,payload) VALUES(gen_random_uuid()::text,'coupon.issued','v1',$1,$2)`, key, payload); err != nil {
-		return nil, err
-	}
-	out := &dto.IssueCouponsResponse{BatchID: batchID, IssuedQuantity: int(quantity), UserCouponIDs: ids}
-	encoded, _ := json.Marshal(out)
-	if _, err = tx.Exec(ctx, `UPDATE coupon_idempotency_keys SET resource_id=$2,response=$3,status='succeeded' WHERE scope='admin.coupons.issue' AND idempotency_key=$1`, key, batchID, encoded); err != nil {
-		return nil, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (r *postgresRepository) Create(ctx context.Context, key *model.IdempotencyKey) (bool, error) {

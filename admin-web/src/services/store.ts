@@ -22,6 +22,11 @@ export type Store = {
   provinceCode: string;
   cityCode: string;
   districtCode: string;
+  // 订货系统的客户三列（merchant/004）。两个编码是跟供应商、DMS 对账的业务键，
+  // 库上各有「空串不参与」的部分唯一索引——空串表示还没编码，重复的非空编码会被拒。
+  customerCode: string;
+  dmsCode: string;
+  customerType: string;
   address: string;
   longitude: number | null;
   latitude: number | null;
@@ -52,6 +57,10 @@ export type StoreInput = {
   provinceCode?: string;
   cityCode?: string;
   districtCode?: string;
+  /** 客户三列；不填即空串（= 还没编码），不是清空 */
+  customerCode?: string;
+  dmsCode?: string;
+  customerType?: string;
   address?: string;
   longitude?: number | null;
   latitude?: number | null;
@@ -77,6 +86,19 @@ export async function listStores(
   },
 ) {
   return request<PageResult<Store>>('/api/v1/admin/stores', { params });
+}
+
+/**
+ * 单个门店。
+ *
+ * 出库单详情要用它把 `store_id` 换成一个店名——库存库里只存值引用，没有店名，
+ * 与订单域补门店名的做法一致（都是拿 id 回来现查，不做联表也不落冗余）。
+ *
+ * 刻意不写「查不到就给个占位名」的兜底：门店被删之后这里会 404，而「查不到」
+ * 与「名字是空串」必须分得开——前者说明这条引用已经悬空，是要报出来的事实。
+ */
+export async function getStore(id: string) {
+  return request<Store>(`/api/v1/admin/stores/${id}`);
 }
 
 export async function createStore(data: StoreInput) {

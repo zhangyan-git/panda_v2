@@ -32,7 +32,7 @@ func TestLegacySetIsFrozen(t *testing.T) {
 }
 
 func TestSetsAreUsable(t *testing.T) {
-	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "payment": Payment, "account": Account, "lottery": Lottery, "legacy": Legacy} {
+	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "payment": Payment, "account": Account, "lottery": Lottery, "membership": Membership, "partner": Partner, "legacy": Legacy} {
 		t.Run(name, func(t *testing.T) {
 			versions, err := Versions(set)
 			if err != nil {
@@ -101,8 +101,29 @@ func TestSetsDoNotCrossTheDatabaseBoundary(t *testing.T) {
 		// lottery_win_events — are deliberately absent from this list, because their
 		// references point at each other inside the database.
 		"lottery": regexp.MustCompile(`REFERENCES\s+(orders|order_\w+|merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule|coupon_\w+|user_coupons|coupon_templates|coupon_batches|payment_methods|payments|payment_\w+|devices|drinks|device_drinks|manufacturers|manufacturer_credentials|memberships|membership_plans|users|miniapp_users|user_accounts|account_\w+|fortune_card_\w+|coffee_bean_\w+)\s*\(`),
+		// membership-service owns the 会员价权益 and nothing else. The user whose
+		// entitlement it is, the order that bought or renewed it, the 代扣协议 that
+		// charges it, and the 券模板 that carries a 包月会员's 会员价 all appear as
+		// values (user_id, order_id, agreement_id, member_price_coupon_template_id);
+		// 会员价 itself is a price on coffee_machine's drinks, and a 会员订单 is
+		// order-service's row. Its own four tables — memberships, membership_plans,
+		// membership_subscriptions and membership_changes — plus both outbox tables
+		// are deliberately absent from this list, because their references point at
+		// each other inside the database.
+		"membership": regexp.MustCompile(`REFERENCES\s+(orders|order_\w+|merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule|coupon_\w+|user_coupons|coupon_templates|coupon_batches|payment_methods|payments|payment_\w+|devices|drinks|device_drinks|manufacturers|manufacturer_credentials|users|miniapp_users|user_accounts|account_\w+|fortune_card_\w+|coffee_bean_\w+|lottery_\w+|materials|drink_recipes|recipe_items|warehouses|material_batches|stock_\w+)\s*\(`),
+		// partner-service owns the 开放平台 governance rows only — 合作方账号、API 密钥、
+		// 调用日志. Everything its keys reach is another service's state: the 商户/门店 a
+		// 合作方 is *not*, the orders it queries, the coupons it issues, the memberships
+		// it looks up, the admin who issued the key. All of those appear as values
+		// (partner code, order_no, user_id, created_by) or not at all — never as foreign
+		// keys. Its own three tables are deliberately absent from this list, because
+		// partner_api_keys references partner_accounts inside the database.
+		//
+		// 这条清单是十个域里最长的，不是因为它最特殊，而是因为它**什么都不拥有**：一个
+		// 纯治理/转发服务能碰到的外部实体就是全集，漏掉一个名字等于漏掉一种越界写法。
+		"partner": regexp.MustCompile(`REFERENCES\s+(orders|order_\w+|merchants|brands|stores|brand_audit_records|store_audit_records|admin_\w+|merchant_users|casbin_rule|coupon_\w+|user_coupons|coupon_templates|coupon_batches|payment_methods|payments|payment_\w+|devices|drinks|device_drinks|manufacturers|manufacturer_credentials|users|miniapp_users|user_accounts|account_\w+|fortune_card_\w+|coffee_bean_\w+|lottery_\w+|materials|drink_recipes|recipe_items|warehouses|material_batches|stock_\w+|memberships|membership_plans|membership_subscriptions|membership_changes)\s*\(`),
 	}
-	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "payment": Payment, "account": Account, "lottery": Lottery} {
+	for name, set := range map[string]fs.FS{"identity": Identity, "merchant": Merchant, "coupon": Coupon, "coffee_machine": CoffeeMachine, "order": Order, "payment": Payment, "account": Account, "lottery": Lottery, "membership": Membership, "partner": Partner} {
 		t.Run(name, func(t *testing.T) {
 			versions, err := Versions(set)
 			if err != nil {
@@ -123,7 +144,7 @@ func TestSetsDoNotCrossTheDatabaseBoundary(t *testing.T) {
 
 // Every database needs its own pair of message tables — the outbox is written in
 // the same transaction as the business row, so it cannot be a shared table. That
-// makes eight copies of the same DDL, and eight places to forget.
+// makes eleven copies of the same DDL, and eleven places to forget.
 //
 // The copies are compared on their CREATE TABLE column lists, in order. Comments,
 // formatting, and the ALTER block the identity and merchant sets carry (it exists
@@ -145,6 +166,10 @@ var messageTableCopies = []struct {
 	{Payment, "001_payment_core.sql", "payment"},
 	{Account, "001_account_core.sql", "account"},
 	{Lottery, "001_lottery_core.sql", "lottery"},
+	{Membership, "001_membership_core.sql", "membership"},
+	// partner-service 只写 outbox（后台治理动作的审计出口），不消费任何事件——inbox 一起
+	// 建着，与其它九份逐字相同，见 partner/003 的说明。
+	{Partner, "003_partner_message_tables.sql", "partner"},
 }
 
 func TestMessageTablesStayInSyncAcrossSets(t *testing.T) {

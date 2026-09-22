@@ -35,9 +35,13 @@ type fakeAccess struct {
 	brandErr   error
 	storeErr   error
 	namesErr   error
+	scopeErr   error
 	brandNames map[string]string
 	storeNames map[string]string
 	store      *model.Store
+	// storeIDs is returned as-is by StoreIDsByScope, nil included: the RPC's
+	// normalization to an empty slice is one of the things under test here.
+	storeIDs []string
 }
 
 func (f fakeAccess) FindBrandMerchantID(context.Context, string) (string, error) {
@@ -57,6 +61,10 @@ func (f fakeAccess) ScopeNames(context.Context, []string, []string) (map[string]
 		return nil, nil, f.namesErr
 	}
 	return f.brandNames, f.storeNames, nil
+}
+
+func (f fakeAccess) StoreIDsByScope(context.Context, string, string, string) ([]string, error) {
+	return f.storeIDs, f.scopeErr
 }
 
 // testServer runs the implementation behind the same interceptor production
@@ -111,6 +119,10 @@ func TestMerchantServiceRequiresServiceToken(t *testing.T) {
 		},
 		"ResolveScopeNames": func(ctx context.Context) error {
 			_, err := client.ResolveScopeNames(ctx, &merchantv1.ResolveScopeNamesRequest{BrandIds: []string{"b1"}})
+			return err
+		},
+		"ListStoreIDs": func(ctx context.Context) error {
+			_, err := client.ListStoreIDs(ctx, &merchantv1.ListStoreIDsRequest{MerchantId: "m1", ScopeType: auth.ScopeTypeMerchant})
 			return err
 		},
 	}
@@ -231,6 +243,105 @@ func TestResolveScopeNamesAnswersListings(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("storage error text leaked: %v", err)
+	}
+}
+
+// recordingAccess notes whether the repository was consulted, so a validation
+// test can assert it was not: an unexpanded scope must be refused, never
+// answered from a default.
+type recordingAccess struct {
+	fakeAccess
+	called *bool
+}
+
+func (r recordingAccess) StoreIDsByScope(context.Context, string, string, string) ([]string, error) {
+	*r.called = true
+	return r.storeIDs, r.scopeErr
+}
+
+// TestListStoreIDsExpandsScope covers the answer user-service turns into the
+// boundary every downstream service filters on.
+func TestListStoreIDsExpandsScope(t *testing.T) {
+	serviceCtx := auth.WithServiceToken(context.Background(), serviceToken)
+
+	t.Run("merchant scope carries the expanded set", func(t *testing.T) {
+		client, _ := testServer(t, fakeMerchants{}, fakeAccess{storeIDs: []string{"s1", "s2"}})
+		resp, err := client.ListStoreIDs(serviceCtx, &merchantv1.ListStoreIDsRequest{
+			MerchantId: "m1", ScopeType: auth.ScopeTypeMerchant,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := resp.GetStoreIds(); len(got) != 2 || got[0] != "s1" || got[1] != "s2" {
+			t.Fatalf("store_ids=%v", got)
+		}
+	})
+
+	// An account authorized for nothing is a real answer, and it must not be
+	// mistaken for a failure. Note what the wire does to it: proto3 does not
+	// serialize an empty repeated field, so the empty slice the RPC builds is
+	// decoded back into nil here. The distinction therefore cannot be preserved
+	// by this RPC and is not meant to be — the load-bearing nil→empty
+	// normalization is auth.WithStoreScope, applied in the middleware, so every
+	// consumer reads a non-nil StoreIDs. This case pins "empty scope arrives as
+	// an empty answer, not an error".
+	t.Run("empty scope arrives as an empty answer", func(t *testing.T) {
+		client, _ := testServer(t, fakeMerchants{}, fakeAccess{})
+		resp, err := client.ListStoreIDs(serviceCtx, &merchantv1.ListStoreIDsRequest{
+			MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeId: "b-empty",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.GetStoreIds()) != 0 {
+			t.Fatalf("store_ids=%v", resp.GetStoreIds())
+		}
+	})
+
+	t.Run("a storage failure stays opaque", func(t *testing.T) {
+		client, _ := testServer(t, fakeMerchants{}, fakeAccess{scopeErr: errors.New(`pq: relation "stores" does not exist`)})
+		_, err := client.ListStoreIDs(serviceCtx, &merchantv1.ListStoreIDsRequest{
+			MerchantId: "m1", ScopeType: auth.ScopeTypeStore, ScopeId: "s1",
+		})
+		if got := status.Code(err); got != codes.Internal {
+			t.Fatalf("code=%v want Internal", got)
+		}
+		if strings.Contains(err.Error(), "does not exist") {
+			t.Fatalf("storage error text leaked: %v", err)
+		}
+	})
+}
+
+// TestListStoreIDsRefusesUnexpandableScope pins the difference between "this
+// account may see nothing" and "this request cannot be answered". Both reach the
+// caller as a boundary, so a request that cannot be interpreted must fail loudly
+// here instead of quietly becoming an empty set.
+func TestListStoreIDsRefusesUnexpandableScope(t *testing.T) {
+	serviceCtx := auth.WithServiceToken(context.Background(), serviceToken)
+	for _, tt := range []struct {
+		name    string
+		request *merchantv1.ListStoreIDsRequest
+	}{
+		{"no merchant", &merchantv1.ListStoreIDsRequest{ScopeType: auth.ScopeTypeMerchant}},
+		{"merchant scope carrying a scope id", &merchantv1.ListStoreIDsRequest{
+			MerchantId: "m1", ScopeType: auth.ScopeTypeMerchant, ScopeId: "b1",
+		}},
+		{"brand scope without a scope id", &merchantv1.ListStoreIDsRequest{MerchantId: "m1", ScopeType: auth.ScopeTypeBrand}},
+		{"store scope without a scope id", &merchantv1.ListStoreIDsRequest{MerchantId: "m1", ScopeType: auth.ScopeTypeStore}},
+		{"unknown scope type", &merchantv1.ListStoreIDsRequest{MerchantId: "m1", ScopeType: "region"}},
+		{"missing scope type", &merchantv1.ListStoreIDsRequest{MerchantId: "m1"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			client, _ := testServer(t, fakeMerchants{}, recordingAccess{called: &called})
+			_, err := client.ListStoreIDs(serviceCtx, tt.request)
+			if got := status.Code(err); got != codes.InvalidArgument {
+				t.Fatalf("code=%v want InvalidArgument", got)
+			}
+			if called {
+				t.Fatal("repository was consulted for a scope that cannot be expanded")
+			}
+		})
 	}
 }
 

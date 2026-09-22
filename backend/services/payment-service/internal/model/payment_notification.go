@@ -13,9 +13,11 @@ import (
 // Body 是渠道原始报文，**只落在这一张表里**：方案 11.5 禁止「未脱敏的第三方完整回调报文」
 // 进日志，所以日志侧只允许记 BodySHA256 与摘要。
 type PaymentNotification struct {
-	ID        string  `db:"id"`
-	Provider  string  `db:"provider"`
-	ChannelID *string `db:"channel_id"`
+	ID string `db:"id"`
+	// Provider 是这条回调来自哪条渠道（渠道名，如 `ums`）。从前还有一个 channel_id
+	// 指向 payment_channels，随那张表一起删了：回调 URL 里那段今天就是渠道名本身
+	// （POST /v1/payments/callback/{provider}）。
+	Provider string `db:"provider"`
 	// 渠道侧的通知/流水唯一号（微信 resource.id、银联请求流水号、丰选通知序号）。
 	NotificationID string `db:"notification_id"`
 	EventType      string `db:"event_type"`

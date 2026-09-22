@@ -250,10 +250,25 @@ export default function CouponTemplatesPage() {
     })();
   }, []);
 
-  const refresh = async (operation: Promise<unknown>, successMessage: string) => {
-    await operation;
+  // 行内那些一步到位的写动作（审核通过/驳回、启用/停用、发券）共用这条路径：
+  // 成功就提示 + 刷表，失败把后端的原话弹出来。
+  //
+  // 异常**必须**在这里吃掉：四个调用方都是 Popconfirm 的 onConfirm，抛出去会变成
+  // unhandled rejection（dev 下直接糊一层错误浮层），而用户那边只看见弹窗关掉了、
+  // 界面上什么都没变。返回值给发券弹窗用：它为 false 时 ModalForm 不关。
+  const refresh = async (
+    operation: Promise<unknown>,
+    successMessage: string,
+  ): Promise<boolean> => {
+    try {
+      await operation;
+    } catch (error) {
+      message.error(requestErrorMessage(error, '操作失败，请稍后重试'));
+      return false;
+    }
     message.success(successMessage);
     ref.current?.reload();
+    return true;
   };
 
   // 品牌变动后，已选门店里不再属于新品牌集合的那些要去掉：后端对品牌/门店只做
@@ -704,7 +719,14 @@ export default function CouponTemplatesPage() {
           // 表单里金额是元，后端要的是分的整数，toPayload 里统一换算；
           // claimLimitMode 是后端必填项，漏了会 400。
           const payload = toPayload(values);
-          await (editing ? updateCouponTemplate(editing.id, payload) : createCouponTemplate(payload));
+          try {
+            await (editing ? updateCouponTemplate(editing.id, payload) : createCouponTemplate(payload));
+          } catch (error) {
+            // 校验规则（金额区间、日期先后、范围合法性）全在后端 validateTemplate 里；
+            // 返回 false 让弹窗留着，二十来个字段不用重填。
+            message.error(requestErrorMessage(error, '保存失败，请稍后重试'));
+            return false;
+          }
           message.success('已保存');
           ref.current?.reload();
           return true;
@@ -878,7 +900,9 @@ export default function CouponTemplatesPage() {
         modalProps={{ destroyOnClose: true }}
         onFinish={async (values) => {
           if (!issueTarget) return false;
-          await refresh(
+          // 走 refresh：失败时它已经弹过后端给的理由，这里跟着返回 false，
+          // 弹窗留在原地——刚选好的那批人和填好的原因不该因为一次失败全丢掉。
+          return refresh(
             issueCoupons({
               // templateId 取自行内按钮，不让用户手填
               templateId: issueTarget.id,
@@ -888,7 +912,6 @@ export default function CouponTemplatesPage() {
             }),
             '发券成功',
           );
-          return true;
         }}
       >
         <ProFormText name="templateName" label="模板" initialValue={issueTarget?.name} disabled />

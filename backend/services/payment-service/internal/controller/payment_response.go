@@ -37,16 +37,21 @@ func writeCallbackAck(w http.ResponseWriter, ack provider.Ack) {
 	}
 }
 
-// callbackChannelCode 从回调路径里取出渠道码。
+// channelCodeFromPath 从 `<前缀>/<渠道码>` 里取出渠道码。
+//
+// 回调与回跳两条路由共用它（见 callback.go 与 return.go）：两者的路径形状逐字相同
+// （`/v1/payments/{callback,return}/{channelCode}`），差异只在方法与前缀。**前缀由调用方
+// 传进来**而不是在这里 if 一下：这个函数的职责是切路径，多一个「猜这是哪棵树」的分支就等于
+// 把注册表抄了第二份。
 //
 // 手写前缀裁剪而不是取 gorilla/mux 的路由变量：路径模板写在 routes 里只是为了注册与
-// 指标里的路径标签好看，真正被解析的是 r.URL.Path。两处共用同一个 CallbackPath 常量，
-// 改了前缀两边一起改。
+// 指标里的路径标签好看，真正被解析的是 r.URL.Path。两处共用同一个常量（CallbackPath /
+// ReturnPath），改了前缀两边一起改。
 //
-// 多一段（/callback/a/b）一律当作不匹配回 404：渠道码是一段，多出来的那一段不该被当成
+// 多一段（`/callback/a/b`）一律当作不匹配回 404：渠道码是一段，多出来的那一段不该被当成
 // 它的一部分去查库——那只会让「有人拼错了 URL」看起来像「这个渠道没配置」。
-func callbackChannelCode(path string) (string, bool) {
-	rest := strings.Trim(strings.TrimPrefix(path, CallbackPath), "/")
+func channelCodeFromPath(path, prefix string) (string, bool) {
+	rest := strings.Trim(strings.TrimPrefix(path, prefix), "/")
 	if rest == "" || strings.Contains(rest, "/") {
 		return "", false
 	}

@@ -7,7 +7,7 @@ import {
   type DeviceBalanceEntry,
 } from '../../../../services/coffeeMachine';
 import { listAdminUsers } from '../../../../services/iam';
-import { formatYuan } from '../../../../services/money';
+import { formatSignedYuan, formatYuan } from '../../../../services/money';
 import { FULL_PAGE_PARAMS, toPageParams } from '../../../../services/pagination';
 
 /**
@@ -28,15 +28,10 @@ const LEDGER_TYPE: Record<string, { label: string; color: string }> = {
   reverse: { label: '冲正', color: 'gold' },
 };
 
-/** 带符号的金额：加钱绿色带 +，扣钱红色带 -。 */
+/** 带符号的金额：加钱绿色带 +，扣钱红色带 -。**数字那部分是共享的**（services/money.ts）。 */
 function signedYuan(fen: number) {
   const color = fen < 0 ? '#cf1322' : '#389e0d';
-  const sign = fen < 0 ? '-' : '+';
-  return (
-    <span style={{ color }}>
-      {sign}¥{formatYuan(Math.abs(fen))}
-    </span>
-  );
+  return <span style={{ color }}>{formatSignedYuan(fen)}</span>;
 }
 
 export default function LedgerTab({ deviceId }: { deviceId: string }) {

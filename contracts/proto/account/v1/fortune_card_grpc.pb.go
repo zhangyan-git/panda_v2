@@ -19,9 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	FortuneCardService_GetFortuneCardBalance_FullMethodName   = "/panda.account.v1.FortuneCardService/GetFortuneCardBalance"
-	FortuneCardService_DeductFortuneCards_FullMethodName      = "/panda.account.v1.FortuneCardService/DeductFortuneCards"
-	FortuneCardService_ReverseFortuneCardEntry_FullMethodName = "/panda.account.v1.FortuneCardService/ReverseFortuneCardEntry"
+	FortuneCardService_GetFortuneCardBalance_FullMethodName    = "/panda.account.v1.FortuneCardService/GetFortuneCardBalance"
+	FortuneCardService_DeductFortuneCards_FullMethodName       = "/panda.account.v1.FortuneCardService/DeductFortuneCards"
+	FortuneCardService_ReverseFortuneCardEntry_FullMethodName  = "/panda.account.v1.FortuneCardService/ReverseFortuneCardEntry"
+	FortuneCardService_PreviewFortuneCardFreeze_FullMethodName = "/panda.account.v1.FortuneCardService/PreviewFortuneCardFreeze"
 )
 
 // FortuneCardServiceClient is the client API for FortuneCardService service.
@@ -34,8 +35,9 @@ const (
 // 任何地方 import 它，与本文件不是一回事：这里的「账户」是用户的资产账户，不是能登录后台的
 // 账号。这个目录名两义是历史遗留，改它要动一堆 go_package，不在本轮。
 //
-// 调用方都是**服务**，不是客户端：抽奖（lottery-service）扣减、退款追回冲正。小程序与后台
-// 读余额、流水走 HTTP（`/v1/miniapp/fortune-cards`、`/v1/admin/fortune-cards/*`），不走这里。
+// 调用方都是**服务**，不是客户端：抽奖（lottery-service）扣减、退款追回冲正，以及订单域在
+// 受理退款申请前问一句「这单的卡还冻得上吗」。小程序与后台读余额、流水走 HTTP
+// （`/v1/miniapp/fortune-cards`、`/v1/admin/fortune-cards/*`），不走这里。
 //
 // 金额一律是「张数」，整数，没有小数。
 type FortuneCardServiceClient interface {
@@ -56,6 +58,19 @@ type FortuneCardServiceClient interface {
 	// 已经生成的那笔。冲正会把余额扣成负数时拒绝——「已经抽过奖的福卡追不回来」是业务规则，
 	// 不是故障，所以是明确的错误消息，不是 500。
 	ReverseFortuneCardEntry(ctx context.Context, in *ReverseFortuneCardEntryRequest, opts ...grpc.CallOption) (*ReverseFortuneCardEntryResponse, error)
+	// 预览一次冻结：现在把这批发放冻起来，**冻得上几张**。只算不写。
+	//
+	// 存在的理由是一条业务规则：一单赠送的福卡一张都没被用过，才允许申请退款。判据只能是
+	// 这个数——福卡的流水是一口**池子**（抽奖扣的那一笔只记 `draw:{requestId}`，从不指向
+	// 它消耗的是哪一次发放），所以「这一单送的那几张还在不在」在库里没有直接答案，能算出来
+	// 的只有「这批发放键上还挂着几张（没被冲正过的）」与「账户此刻还有多少可用」，取小的
+	// 那个——正是 FreezeAfterSale 此刻会冻上的张数。预览与冻结必须用同一句 SQL，否则两个
+	// 数会漂移，而这里的漂移直接变成「申请被拒了但其实冻得上」或者反过来。
+	//
+	// 订单域在**受理申请之前**问一次：冻不满就是不受理（回给用户一句人话），而不是像过去
+	// 那样先受理、冻结时再悄悄钳住。这一问挡的是「用户早就把卡抽掉了」这个常态；申请与冻结
+	// 之间那个毫秒级的窗口挡不住，也不该由它挡——冻结那一侧的钳制仍然是权威。
+	PreviewFortuneCardFreeze(ctx context.Context, in *PreviewFortuneCardFreezeRequest, opts ...grpc.CallOption) (*PreviewFortuneCardFreezeResponse, error)
 }
 
 type fortuneCardServiceClient struct {
@@ -96,6 +111,16 @@ func (c *fortuneCardServiceClient) ReverseFortuneCardEntry(ctx context.Context, 
 	return out, nil
 }
 
+func (c *fortuneCardServiceClient) PreviewFortuneCardFreeze(ctx context.Context, in *PreviewFortuneCardFreezeRequest, opts ...grpc.CallOption) (*PreviewFortuneCardFreezeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreviewFortuneCardFreezeResponse)
+	err := c.cc.Invoke(ctx, FortuneCardService_PreviewFortuneCardFreeze_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FortuneCardServiceServer is the server API for FortuneCardService service.
 // All implementations must embed UnimplementedFortuneCardServiceServer
 // for forward compatibility.
@@ -106,8 +131,9 @@ func (c *fortuneCardServiceClient) ReverseFortuneCardEntry(ctx context.Context, 
 // 任何地方 import 它，与本文件不是一回事：这里的「账户」是用户的资产账户，不是能登录后台的
 // 账号。这个目录名两义是历史遗留，改它要动一堆 go_package，不在本轮。
 //
-// 调用方都是**服务**，不是客户端：抽奖（lottery-service）扣减、退款追回冲正。小程序与后台
-// 读余额、流水走 HTTP（`/v1/miniapp/fortune-cards`、`/v1/admin/fortune-cards/*`），不走这里。
+// 调用方都是**服务**，不是客户端：抽奖（lottery-service）扣减、退款追回冲正，以及订单域在
+// 受理退款申请前问一句「这单的卡还冻得上吗」。小程序与后台读余额、流水走 HTTP
+// （`/v1/miniapp/fortune-cards`、`/v1/admin/fortune-cards/*`），不走这里。
 //
 // 金额一律是「张数」，整数，没有小数。
 type FortuneCardServiceServer interface {
@@ -128,6 +154,19 @@ type FortuneCardServiceServer interface {
 	// 已经生成的那笔。冲正会把余额扣成负数时拒绝——「已经抽过奖的福卡追不回来」是业务规则，
 	// 不是故障，所以是明确的错误消息，不是 500。
 	ReverseFortuneCardEntry(context.Context, *ReverseFortuneCardEntryRequest) (*ReverseFortuneCardEntryResponse, error)
+	// 预览一次冻结：现在把这批发放冻起来，**冻得上几张**。只算不写。
+	//
+	// 存在的理由是一条业务规则：一单赠送的福卡一张都没被用过，才允许申请退款。判据只能是
+	// 这个数——福卡的流水是一口**池子**（抽奖扣的那一笔只记 `draw:{requestId}`，从不指向
+	// 它消耗的是哪一次发放），所以「这一单送的那几张还在不在」在库里没有直接答案，能算出来
+	// 的只有「这批发放键上还挂着几张（没被冲正过的）」与「账户此刻还有多少可用」，取小的
+	// 那个——正是 FreezeAfterSale 此刻会冻上的张数。预览与冻结必须用同一句 SQL，否则两个
+	// 数会漂移，而这里的漂移直接变成「申请被拒了但其实冻得上」或者反过来。
+	//
+	// 订单域在**受理申请之前**问一次：冻不满就是不受理（回给用户一句人话），而不是像过去
+	// 那样先受理、冻结时再悄悄钳住。这一问挡的是「用户早就把卡抽掉了」这个常态；申请与冻结
+	// 之间那个毫秒级的窗口挡不住，也不该由它挡——冻结那一侧的钳制仍然是权威。
+	PreviewFortuneCardFreeze(context.Context, *PreviewFortuneCardFreezeRequest) (*PreviewFortuneCardFreezeResponse, error)
 	mustEmbedUnimplementedFortuneCardServiceServer()
 }
 
@@ -146,6 +185,9 @@ func (UnimplementedFortuneCardServiceServer) DeductFortuneCards(context.Context,
 }
 func (UnimplementedFortuneCardServiceServer) ReverseFortuneCardEntry(context.Context, *ReverseFortuneCardEntryRequest) (*ReverseFortuneCardEntryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReverseFortuneCardEntry not implemented")
+}
+func (UnimplementedFortuneCardServiceServer) PreviewFortuneCardFreeze(context.Context, *PreviewFortuneCardFreezeRequest) (*PreviewFortuneCardFreezeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreviewFortuneCardFreeze not implemented")
 }
 func (UnimplementedFortuneCardServiceServer) mustEmbedUnimplementedFortuneCardServiceServer() {}
 func (UnimplementedFortuneCardServiceServer) testEmbeddedByValue()                            {}
@@ -222,6 +264,24 @@ func _FortuneCardService_ReverseFortuneCardEntry_Handler(srv interface{}, ctx co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FortuneCardService_PreviewFortuneCardFreeze_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreviewFortuneCardFreezeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FortuneCardServiceServer).PreviewFortuneCardFreeze(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FortuneCardService_PreviewFortuneCardFreeze_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FortuneCardServiceServer).PreviewFortuneCardFreeze(ctx, req.(*PreviewFortuneCardFreezeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // FortuneCardService_ServiceDesc is the grpc.ServiceDesc for FortuneCardService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -240,6 +300,10 @@ var FortuneCardService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReverseFortuneCardEntry",
 			Handler:    _FortuneCardService_ReverseFortuneCardEntry_Handler,
+		},
+		{
+			MethodName: "PreviewFortuneCardFreeze",
+			Handler:    _FortuneCardService_PreviewFortuneCardFreeze_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

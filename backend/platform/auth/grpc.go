@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/go-kratos/kratos/v2/middleware"
+	"github.com/go-kratos/kratos/v2/transport"
 	kgrpc "github.com/go-kratos/kratos/v2/transport/grpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -68,7 +69,7 @@ func RequireUser(ctx context.Context) (Identity, error) {
 // service caller or a user caller is decided by the handler.
 func UnaryServerInterceptor(service *Service, serviceToken string) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if info != nil && unauthenticatedMethod(info.FullMethod) {
+		if unauthenticatedMethod(rpcMethod(ctx, info)) {
 			return handler(ctx, req)
 		}
 		md, ok := metadata.FromIncomingContext(ctx)
@@ -122,12 +123,41 @@ func UnaryServerInterceptor(service *Service, serviceToken string) grpc.UnarySer
 	}
 }
 
+// rpcMethod returns the full method name of the call in flight.
+//
+// The interceptor is reachable two ways and only one of them carries a usable
+// grpc.UnaryServerInfo. Invoked directly, info.FullMethod is the real method.
+// Invoked through UnaryMiddleware it is not: Kratos' own gRPC interceptor
+// consumes the real info and runs the middleware chain with a bare
+// &grpc.UnaryServerInfo{}, so FullMethod is the empty string there. Reading the
+// method from info alone therefore made every call look unknown — the health
+// and reflection exemption never matched, and a probe that the README promises
+// is answered without credentials came back UNAUTHENTICATED.
+//
+// Kratos does leave the method in the context: its gRPC interceptor installs the
+// server transport (with operation set to FullMethod) before it runs the
+// middleware chain. That is the fallback, and it is what the adapter path reads.
+func rpcMethod(ctx context.Context, info *grpc.UnaryServerInfo) string {
+	if info != nil && info.FullMethod != "" {
+		return info.FullMethod
+	}
+	if tr, ok := transport.FromServerContext(ctx); ok {
+		return tr.Operation()
+	}
+	return ""
+}
+
 // UnaryMiddleware adapts UnaryServerInterceptor into a Kratos middleware.
 //
 // The raw grpc.ChainUnaryInterceptor option cannot be combined with Kratos: the
 // transport builds its own chained interceptor from middleware and rejects a
 // second one. Adapting keeps a single implementation of the authentication
 // rules for both worlds.
+//
+// The info handed to the interceptor here is deliberately empty — Kratos has the
+// real one and does not pass it on — so the interceptor takes the method from
+// the context instead (see rpcMethod). Anything else read from info is likewise
+// unavailable on this path.
 func UnaryMiddleware(interceptor grpc.UnaryServerInterceptor) middleware.Middleware {
 	return func(next middleware.Handler) middleware.Handler {
 		return func(ctx context.Context, req any) (any, error) {
@@ -183,6 +213,12 @@ func AccessTokenFromMetadata(ctx context.Context) (string, bool) {
 // reflection on every server it builds; requiring a token for them would break
 // load balancer health checks and service discovery in exactly the situation
 // those probes exist to report on.
+//
+// The list is exactly those two: the diagnoses they expose are what a failed
+// probe is meant to read. Kratos also registers /kratos.api.Metadata for its own
+// tooling and grpc-go's admin option registers /grpc.channelz.v1.Channelz; both
+// dump server internals, so staying behind the credential is the point rather
+// than an oversight.
 func unauthenticatedMethod(fullMethod string) bool {
 	return strings.HasPrefix(fullMethod, "/grpc.health.v1.Health/") ||
 		strings.HasPrefix(fullMethod, "/grpc.reflection.")

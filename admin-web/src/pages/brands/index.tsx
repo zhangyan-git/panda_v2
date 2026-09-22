@@ -35,7 +35,7 @@ import {
 } from '../../services/brand';
 import { listMerchants } from '../../services/merchant';
 import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
-import { deletionErrorMessage } from '../../services/requestError';
+import { deletionErrorMessage, requestErrorMessage } from '../../services/requestError';
 import { uploadImage } from '../../services/upload';
 
 const STATUS_TAG: Record<BrandStatus, { color: string; label: string }> = {
@@ -134,9 +134,13 @@ const BrandsPage: React.FC = () => {
             <Popconfirm
               title="禁用后该品牌在商户端不可用，确认禁用？"
               onConfirm={async () => {
-                await updateBrandStatus(row.id, 'disabled');
-                message.success('已禁用');
-                actionRef.current?.reload();
+                try {
+                  await updateBrandStatus(row.id, 'disabled');
+                  message.success('已禁用');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  message.error(requestErrorMessage(error, '禁用失败，请稍后重试'));
+                }
               }}
             >
               <Button type="link" size="small" danger icon={<PauseCircleOutlined />}>
@@ -148,9 +152,13 @@ const BrandsPage: React.FC = () => {
             <Popconfirm
               title="确认启用该品牌？"
               onConfirm={async () => {
-                await updateBrandStatus(row.id, 'active');
-                message.success('已启用');
-                actionRef.current?.reload();
+                try {
+                  await updateBrandStatus(row.id, 'active');
+                  message.success('已启用');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  message.error(requestErrorMessage(error, '启用失败，请稍后重试'));
+                }
               }}
             >
               <Button type="link" size="small" icon={<PlayCircleOutlined />}>
@@ -244,13 +252,18 @@ const BrandsPage: React.FC = () => {
             : { visible: true, sort: 0 }
         }
         onFinish={async (values) => {
-          if (editing) {
-            await updateBrand(editing.id, { ...values, merchantId: editing.merchantId });
-            message.success('已保存，修改直接生效并留痕');
-          } else {
-            await createBrand(values);
-            message.success('已创建，审核状态为待审核');
+          try {
+            if (editing) {
+              await updateBrand(editing.id, { ...values, merchantId: editing.merchantId });
+            } else {
+              await createBrand(values);
+            }
+          } catch (error) {
+            // 品牌名在同商户下重名一类只有后端判得了；返回 false 让弹窗留着。
+            message.error(requestErrorMessage(error, '保存失败，请稍后重试'));
+            return false;
           }
+          message.success(editing ? '已保存，修改直接生效并留痕' : '已创建，审核状态为待审核');
           actionRef.current?.reload();
           return true;
         }}
@@ -297,7 +310,14 @@ const BrandsPage: React.FC = () => {
         modalProps={{ destroyOnClose: true }}
         onFinish={async (values) => {
           if (!auditTarget) return false;
-          await auditBrand(auditTarget.row.id, auditTarget.approve, values.remark);
+          try {
+            await auditBrand(auditTarget.row.id, auditTarget.approve, values.remark);
+          } catch (error) {
+            // 审核要抢状态（别人可能已审过这一行），409 的理由得让人看见；
+            // 返回 false 也让填好的驳回原因留着。
+            message.error(requestErrorMessage(error, '审核失败，请稍后重试'));
+            return false;
+          }
           message.success(auditTarget.approve ? '已通过' : '已驳回');
           actionRef.current?.reload();
           return true;

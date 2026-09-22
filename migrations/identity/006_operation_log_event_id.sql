@@ -7,7 +7,10 @@
 --
 -- 存一个独立的 event_id 列而不是复用主键 id：id 是日志自身的标识，让外地的事件 ID
 -- 占用它会把「这条日志」和「那次投递」绑死。有了唯一索引，消费者用
--- INSERT ... ON CONFLICT (event_id) DO NOTHING 就能做到重投不重写。
+-- INSERT ... ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING 就能做到
+-- 重投不重写——谓词不能省：冲突目标必须与索引定义逐字相同（索引带 WHERE），少了它
+-- PostgreSQL 找不到可用的唯一索引，语句直接报错（见 user-service 的
+-- internal/repository/operation_log.go）。
 --
 -- 允许为空：消费者上线前写入的历史行、以及将来可能的非事件来源行都没有 event_id。
 -- 唯一索引建成只覆盖非空值的部分索引，把「唯一」的适用范围写在索引定义里——

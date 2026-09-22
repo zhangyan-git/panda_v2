@@ -1,7 +1,10 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/model"
@@ -122,10 +125,28 @@ func (h *AdminUserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := h.svc.CreateUser(r.Context(), req.Username, req.Password, req.Name, req.Email)
 	if err != nil {
-		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "创建失败")
+		status, code, msg := adminUserHTTPError(err, "创建失败")
+		api.Error(w, status, code, msg)
 		return
 	}
 	api.Success(w, toAdminUserResponse(u))
+}
+
+// adminUserHTTPError 把管理员账号链路的错误映射到状态码，做法与 roleHTTPError 一致：
+// 能分支的走哨兵（409 冲突、404 不存在），其余归 500。
+func adminUserHTTPError(err error, fallback string) (int, string, string) {
+	switch {
+	case errors.Is(err, model.ErrAdminUsernameTaken):
+		// 冲突原因包装了底层驱动错误，只回哨兵自己的文案：err.Error() 里带着
+		// 约束名和 SQLSTATE 23505，那是给运维看的，不是给后台用户看的。
+		return http.StatusConflict, api.CodeConflict, model.ErrAdminUsernameTaken.Error()
+	case errors.Is(err, model.ErrAdminEmailTaken):
+		return http.StatusConflict, api.CodeConflict, model.ErrAdminEmailTaken.Error()
+	case errors.Is(err, pgx.ErrNoRows):
+		return http.StatusNotFound, api.CodeNotFound, "用户不存在"
+	default:
+		return http.StatusInternalServerError, api.CodeInternal, fallback
+	}
 }
 
 type updateStatusRequest struct {
@@ -156,7 +177,8 @@ func (h *AdminUserHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := h.svc.UpdateStatus(r.Context(), id, req.Status); err != nil {
-		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "操作失败")
+		status, code, msg := adminUserHTTPError(err, "操作失败")
+		api.Error(w, status, code, msg)
 		return
 	}
 	api.Success(w, nil)

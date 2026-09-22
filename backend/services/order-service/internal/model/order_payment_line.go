@@ -17,7 +17,7 @@ type OrderPaymentLine struct {
 	ID      string `db:"id"`
 	OrderID string `db:"order_id"`
 	LineNo  int    `db:"line_no"`
-	// wechat / unionpay / coffee_bean / wallet / other。
+	// 支付方式的 code：ums_h5_alipay / coffee_bean 等，与 orders.payment_method 同一个值。
 	LineType string `db:"line_type"`
 	Amount   int64  `db:"amount"`
 	// reserved / succeeded / failed / released / reversed。
@@ -43,14 +43,14 @@ const (
 	PaymentLineReversed  = "reversed"
 )
 
-// 出资方取值。既有渠道支付，也有账户余额（咖啡豆）出资。
+// line_type 那套「出资渠道」词表（wechat / unionpay / coffee_bean / wallet / other）与
+// 它的五个常量**已经退场**（见 order/008）：order_payment_lines.line_type 今天存的是
+// **支付方式的 code**（catalog 里的 ums_h5_alipay / coffee_bean 等），与
+// orders.payment_method 同一个值。
 //
-// 这里**没有** fortune_card，是有意的：福卡是抽奖凭证不是出资渠道，order/003 已把
-// CHECK 收窄。别把它加回来。
-const (
-	FundingWechat     = "wechat"
-	FundingUnionPay   = "unionpay"
-	FundingCoffeeBean = "coffee_bean"
-	FundingWallet     = "wallet"
-	FundingOther      = "other"
-)
+// 从前它是「这笔钱从哪个通道出」的归纳，与「用户点了哪个支付方式」分两处记，代价是加一种
+// 支付方式要改两个库的 DDL——支付宝在词表里没有档，只能落 `other`，后台于是把一笔支付宝单
+// 显示成「其他」。CHECK 也已经从那份词表换成 `line_type <> ''`。
+//
+// 唯一的历史遗留：那个词表时期写下的行（以及 order 库里由回填订正过的那些）。新代码不该
+// 再引用 wechat / unionpay / wallet / other 这几个值。

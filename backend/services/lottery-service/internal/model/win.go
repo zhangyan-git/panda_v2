@@ -26,7 +26,9 @@ type Win struct {
 	RoundNo         string `db:"round_no"`
 	CampaignName    string `db:"campaign_name"`
 	PrizeID         string `db:"prize_id"`
-	PrizeKind       string `db:"prize_kind"`
+	// 这里原先还有一个 PrizeKind（prize_kind 的快照）。类型那一列 2026-09-15 随
+	// migrations/lottery/005 删了，快照跟着没有意义。
+	//
 	// 原奖品与现奖品分两列：换奖改的是 Current，Original 永远留着原样。
 	OriginalPrizeName string `db:"original_prize_name"`
 	CurrentPrizeName  string `db:"current_prize_name"`

@@ -20,12 +20,17 @@ type Payment struct {
 	UserID  string `db:"user_id"`
 	// 应付总额，单位为分；等于各笔出资之和。
 	Amount int64 `db:"amount"`
-	// 主出资类型：支付结果事件里的 paymentMethod 取它，落到 orders.payment_method 上。
-	FundingType string `db:"funding_type"`
-	// 走哪套渠道配置；纯账户出资（咖啡豆）为空。
-	ChannelID *string `db:"channel_id"`
-	// 用户是在哪一档支付方式下发起的；渠道侧的支付可以没有。
-	PaymentMethodID *string `db:"payment_method_id"`
+	// 走哪条渠道，值是渠道在**代码里**的名字（catalog 里的 Channel.Provider，今天只有一个
+	// `ums`）；纯账户出资（咖啡豆）没有第三方，这里是空串。
+	//
+	// 它从前是一个指向 payment_channels 的外键。那张表没了之后，这一列仍然值得留：后台
+	// 列表要显示「这笔走的哪条渠道」，对账要按渠道分组，而这两件事都不该要求再查一次表。
+	Provider string `db:"provider"`
+	// 用户在收银台上选的那一个支付方式的 **code**（catalog 里的常量，如 `ums_h5_wechat`）。
+	//
+	// 与 Provider 的关系是「一个渠道下挂着几条方式」：小程序那条与 H5 那四条同属 ums，
+	// 咖啡豆那条不属于任何渠道。所以这两列不是一回事，缺任一列都答不出「用户当初选了什么」。
+	PaymentMethod string `db:"payment_method"`
 	// created / pending / succeeded / failed / closed / expired，见下面的常量。
 	Status string `db:"status"`
 	// 渠道收银台与账单上显示的商品描述。
@@ -69,16 +74,30 @@ const (
 	PaymentExpired = "expired"
 )
 
-// 主出资类型取值，与 payments.funding_type / payment_fundings.line_type 的 CHECK
-// 逐字一致，也与 order 库 order_payment_lines.line_type 同词表。
+// IsPaymentStatus 判断一个值是不是合法的支付单状态。
 //
-// 这里**没有** fortune_card：福卡是下单赠送的抽奖凭证，不是出资渠道（它的余额归
-// account-service、消耗途径只有抽奖）。规划里从来没有把它列成出资渠道——§3.1 只说它
-// 「订单完成发放、用于参与抽奖」，§5.6 把它的余额归在 Account 下。payment/004 已收窄。
-const (
-	FundingWechat     = "wechat"
-	FundingUnionPay   = "unionpay"
-	FundingCoffeeBean = "coffee_bean"
-	FundingWallet     = "wallet"
-	FundingOther      = "other"
-)
+// 后台列表的 status 筛选用它**在进 SQL 之前**挡下打错的值（见 controller 的 listPayments）：
+// 一个不在词表里的值送进 SQL 不报错，只会安静地返回空列表——而运营会把它当成「这段时间
+// 真的没有成功的单」拿去对账。
+//
+// 写成 switch 而不是从上面那六个常量拼一个切片：这里要的是「整份摆出来」，多一个常量时
+// 少写一行会当场编译不过（重复的 case），而漏在一个切片里不会。
+func IsPaymentStatus(status string) bool {
+	switch status {
+	case PaymentCreated, PaymentPending, PaymentSucceeded, PaymentFailed, PaymentClosed, PaymentExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+// 出资类型那套词表（wechat / unionpay / coffee_bean / wallet / other）**已经退场**，
+// 连同 payments.funding_type 那一列一起（见 payment/012）。
+//
+// 从前它是「这笔钱从哪个通道出」的归纳，与「用户点了哪个支付方式」分两处记。代价是加一种
+// 支付方式要同时在 catalog 里给 code、再在这套词表里给它找一档——找不到就得改两个库的 DDL，
+// 支付宝落 `other` 就是这么来的（后台订单列表把一笔支付宝单显示成「其他」）。
+//
+// 今天只剩一套值：catalog 的 code。出资行、记账流水、退款出资行都存它。要判「这笔钱走不走
+// 渠道」，看的是这条方式有没有渠道（catalog.Method.ChannelCode / 路由上的 Channel），
+// 不是看某个词表值——唯一的例外见 service/refund.go 里那段关于 coffee_bean 的说明。

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/panda-dev/panda-v2/backend/platform/audit"
 	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/model"
@@ -18,10 +19,14 @@ type BrandRepository interface {
 	FindPage(ctx context.Context, f BrandFilter, limit, offset int) ([]*model.Brand, error)
 	Count(ctx context.Context, f BrandFilter) (int64, error)
 	FindByID(ctx context.Context, id string) (*model.Brand, error)
-	Create(ctx context.Context, b *model.Brand) error
+	// CreateInTx 在调用方的事务里建品牌：待审核记录必须与它同一次提交，
+	// 所以事务由调用方（service）开，不在这里自己 Begin。
+	CreateInTx(ctx context.Context, tx pgx.Tx, b *model.Brand) error
 	Update(ctx context.Context, b *model.Brand) error
 	UpdateStatus(ctx context.Context, id, status string) error
-	SetAudit(ctx context.Context, id, auditStatus, remark, by string) error
+	// SetAuditInTx 只允许 pending → approved/rejected：待审核记录也在调用方的事务里落章。
+	// 受影响行数为 0 说明这行已经被审过，返回 ErrAuditNotPending。
+	SetAuditInTx(ctx context.Context, tx pgx.Tx, id, auditStatus, remark, by string) error
 	Delete(ctx context.Context, id string) error
 	HasStores(ctx context.Context, id string) (bool, error)
 	// FindNames resolves a batch of ids to display names in one query. An id with
@@ -51,6 +56,20 @@ type brandSnapshot struct {
 	AuditRemark string `json:"audit_remark,omitempty"`
 	Visible     bool   `json:"visible"`
 	Sort        int    `json:"sort"`
+}
+
+// brandNameConflict 把「同商户下品牌重名」这条唯一约束违例翻成能说给人听的 sentinel，
+// 写法与 storeCodeConflict 一致：认约束名而不是错误码，将来加了别的唯一约束，
+// 认不出的那些照旧走 500——一个没读懂的错误不该被冒充成一句像是用户自己造成的提示。
+func brandNameConflict(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return err
+	}
+	if pgErr.ConstraintName == "brands_merchant_id_name_key" {
+		return ErrBrandNameTaken
+	}
+	return err
 }
 
 func selectBrandSnapshot(ctx context.Context, tx pgx.Tx, id string) (brandSnapshot, error) {
@@ -127,12 +146,9 @@ func (r *pgBrandRepo) FindNames(ctx context.Context, ids []string) (map[string]s
 	return findNames(ctx, r.pool, "brands", ids)
 }
 
-func (r *pgBrandRepo) Create(ctx context.Context, b *model.Brand) error {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
+// CreateInTx 写品牌、读回快照、记平台审计，全部落在调用方给的事务里；
+// Commit 由调用方负责，失败时它把品牌与待审核记录一起回滚。
+func (r *pgBrandRepo) CreateInTx(ctx context.Context, tx pgx.Tx, b *model.Brand) error {
 	const q = `
 		INSERT INTO brands (id, merchant_id, name, logo, banner, description,
 			status, audit_status, audit_remark, audit_by, remark, visible, sort, created_by, created_at, updated_at)
@@ -142,7 +158,7 @@ func (r *pgBrandRepo) Create(ctx context.Context, b *model.Brand) error {
 		b.Status, b.AuditStatus, b.AuditRemark, b.AuditBy, b.Remark, b.Visible, b.Sort, b.CreatedBy,
 		b.CreatedAt, b.UpdatedAt,
 	); err != nil {
-		return err
+		return brandNameConflict(err)
 	}
 	after, err := selectBrandSnapshot(ctx, tx, b.ID)
 	if err != nil {
@@ -156,7 +172,7 @@ func (r *pgBrandRepo) Create(ctx context.Context, b *model.Brand) error {
 	}); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // Update 平台直接编辑，不碰状态与审核字段
@@ -180,7 +196,7 @@ func (r *pgBrandRepo) Update(ctx context.Context, b *model.Brand) error {
 		b.ID, b.Name, b.Logo, b.Banner, b.Description,
 		b.Remark, b.Visible, b.Sort, b.UpdatedAt,
 	); err != nil {
-		return err
+		return brandNameConflict(err)
 	}
 	after, err := selectBrandSnapshot(ctx, tx, b.ID)
 	if err != nil {
@@ -227,37 +243,39 @@ func (r *pgBrandRepo) UpdateStatus(ctx context.Context, id, status string) error
 	return tx.Commit(ctx)
 }
 
-func (r *pgBrandRepo) SetAudit(ctx context.Context, id, auditStatus, remark, by string) error {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
+// SetAuditInTx 审核品牌：实体、待审核记录、平台审计同属调用方的一次提交。
+// 品牌没有「被驳回就不可用」的消费方（门店才有），所以这里不动 brands.status。
+func (r *pgBrandRepo) SetAuditInTx(ctx context.Context, tx pgx.Tx, id, auditStatus, remark, by string) error {
+	// 前后快照都走这个 SELECT，它带 FOR UPDATE：并发的第二次审核会在这里等锁，
+	// 拿到锁时读到的已经是「已审核」的新版本。
 	before, err := selectBrandSnapshot(ctx, tx, id)
 	if err != nil {
 		return err
 	}
+	// 谓词里的 audit_status = 'pending' 才是并发下的唯一权威：两次审核都可能
+	// 先读到 pending，但只有先拿到行锁的那次能改成 1 行，另一次落在 RowsAffected == 0，
+	// 返回 ErrAuditNotPending（而不是两个方向都报成功）。
 	const q = `
 		UPDATE brands
 		SET audit_status = $2, audit_remark = $3, audit_by = $4, audit_at = NOW(), updated_at = NOW()
-		WHERE id = $1`
-	if _, err := tx.Exec(ctx, q, id, auditStatus, remark, by); err != nil {
+		WHERE id = $1 AND audit_status = 'pending'`
+	tag, err := tx.Exec(ctx, q, id, auditStatus, remark, by)
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAuditNotPending
 	}
 	after, err := selectBrandSnapshot(ctx, tx, id)
 	if err != nil {
 		return err
 	}
-	if err := r.audit.Record(ctx, tx, audit.Entry{
+	return r.audit.Record(ctx, tx, audit.Entry{
 		Module: "brands", Action: "audit", Operation: "审核品牌",
 		TargetType: "brand", TargetID: id, TargetName: after.Name,
 		MerchantID: after.MerchantID,
 		Before:     audit.Snapshot(before), After: audit.Snapshot(after),
-	}); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	})
 }
 
 func (r *pgBrandRepo) Delete(ctx context.Context, id string) error {

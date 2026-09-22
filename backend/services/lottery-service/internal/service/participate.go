@@ -31,14 +31,16 @@ const reverseRemark = "期次已结束，本次参与未生效，福卡原路退
 type ParticipateResult struct {
 	// Participation 是落库的那一条（可能是这次新建的，也可能是幂等键命中的那一条）。
 	Participation *model.Participation
-	// Round 是锁内读到的那一期，用来算进度条还差几个人。
+	// Round 是锁内读到的那一期，用来算进度条还差几次参与。
 	Round *model.Round
 	// Replayed 为 true 表示这次没有扣卡：幂等键之前就成交过（同一张订单点了两下，或者上一次
 	// 的响应丢了客户端重试）。卡只扣了一张，期次的计数也只加了一次。
 	Replayed bool
 }
 
-// Remaining 是这一期还差几个人到门槛，已达标或已到点时是 0。
+// Remaining 是这一期还差几次参与到门槛，已达标时是 0。
+//
+// **数的是次数**：同一个人可以在同一期参与多次，每次各记一笔。
 func (r *ParticipateResult) Remaining() int32 {
 	if r.Round == nil {
 		return 0
@@ -61,7 +63,7 @@ func (r *ParticipateResult) Remaining() int32 {
 //
 // # 每一段各自负责什么
 //
-//   - Begin 锁住期次（与开奖互斥）并落下一条 pending。期次不在收人窗口内就是 ErrRoundClosed，
+//   - Begin 锁住期次（与开奖互斥）并落下一条 pending。期次已经不再收人就是 ErrRoundClosed，
 //     这一次参与**根本没有开始**，没有任何东西需要补偿。
 //   - 扣卡。三个结论分别处理：余额不足 → 参与标 failed（账户域没动过，没有卡需要退）；
 //     参数非法 → 参与标 failed 并大声记日志（本服务的 bug）；其余（超时、不可达、内部错）

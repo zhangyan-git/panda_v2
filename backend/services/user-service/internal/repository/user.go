@@ -32,6 +32,11 @@ type UserRepository interface {
 	// FindWechatIdentity 按唯一键 (app_type, openid) 查一条微信绑定，
 	// 命中后由调用方用 UserID 去取用户主体。
 	FindWechatIdentity(ctx context.Context, appType, openid string) (*model.UserWechatIdentity, error)
+	// FindWechatIdentityByUser 按 (user_id, app_type) 正查，是上面那条的反方向：
+	// 登录链路手里只有 openid、要问「这是谁」，而渠道支付手里只有 user_id、要问
+	// 「用哪个 openid 去发起」。查不到时返回 pgx.ErrNoRows，由调用方决定是「没有绑定」
+	// 还是「查不到这个人」——两者在这一层是同一件事，SQL 里补不出区别。
+	FindWechatIdentityByUser(ctx context.Context, userID, appType string) (*model.UserWechatIdentity, error)
 	// ListWechatIdentitiesByUser 列出一个账号绑定的全部微信身份，供后台详情页查看。
 	// 一个用户将来可能同时挂着小程序和公众号两条：登录链路只按 openid 反查一条，
 	// 这里要的是「他到底绑了哪些」。
@@ -173,6 +178,31 @@ func (r *pgUserRepo) FindWechatIdentity(ctx context.Context, appType, openid str
 		LIMIT 1`
 	ident := &model.UserWechatIdentity{}
 	err := r.pool.QueryRow(ctx, q, appType, openid).Scan(
+		&ident.ID, &ident.UserID, &ident.AppType, &ident.OpenID, &ident.UnionID,
+		&ident.LastLoginAt, &ident.CreatedAt, &ident.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return ident, nil
+}
+
+// FindWechatIdentityByUser 的 ORDER BY 与 LIMIT 不是可有可无的：库里只有
+// UNIQUE (app_type, openid)，同一个用户在同一应用下**可以**留下两行（一个 openid
+// 换绑过一次就会），所以「这个用户在 miniapp 下的 openid」严格来说是一组而不是一个。
+// 与 ListWechatIdentitiesByUser 取同一个次序、同一个理由：先绑的那条才是他原本的账号，
+// 而且没有 ORDER BY 的 LIMIT 1 拿到的行是任意的——同一个用户两次调用可能拿到两个不同的
+// openid，那会让一次支付重试失败在「换了请求体」上。
+func (r *pgUserRepo) FindWechatIdentityByUser(ctx context.Context, userID, appType string) (*model.UserWechatIdentity, error) {
+	const q = `
+		SELECT id, user_id, app_type, openid, COALESCE(unionid, ''),
+			last_login_at, created_at, updated_at
+		FROM user_wechat_identities
+		WHERE user_id = $1 AND app_type = $2
+		ORDER BY created_at, id
+		LIMIT 1`
+	ident := &model.UserWechatIdentity{}
+	err := r.pool.QueryRow(ctx, q, userID, appType).Scan(
 		&ident.ID, &ident.UserID, &ident.AppType, &ident.OpenID, &ident.UnionID,
 		&ident.LastLoginAt, &ident.CreatedAt, &ident.UpdatedAt,
 	)

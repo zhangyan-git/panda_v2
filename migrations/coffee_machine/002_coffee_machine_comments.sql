@@ -76,6 +76,9 @@ COMMENT ON COLUMN drinks.sort IS '展示排序，值越小越靠前';
 COMMENT ON COLUMN drinks.created_at IS '创建时间';
 COMMENT ON COLUMN drinks.updated_at IS '更新时间';
 
+-- device_drinks 这一块注释的是 001 建的表，而 003_drinks_own_device.sql 已经把它 DROP
+-- 了（饮品并回设备：devices 的关系不复存在）。保留是为了让这份文件与该表被注释时
+-- 一字不差，别照它去找那张表。
 COMMENT ON TABLE device_drinks IS '设备与饮品的供应关系，可覆盖每台设备的售价';
 COMMENT ON COLUMN device_drinks.id IS '主键';
 COMMENT ON COLUMN device_drinks.legacy_id IS '旧系统 MongoDB ObjectID，仅用于迁移对账';

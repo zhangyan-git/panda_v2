@@ -3,169 +3,11 @@ package repository
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/model"
 )
-
-// methodColumns / channelColumns 是两张配置表的读取列，列顺序与
-// scanPaymentMethodWithChannel 的扫描顺序严格一一对应，两边必须一起改。
-const methodColumns = `m.id::text, m.legacy_id, m.code, m.name, m.description, m.icon,
-	m.channel_id::text, m.action, m.params, m.funding_type, m.status, m.sort_order,
-	m.created_at, m.updated_at`
-
-const channelColumns = `c.id::text, c.legacy_id, c.code, c.name, c.provider, c.mode, c.status,
-	c.config, c.secret_ref, c.remark, c.created_at, c.updated_at`
-
-// PaymentMethodWithChannel 是一条支付方式加上它的渠道（如果有）。
-//
-// 用 LEFT JOIN 一次查回来而不是分两次：发起支付的每一次调用都要这两个事实，分成两次
-// 就意味着两次往返和一段「查到了方式、再去查渠道时失败」的半成品状态要处理。
-//
-// Channel 为 nil 是**合法**的：账户出资方式（咖啡豆）在 payment_methods.channel_id
-// 上本来就是空的——它们走 account-service 扣余额，没有外部渠道。
-type PaymentMethodWithChannel struct {
-	Method  model.PaymentMethod
-	Channel *model.PaymentChannel
-	// MethodParams / ChannelConfig 是上面两行里那两个 JSONB 列解出来的**扁平字符串
-	// 键值**，与 provider.Method 要的形状一致。
-	//
-	// 单独给出来是因为 model 层只做表镜像（那两列是 json.RawMessage），而「怎么起支付」
-	// 要的是一个能直接读的 map。让每个调用点各自解一次，就会有三处对「数字该不该转成
-	// 字符串」的不同答案。
-	MethodParams  map[string]string
-	ChannelConfig map[string]string
-}
-
-// FindPaymentMethod 按 id 读一条支付方式及其渠道。
-//
-// 不存在、或已停用时分别返回 ErrPaymentMethodNotFound / ErrPaymentMethodInactive：
-// 前者是调用方传错了 id（配置问题），后者是运营有意关掉的（重试多少次都一样）。
-// 混成一个错误会让排查时不知道该去看代码还是看后台。
-func (r *PostgresRepository) FindPaymentMethod(ctx context.Context, methodID string) (*PaymentMethodWithChannel, error) {
-	row := r.pool.QueryRow(ctx, `SELECT `+methodColumns+`, `+channelColumns+`
-		FROM payment_methods m
-		LEFT JOIN payment_channels c ON c.id = m.channel_id
-		WHERE m.id = $1`, methodID)
-	found, err := scanPaymentMethodWithChannel(row)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrPaymentMethodNotFound
-		}
-		return nil, err
-	}
-	if found.Method.Status != model.MethodEnabled {
-		return nil, ErrPaymentMethodInactive
-	}
-	return found, nil
-}
-
-func scanPaymentMethodWithChannel(row scanner) (*PaymentMethodWithChannel, error) {
-	found := &PaymentMethodWithChannel{}
-	// 渠道侧全部用指针：LEFT JOIN 没命中时它们整片是 NULL。用零值接会把「没有渠道」
-	// 压成「渠道代码是空串」，而后者看上去像一条配坏了的渠道行。
-	var (
-		channelID        *string
-		channelLegacyID  *string
-		channelCode      *string
-		channelName      *string
-		channelProvider  *string
-		channelMode      *string
-		channelStatus    *string
-		channelConfig    []byte
-		channelSecretRef *string
-		channelRemark    *string
-		channelCreatedAt *time.Time
-		channelUpdatedAt *time.Time
-	)
-	err := row.Scan(&found.Method.ID, &found.Method.LegacyID, &found.Method.Code,
-		&found.Method.Name, &found.Method.Description, &found.Method.Icon,
-		&found.Method.ChannelID, &found.Method.Action, &found.Method.Params,
-		&found.Method.FundingType, &found.Method.Status, &found.Method.SortOrder,
-		&found.Method.CreatedAt, &found.Method.UpdatedAt,
-		&channelID, &channelLegacyID, &channelCode, &channelName, &channelProvider,
-		&channelMode, &channelStatus, &channelConfig, &channelSecretRef, &channelRemark,
-		&channelCreatedAt, &channelUpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	if channelID != nil {
-		found.Channel = &model.PaymentChannel{
-			ID:        *channelID,
-			LegacyID:  channelLegacyID,
-			Code:      deref(channelCode),
-			Name:      deref(channelName),
-			Provider:  deref(channelProvider),
-			Mode:      deref(channelMode),
-			Status:    deref(channelStatus),
-			Config:    channelConfig,
-			SecretRef: deref(channelSecretRef),
-			Remark:    deref(channelRemark),
-		}
-		if channelCreatedAt != nil {
-			found.Channel.CreatedAt = *channelCreatedAt
-		}
-		if channelUpdatedAt != nil {
-			found.Channel.UpdatedAt = *channelUpdatedAt
-		}
-		found.ChannelConfig, err = jsonStrings(channelConfig)
-		if err != nil {
-			return nil, fmt.Errorf("channel %s config: %w", found.Channel.Code, err)
-		}
-	}
-	found.MethodParams, err = jsonStrings(found.Method.Params)
-	if err != nil {
-		return nil, fmt.Errorf("payment method %s params: %w", found.Method.Code, err)
-	}
-	return found, nil
-}
-
-// ChannelRecord 是一行渠道配置加上它 config 列解出来的映射，形状同 PaymentMethodWithChannel。
-type ChannelRecord struct {
-	Channel *model.PaymentChannel
-	Config  map[string]string
-}
-
-// FindChannelByCode 按渠道代码读一行渠道配置。渠道回调用它把 URL 里那段翻成 provider。
-//
-// **不过滤 status**：渠道被停用（disabled）或标成 legacy_readonly 都只影响「还能不能发起
-// 新支付」，不影响已经发生的交易——那些单的款项该到还是要到，回调必须照收。按状态过滤会
-// 让一笔已经付出去的钱的回调被当成「未知渠道」拒掉。
-func (r *PostgresRepository) FindChannelByCode(ctx context.Context, code string) (*ChannelRecord, error) {
-	var (
-		id, channelCode, name, provider, mode, status string
-		legacyID, secretRef, remark                   *string
-		config                                        []byte
-		createdAt, updatedAt                          time.Time
-	)
-	err := r.pool.QueryRow(ctx, `SELECT `+channelColumns+`
-		FROM payment_channels c WHERE c.code = $1`, code).Scan(
-		&id, &legacyID, &channelCode, &name, &provider, &mode, &status,
-		&config, &secretRef, &remark, &createdAt, &updatedAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrChannelNotFound
-		}
-		return nil, err
-	}
-	decoded, err := jsonStrings(config)
-	if err != nil {
-		return nil, fmt.Errorf("channel %s config: %w", channelCode, err)
-	}
-	return &ChannelRecord{
-		Channel: &model.PaymentChannel{
-			ID: id, LegacyID: legacyID, Code: channelCode, Name: name, Provider: provider,
-			Mode: mode, Status: status, Config: config, SecretRef: deref(secretRef),
-			Remark: deref(remark), CreatedAt: createdAt, UpdatedAt: updatedAt,
-		},
-		Config: decoded,
-	}, nil
-}
 
 // FindPaymentByNo 按支付单号读一张支付单。渠道回调与幂等回放都用它。
 //
@@ -187,12 +29,41 @@ func deref(value *string) string {
 	return *value
 }
 
+// jsonObject 把一个 JSONB 列解成一个**保留嵌套**的对象树。
+//
+// 它从前的唯一调用方是 payment_channels.config（协议声明：endpoints / sign / request /
+// response / notify 五段）。那张表删掉之后，适配器要的那棵树由 catalog 在代码里拼（见
+// catalog.umsChannel），这一族里还在读的 JSONB 列只剩 payments.attach——而 attach 恰恰
+// 是一个**必须保留嵌套**的值（里面有 openid 与设备号）。
+//
+// 早先这里走过 jsonStrings（拍平成 map[string]string），那时它装的是商户号、appid 一类
+// 的平铺参数。拍平会让「哪一段的哪个键」变成字符串拼接，而拼错一个点号取到的是空串——
+// 那是一种不会报错的失败。见 provider.Config。
+func jsonObject(raw []byte) (map[string]any, error) {
+	if len(raw) == 0 {
+		return map[string]any{}, nil
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, fmt.Errorf("decode json config: %w", err)
+	}
+	if object == nil {
+		// JSON 里的 `null` 解出来是 nil map，写回去是 NULL 而不是 {}。这一列是 NOT NULL，
+		// 而 nil 在后续任何一次读里都会 panic 或静默变成空——统一成空对象。
+		return map[string]any{}, nil
+	}
+	return object, nil
+}
+
 // jsonStrings 把 JSONB 列里的**标量**翻成字符串映射。
+//
+// 支付方式与渠道的参数今天都由 catalog 在代码里给（map[string]string 直接构造），这一族
+// 里还在读它的地方只剩历史行与快照。它仍然拒绝嵌套，而那是**特性不是限制**：一份平铺的
+// 旋钮里出现嵌套对象，说明写它的人以为这里是另一列，报错比静默丢掉强。
 //
 // 为什么不直接 Unmarshal 进 map[string]string：运营在后台填 `"timeout": 30` 时 JSONB
 // 存的是数字，直接解会报「cannot unmarshal number into Go value of type string」，
-// 而那个错误对填写的人毫无指导意义。这里把标量都转成字符串，只有嵌套对象与数组报错——
-// 它们本来就不该出现在这两列里（两列都是「扁平字符串键值」，见 provider.Method 的注释）。
+// 而那个错误对填写的人毫无指导意义。这里把标量都转成字符串，只有嵌套对象与数组报错。
 func jsonStrings(raw []byte) (map[string]string, error) {
 	if len(raw) == 0 {
 		return map[string]string{}, nil

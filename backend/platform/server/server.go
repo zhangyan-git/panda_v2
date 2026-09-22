@@ -187,6 +187,21 @@ func RunWithOptions(cfg config.Config, options runtime.Options) error {
 	}
 	grpcServer := kgrpc.NewServer(append([]kgrpc.ServerOption{
 		kgrpc.Address(cfg.GRPCAddress),
+		// 每次 RPC 的整调用预算。**这一行不能省**：kratos 的 gRPC server 自带一个 1 秒的
+		// 默认值（transport/grpc/server.go 的 NewServer），而它在 interceptor 里照样会套一层
+		// context.WithTimeout（transport/grpc/interceptor.go）——不显式给，全仓每一个 gRPC
+		// 处理器就都跑在一个没人选过的 1 秒里。
+		//
+		// 那个默认值会**静默吃掉调用方写下的预算**：deviceLookupTimeout 2 秒、
+		// paymentCreateTimeout 5 秒、authorizationTimeout 5 秒，每一个都在代码里配了注释解释
+		// 为什么是这么多，却一次都没生效过——下游还没答完，服务端先按 1 秒把自己掐断，再把它
+		// 当成一次故障（Internal）报回调用方。退款那条路正是撞在这上面：渠道的应答稍慢于 1 秒，
+		// 订单侧就收到一句「支付服务不可用」，而真相是「我们自己没等到结论」。
+		//
+		// 值与 HTTP 面共用同一个预算：在这一层两者管的是同一件事——一个处理单元最多能花多久。
+		// 按服务给的那两个默认值（5 秒，merchant-service 90 秒）本来就是按「这个服务的处理单元
+		// 要花多久」定的，与传输是 HTTP 还是 gRPC 无关。
+		kgrpc.Timeout(time.Duration(cfg.HTTPTimeoutMS) * time.Millisecond),
 		kgrpc.Middleware(instrumentation...),
 	}, options.GRPCServerOptions...)...)
 	if options.GRPCRoutes != nil {

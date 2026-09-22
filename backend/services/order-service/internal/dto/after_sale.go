@@ -53,26 +53,29 @@ type ReviewAfterSaleRequest struct {
 // 后三个字段是只读派生：审核福卡规则要用「这单承诺过几张福卡」，客服要对账要看
 // 「退的是哪一行」。它们不属于售后单（那张表上一个字都没存），所以在响应里明确分开。
 type AfterSaleView struct {
-	ID           string     `json:"id"`
-	AfterSaleNo  string     `json:"afterSaleNo"`
-	OrderID      string     `json:"orderId"`
-	OrderNo      string     `json:"orderNo"`
-	UserID       string     `json:"userId"`
-	Type         string     `json:"type"`
-	Scope        string     `json:"scope"`
-	OrderLineID  *string    `json:"orderLineId"`
-	Status       string     `json:"status"`
-	Reason       string     `json:"reason"`
-	Images       any        `json:"images"`
-	RefundAmount int64      `json:"refundAmount"`
-	RefundNo     string     `json:"refundNo"`
-	FailureCode  string     `json:"failureCode"`
-	ReviewedBy   *string    `json:"reviewedBy"`
-	ReviewedAt   *time.Time `json:"reviewedAt"`
-	ReviewRemark string     `json:"reviewRemark"`
-	RefundedAt   *time.Time `json:"refundedAt"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
+	ID           string  `json:"id"`
+	AfterSaleNo  string  `json:"afterSaleNo"`
+	OrderID      string  `json:"orderId"`
+	OrderNo      string  `json:"orderNo"`
+	UserID       string  `json:"userId"`
+	Type         string  `json:"type"`
+	Scope        string  `json:"scope"`
+	OrderLineID  *string `json:"orderLineId"`
+	Status       string  `json:"status"`
+	Reason       string  `json:"reason"`
+	Images       any     `json:"images"`
+	RefundAmount int64   `json:"refundAmount"`
+	RefundNo     string  `json:"refundNo"`
+	FailureCode  string  `json:"failureCode"`
+	// FailureMessage 是渠道回的原文。与 FailureCode 成对、只在退款失败时有值：码给机器认，
+	// 这句话给人读——后台那一行要解释「为什么没退成」，光看 ACQ.TRADE_NOT_EXIST 读不出来。
+	FailureMessage string     `json:"failureMessage"`
+	ReviewedBy     *string    `json:"reviewedBy"`
+	ReviewedAt     *time.Time `json:"reviewedAt"`
+	ReviewRemark   string     `json:"reviewRemark"`
+	RefundedAt     *time.Time `json:"refundedAt"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
 
 	// —— 只读派生（不属于售后单本身）——
 	// 订单承诺赠送的福卡张数与构成快照：审核福卡规则要看的东西。

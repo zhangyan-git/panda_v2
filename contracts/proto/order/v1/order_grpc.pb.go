@@ -7,7 +7,10 @@
 package v1
 
 import (
+	context "context"
 	grpc "google.golang.org/grpc"
+	codes "google.golang.org/grpc/codes"
+	status "google.golang.org/grpc/status"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -15,12 +18,109 @@ import (
 // Requires gRPC-Go v1.64.0 or later.
 const _ = grpc.SupportPackageIsVersion9
 
+const (
+	OrderService_CreateDeviceOrder_FullMethodName  = "/panda.order.v1.OrderService/CreateDeviceOrder"
+	OrderService_CreatePickupOrder_FullMethodName  = "/panda.order.v1.OrderService/CreatePickupOrder"
+	OrderService_CreateRenewalOrder_FullMethodName = "/panda.order.v1.OrderService/CreateRenewalOrder"
+	OrderService_GetOrder_FullMethodName           = "/panda.order.v1.OrderService/GetOrder"
+)
+
 // OrderServiceClient is the client API for OrderService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// Contract placeholder; domain methods are added only after business scope approval.
+// OrderService 是订单域对内的接口面。
+//
+// 今天只有一条 RPC，而且它是整条链路上唯一一条**由外部系统触发**的建单：线下刷卡机
+// （方案 §四）。其余下单都走 HTTP（小程序 / 屏幕扫码），那些路径上有用户、有会话、
+// 有定价链路；这一条没有——钱已经在机器上收过了，我们只是把既成事实记下来。
 type OrderServiceClient interface {
+	// CreateDeviceOrder 记下一笔设备刷卡订单，**直接落成已支付**。
+	//
+	// # 它做的事与别的下单路径相反
+	//
+	// 别的下单是「先建单 → pending_payment → 支付回调 → paid」；这一条是「钱已经收了 →
+	// 建一张 paid」。所以这里没有支付单、没有回调、也不进 payment 域：订单是订单域的事实，
+	// 而支付那件事在刷卡机上已经发生了，我们手里没有它的凭据（这是本批的已知缺口，
+	// 见下面 amount 的说明）。
+	//
+	// # 金额由调用方给，且不校验
+	//
+	// amount 是**设备上报的成交价**，不是我们算出来的。老系统就是这么做的
+	// （sync_order_handler.go:281：设备报价优先，为 0 才回退饮品售价），本批照搬。
+	//
+	// ⚠️ **这意味着订单金额与对账之间没有兜底**：设备报多少就是多少，跟饮品目录价对不上
+	// 也不会有人发现。方案把对账留到后面了，所以这条是**已知缺口**，不是设计好了——
+	// 真要做对账时，这条链路是第一个要挂上去的。
+	//
+	// # 幂等
+	//
+	// third_party_order_no 是幂等键（对方单号）。同一台机器重投、网络重放、我们自己点了两次，
+	// 都只会得到同一张单：命中的那一次返回 created=false 与既有订单，不报错。这是回调类
+	// 接口的标准形状——对方重试是正常的，报错会让它一直重试下去。
+	CreateDeviceOrder(ctx context.Context, in *CreateDeviceOrderRequest, opts ...grpc.CallOption) (*CreateDeviceOrderResponse, error)
+	// CreatePickupOrder 记下一笔取货码订单（方案 §四的第二条路）：钱**不是**在机器上收的，
+	// 而是从这台设备的咖啡余额里扣的，所以这一条比 CreateDeviceOrder 多两步。
+	//
+	// # 它比 CreateDeviceOrder 多出来的三件事
+	//
+	//  1. **定价由我们做**：报文里没有金额。价格取这台机器上那一杯的取货码价
+	//     （drinks.pickup_code_price），为 0 回落目录价，两个都是 0 就拒。刷卡机那条相反
+	//     （设备报价优先）——那边钱是机器收的，我们手里没有可核对的基准；这边的钱是我们
+	//     从自己账上扣的，价格必须是我们自己认的。
+	//  2. **先扣钱、后建单**：扣减经 coffee-machine-service 的 DeductDeviceBalance 做，它与
+	//     写一行余额流水是同一个事务。顺序反过来的话，中间断了是「建了单没扣钱」——白送一杯；
+	//     现在的顺序断了只是「扣了没建单」，可以拿对方单号补出来。
+	//  3. **验证码由咖啡机域校验**：pickup_password 原样转下去，比对在扣减那个事务里、
+	//     与设备行同一把锁之内（见 DeductDeviceBalanceRequest 的说明）。本服务不取回验证码
+	//     自己比，也不做任何形式的缓存。
+	//
+	// # 一个键，两个身份
+	//
+	// third_party_order_no 同时是**余额流水上的 request_id**与**订单的幂等键**。两处必须是
+	// 同一个值：分成两个值的话，一次重投可能撞上其中一个而不撞另一个，于是要么扣了两次钱、
+	// 要么建出第二张单——而这正是这条路要防的那件事。
+	CreatePickupOrder(ctx context.Context, in *CreatePickupOrderRequest, opts ...grpc.CallOption) (*CreatePickupOrderResponse, error)
+	// CreateRenewalOrder 记下一笔**会员续费**（连续包月每期扣款成功）。
+	//
+	// # 第三条「钱已在别处收过」的建单路
+	//
+	// 钱是微信代扣收的，回调落在 payment-service，再经 membership-service 走到这里。与前两条
+	// 不同的是：这一单**有用户**（user_id 非空，设备单那条是 NULL），而且它的会员权益在调用方
+	// 那边已经续完了——本服务只负责把订单这笔账记下来。
+	//
+	// # 为什么金额与套餐快照都由调用方给
+	//
+	// 因为**续费必须用签约时冻结的那一份**：订阅行上有签约时约定死的 price_cents / period，
+	// 会员行上有成交当时的 plan_code / plan_name 与会员价那三列。让本服务拿 plan_id 去会员域
+	// 现取（普通下单那条路是这么做的，见 CreateOrderRequest），等于让一次后台改套餐改写一个
+	// 正在被扣款的用户这一期买到了什么。
+	//
+	// ⚠️ 这与 CreateDeviceOrder 的 amount「由设备给且不校验」不是同一条口径：那边我们手里没有
+	// 基准；这边的基准就是订阅与会员行上的冻结值，**调用方必须照它们填**，而本服务不回头核对。
+	//
+	// # 幂等
+	//
+	// third_party_order_no 是幂等键，这里传**渠道流水号**（provider_transaction_id）——它是这笔
+	// 扣款在微信那一侧的唯一标识，也正是「这一期到底扣成没有」的凭据。同一个流水号重投只会得到
+	// 同一张单。与设备那两条共用 orders_third_party_order_no_key，所以命中时同样要校 payment_method
+	// （撞上别的种类的单回 ErrThirdPartyOrderNoTaken）。
+	//
+	// # 失败的那一期不建单
+	//
+	// 扣款失败时调用方**不要**调这条 RPC：那笔钱没收上来，没有订单可言。失败的期次留在
+	// payment_agreement_charges 里，后台订阅详情的「续费明细」看的就是它（老系统同此）。
+	CreateRenewalOrder(ctx context.Context, in *CreateRenewalOrderRequest, opts ...grpc.CallOption) (*CreateRenewalOrderResponse, error)
+	// GetOrder 按订单 ID 取一张订单的摘要。**只给内部服务**（今天只有 membership-service 用，
+	// 它要显示「首月支付」那一段：订单号 / 状态 / 实付 / 支付方式 / 支付时间 / 支付单号）。
+	//
+	// # 为什么支付流水号不在这里
+	//
+	// response 里给的是 payment_no（payment-service 的支付单号），**不是**渠道流水号
+	// （provider_transaction_id）。后者是对账凭据，按既定分工只有 payment-service 对外给
+	// ——所以调用方要渠道流水号就再问一次 payment-service，本服务不代转（见
+	// admin-web 的 PaymentTab 顶部那条注释，同一条规矩）。
+	GetOrder(ctx context.Context, in *GetOrderRequest, opts ...grpc.CallOption) (*GetOrderResponse, error)
 }
 
 type orderServiceClient struct {
@@ -31,12 +131,142 @@ func NewOrderServiceClient(cc grpc.ClientConnInterface) OrderServiceClient {
 	return &orderServiceClient{cc}
 }
 
+func (c *orderServiceClient) CreateDeviceOrder(ctx context.Context, in *CreateDeviceOrderRequest, opts ...grpc.CallOption) (*CreateDeviceOrderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateDeviceOrderResponse)
+	err := c.cc.Invoke(ctx, OrderService_CreateDeviceOrder_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) CreatePickupOrder(ctx context.Context, in *CreatePickupOrderRequest, opts ...grpc.CallOption) (*CreatePickupOrderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreatePickupOrderResponse)
+	err := c.cc.Invoke(ctx, OrderService_CreatePickupOrder_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) CreateRenewalOrder(ctx context.Context, in *CreateRenewalOrderRequest, opts ...grpc.CallOption) (*CreateRenewalOrderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateRenewalOrderResponse)
+	err := c.cc.Invoke(ctx, OrderService_CreateRenewalOrder_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) GetOrder(ctx context.Context, in *GetOrderRequest, opts ...grpc.CallOption) (*GetOrderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetOrderResponse)
+	err := c.cc.Invoke(ctx, OrderService_GetOrder_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OrderServiceServer is the server API for OrderService service.
 // All implementations must embed UnimplementedOrderServiceServer
 // for forward compatibility.
 //
-// Contract placeholder; domain methods are added only after business scope approval.
+// OrderService 是订单域对内的接口面。
+//
+// 今天只有一条 RPC，而且它是整条链路上唯一一条**由外部系统触发**的建单：线下刷卡机
+// （方案 §四）。其余下单都走 HTTP（小程序 / 屏幕扫码），那些路径上有用户、有会话、
+// 有定价链路；这一条没有——钱已经在机器上收过了，我们只是把既成事实记下来。
 type OrderServiceServer interface {
+	// CreateDeviceOrder 记下一笔设备刷卡订单，**直接落成已支付**。
+	//
+	// # 它做的事与别的下单路径相反
+	//
+	// 别的下单是「先建单 → pending_payment → 支付回调 → paid」；这一条是「钱已经收了 →
+	// 建一张 paid」。所以这里没有支付单、没有回调、也不进 payment 域：订单是订单域的事实，
+	// 而支付那件事在刷卡机上已经发生了，我们手里没有它的凭据（这是本批的已知缺口，
+	// 见下面 amount 的说明）。
+	//
+	// # 金额由调用方给，且不校验
+	//
+	// amount 是**设备上报的成交价**，不是我们算出来的。老系统就是这么做的
+	// （sync_order_handler.go:281：设备报价优先，为 0 才回退饮品售价），本批照搬。
+	//
+	// ⚠️ **这意味着订单金额与对账之间没有兜底**：设备报多少就是多少，跟饮品目录价对不上
+	// 也不会有人发现。方案把对账留到后面了，所以这条是**已知缺口**，不是设计好了——
+	// 真要做对账时，这条链路是第一个要挂上去的。
+	//
+	// # 幂等
+	//
+	// third_party_order_no 是幂等键（对方单号）。同一台机器重投、网络重放、我们自己点了两次，
+	// 都只会得到同一张单：命中的那一次返回 created=false 与既有订单，不报错。这是回调类
+	// 接口的标准形状——对方重试是正常的，报错会让它一直重试下去。
+	CreateDeviceOrder(context.Context, *CreateDeviceOrderRequest) (*CreateDeviceOrderResponse, error)
+	// CreatePickupOrder 记下一笔取货码订单（方案 §四的第二条路）：钱**不是**在机器上收的，
+	// 而是从这台设备的咖啡余额里扣的，所以这一条比 CreateDeviceOrder 多两步。
+	//
+	// # 它比 CreateDeviceOrder 多出来的三件事
+	//
+	//  1. **定价由我们做**：报文里没有金额。价格取这台机器上那一杯的取货码价
+	//     （drinks.pickup_code_price），为 0 回落目录价，两个都是 0 就拒。刷卡机那条相反
+	//     （设备报价优先）——那边钱是机器收的，我们手里没有可核对的基准；这边的钱是我们
+	//     从自己账上扣的，价格必须是我们自己认的。
+	//  2. **先扣钱、后建单**：扣减经 coffee-machine-service 的 DeductDeviceBalance 做，它与
+	//     写一行余额流水是同一个事务。顺序反过来的话，中间断了是「建了单没扣钱」——白送一杯；
+	//     现在的顺序断了只是「扣了没建单」，可以拿对方单号补出来。
+	//  3. **验证码由咖啡机域校验**：pickup_password 原样转下去，比对在扣减那个事务里、
+	//     与设备行同一把锁之内（见 DeductDeviceBalanceRequest 的说明）。本服务不取回验证码
+	//     自己比，也不做任何形式的缓存。
+	//
+	// # 一个键，两个身份
+	//
+	// third_party_order_no 同时是**余额流水上的 request_id**与**订单的幂等键**。两处必须是
+	// 同一个值：分成两个值的话，一次重投可能撞上其中一个而不撞另一个，于是要么扣了两次钱、
+	// 要么建出第二张单——而这正是这条路要防的那件事。
+	CreatePickupOrder(context.Context, *CreatePickupOrderRequest) (*CreatePickupOrderResponse, error)
+	// CreateRenewalOrder 记下一笔**会员续费**（连续包月每期扣款成功）。
+	//
+	// # 第三条「钱已在别处收过」的建单路
+	//
+	// 钱是微信代扣收的，回调落在 payment-service，再经 membership-service 走到这里。与前两条
+	// 不同的是：这一单**有用户**（user_id 非空，设备单那条是 NULL），而且它的会员权益在调用方
+	// 那边已经续完了——本服务只负责把订单这笔账记下来。
+	//
+	// # 为什么金额与套餐快照都由调用方给
+	//
+	// 因为**续费必须用签约时冻结的那一份**：订阅行上有签约时约定死的 price_cents / period，
+	// 会员行上有成交当时的 plan_code / plan_name 与会员价那三列。让本服务拿 plan_id 去会员域
+	// 现取（普通下单那条路是这么做的，见 CreateOrderRequest），等于让一次后台改套餐改写一个
+	// 正在被扣款的用户这一期买到了什么。
+	//
+	// ⚠️ 这与 CreateDeviceOrder 的 amount「由设备给且不校验」不是同一条口径：那边我们手里没有
+	// 基准；这边的基准就是订阅与会员行上的冻结值，**调用方必须照它们填**，而本服务不回头核对。
+	//
+	// # 幂等
+	//
+	// third_party_order_no 是幂等键，这里传**渠道流水号**（provider_transaction_id）——它是这笔
+	// 扣款在微信那一侧的唯一标识，也正是「这一期到底扣成没有」的凭据。同一个流水号重投只会得到
+	// 同一张单。与设备那两条共用 orders_third_party_order_no_key，所以命中时同样要校 payment_method
+	// （撞上别的种类的单回 ErrThirdPartyOrderNoTaken）。
+	//
+	// # 失败的那一期不建单
+	//
+	// 扣款失败时调用方**不要**调这条 RPC：那笔钱没收上来，没有订单可言。失败的期次留在
+	// payment_agreement_charges 里，后台订阅详情的「续费明细」看的就是它（老系统同此）。
+	CreateRenewalOrder(context.Context, *CreateRenewalOrderRequest) (*CreateRenewalOrderResponse, error)
+	// GetOrder 按订单 ID 取一张订单的摘要。**只给内部服务**（今天只有 membership-service 用，
+	// 它要显示「首月支付」那一段：订单号 / 状态 / 实付 / 支付方式 / 支付时间 / 支付单号）。
+	//
+	// # 为什么支付流水号不在这里
+	//
+	// response 里给的是 payment_no（payment-service 的支付单号），**不是**渠道流水号
+	// （provider_transaction_id）。后者是对账凭据，按既定分工只有 payment-service 对外给
+	// ——所以调用方要渠道流水号就再问一次 payment-service，本服务不代转（见
+	// admin-web 的 PaymentTab 顶部那条注释，同一条规矩）。
+	GetOrder(context.Context, *GetOrderRequest) (*GetOrderResponse, error)
 	mustEmbedUnimplementedOrderServiceServer()
 }
 
@@ -47,6 +277,18 @@ type OrderServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedOrderServiceServer struct{}
 
+func (UnimplementedOrderServiceServer) CreateDeviceOrder(context.Context, *CreateDeviceOrderRequest) (*CreateDeviceOrderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateDeviceOrder not implemented")
+}
+func (UnimplementedOrderServiceServer) CreatePickupOrder(context.Context, *CreatePickupOrderRequest) (*CreatePickupOrderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreatePickupOrder not implemented")
+}
+func (UnimplementedOrderServiceServer) CreateRenewalOrder(context.Context, *CreateRenewalOrderRequest) (*CreateRenewalOrderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateRenewalOrder not implemented")
+}
+func (UnimplementedOrderServiceServer) GetOrder(context.Context, *GetOrderRequest) (*GetOrderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetOrder not implemented")
+}
 func (UnimplementedOrderServiceServer) mustEmbedUnimplementedOrderServiceServer() {}
 func (UnimplementedOrderServiceServer) testEmbeddedByValue()                      {}
 
@@ -68,13 +310,102 @@ func RegisterOrderServiceServer(s grpc.ServiceRegistrar, srv OrderServiceServer)
 	s.RegisterService(&OrderService_ServiceDesc, srv)
 }
 
+func _OrderService_CreateDeviceOrder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateDeviceOrderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).CreateDeviceOrder(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_CreateDeviceOrder_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).CreateDeviceOrder(ctx, req.(*CreateDeviceOrderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_CreatePickupOrder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreatePickupOrderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).CreatePickupOrder(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_CreatePickupOrder_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).CreatePickupOrder(ctx, req.(*CreatePickupOrderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_CreateRenewalOrder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateRenewalOrderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).CreateRenewalOrder(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_CreateRenewalOrder_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).CreateRenewalOrder(ctx, req.(*CreateRenewalOrderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_GetOrder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOrderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).GetOrder(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_GetOrder_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).GetOrder(ctx, req.(*GetOrderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OrderService_ServiceDesc is the grpc.ServiceDesc for OrderService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var OrderService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "panda.order.v1.OrderService",
 	HandlerType: (*OrderServiceServer)(nil),
-	Methods:     []grpc.MethodDesc{},
-	Streams:     []grpc.StreamDesc{},
-	Metadata:    "order/v1/order.proto",
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "CreateDeviceOrder",
+			Handler:    _OrderService_CreateDeviceOrder_Handler,
+		},
+		{
+			MethodName: "CreatePickupOrder",
+			Handler:    _OrderService_CreatePickupOrder_Handler,
+		},
+		{
+			MethodName: "CreateRenewalOrder",
+			Handler:    _OrderService_CreateRenewalOrder_Handler,
+		},
+		{
+			MethodName: "GetOrder",
+			Handler:    _OrderService_GetOrder_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "order/v1/order.proto",
 }

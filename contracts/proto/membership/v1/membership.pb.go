@@ -10,6 +10,7 @@ import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
+	sync "sync"
 	unsafe "unsafe"
 )
 
@@ -20,20 +21,446 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type GetMemberPriceEntitlementRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 小程序用户 ID，值引用（身份服务的用户）。本服务不持有用户资料。
+	UserId        string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMemberPriceEntitlementRequest) Reset() {
+	*x = GetMemberPriceEntitlementRequest{}
+	mi := &file_membership_v1_membership_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMemberPriceEntitlementRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMemberPriceEntitlementRequest) ProtoMessage() {}
+
+func (x *GetMemberPriceEntitlementRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_membership_v1_membership_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMemberPriceEntitlementRequest.ProtoReflect.Descriptor instead.
+func (*GetMemberPriceEntitlementRequest) Descriptor() ([]byte, []int) {
+	return file_membership_v1_membership_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *GetMemberPriceEntitlementRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+type GetMemberPriceEntitlementResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 此刻是不是有效会员：status=active 且 expire_at 还没到。
+	//
+	// 冻结中的会员这里是 false。冻结是「权益暂停」（争议 / 风控），到期时间不动、解冻后继续，
+	// 但它停着的时候不该享价——否则风控这一刀就没有任何效果。
+	Active bool `protobuf:"varint,1,opt,name=active,proto3" json:"active,omitempty"`
+	// 此刻这一单能不能**直接**按会员价算。
+	//
+	// 只有年度会员（member_price_mode=auto）为真。连续包月（coupon）为假——**他不是没会员，
+	// 是他的会员价长在券上**：下单时用户自己挑一张会员价体验券，核销才享价。调用方看到
+	// active=true 而这里为 false，正确的做法不是「当作没会员」，而是「按原价算，把券的选择
+	// 交给用户」。
+	GrantsMemberPrice bool `protobuf:"varint,2,opt,name=grants_member_price,json=grantsMemberPrice,proto3" json:"grants_member_price,omitempty"`
+	// 会员价的来路，取值与会员库 membership_plans.member_price_mode 逐字一致：
+	//
+	//	auto   会员本人自动享（grants_member_price 必为 true）
+	//	coupon 靠会员价体验券（grants_member_price 必为 false，券的事归 coupon-service）
+	//
+	// 不是会员（或已过期）时为空串。
+	//
+	// 它存在的理由是**那句话说不出口**：只给 grants_member_price 的话，调用方没法把
+	// 「你是会员，但要用券」与「你不是会员」分开，而这两句话在收银台上差得很远。
+	MemberPriceMode string `protobuf:"bytes,3,opt,name=member_price_mode,json=memberPriceMode,proto3" json:"member_price_mode,omitempty"`
+	// 当前生效的套餐编码与名字（成交快照，不是现查套餐——后台改过套餐名也不影响这里），
+	// 用于「您的 X 会员有效期至 Y」这类文案。不是会员时为空串。
+	PlanCode string `protobuf:"bytes,4,opt,name=plan_code,json=planCode,proto3" json:"plan_code,omitempty"`
+	PlanName string `protobuf:"bytes,5,opt,name=plan_name,json=planName,proto3" json:"plan_name,omitempty"`
+	// 会员到期时间，Unix 秒。不是会员时为 0。
+	ExpireAtUnix  int64 `protobuf:"varint,6,opt,name=expire_at_unix,json=expireAtUnix,proto3" json:"expire_at_unix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMemberPriceEntitlementResponse) Reset() {
+	*x = GetMemberPriceEntitlementResponse{}
+	mi := &file_membership_v1_membership_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMemberPriceEntitlementResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMemberPriceEntitlementResponse) ProtoMessage() {}
+
+func (x *GetMemberPriceEntitlementResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_membership_v1_membership_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMemberPriceEntitlementResponse.ProtoReflect.Descriptor instead.
+func (*GetMemberPriceEntitlementResponse) Descriptor() ([]byte, []int) {
+	return file_membership_v1_membership_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *GetMemberPriceEntitlementResponse) GetActive() bool {
+	if x != nil {
+		return x.Active
+	}
+	return false
+}
+
+func (x *GetMemberPriceEntitlementResponse) GetGrantsMemberPrice() bool {
+	if x != nil {
+		return x.GrantsMemberPrice
+	}
+	return false
+}
+
+func (x *GetMemberPriceEntitlementResponse) GetMemberPriceMode() string {
+	if x != nil {
+		return x.MemberPriceMode
+	}
+	return ""
+}
+
+func (x *GetMemberPriceEntitlementResponse) GetPlanCode() string {
+	if x != nil {
+		return x.PlanCode
+	}
+	return ""
+}
+
+func (x *GetMemberPriceEntitlementResponse) GetPlanName() string {
+	if x != nil {
+		return x.PlanName
+	}
+	return ""
+}
+
+func (x *GetMemberPriceEntitlementResponse) GetExpireAtUnix() int64 {
+	if x != nil {
+		return x.ExpireAtUnix
+	}
+	return 0
+}
+
+type GetMembershipPlanRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 套餐 ID（membership_plans.id）。**客户端只需要给这一个值**：价格、时长、券配置一概不从
+	// 外面收，收了就要有人去核对，而核对的那一处迟早会被绕过。
+	PlanId        string `protobuf:"bytes,1,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMembershipPlanRequest) Reset() {
+	*x = GetMembershipPlanRequest{}
+	mi := &file_membership_v1_membership_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMembershipPlanRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMembershipPlanRequest) ProtoMessage() {}
+
+func (x *GetMembershipPlanRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_membership_v1_membership_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMembershipPlanRequest.ProtoReflect.Descriptor instead.
+func (*GetMembershipPlanRequest) Descriptor() ([]byte, []int) {
+	return file_membership_v1_membership_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *GetMembershipPlanRequest) GetPlanId() string {
+	if x != nil {
+		return x.PlanId
+	}
+	return ""
+}
+
+type GetMembershipPlanResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Plan          *MembershipPlan        `protobuf:"bytes,1,opt,name=plan,proto3" json:"plan,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMembershipPlanResponse) Reset() {
+	*x = GetMembershipPlanResponse{}
+	mi := &file_membership_v1_membership_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMembershipPlanResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMembershipPlanResponse) ProtoMessage() {}
+
+func (x *GetMembershipPlanResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_membership_v1_membership_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMembershipPlanResponse.ProtoReflect.Descriptor instead.
+func (*GetMembershipPlanResponse) Descriptor() ([]byte, []int) {
+	return file_membership_v1_membership_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GetMembershipPlanResponse) GetPlan() *MembershipPlan {
+	if x != nil {
+		return x.Plan
+	}
+	return nil
+}
+
+// MembershipPlan 是「下单要用的那一组」列，不是整行。
+//
+// 没给的是 description / benefits / sort_order / status / created_by 这些展示与运维字段：调用方
+// 是订单域，它要把这份答案冻进订单行，而冻进去的每一个字段都得有人读——多给一个就多一处
+// 「两个服务对它的理解迟早不一样」。**签约模板（wechat_plan_id）也不在这里**：签委托代扣是
+// 另一条路（payment-service 拿套餐去签），下单不碰它。
+type MembershipPlan struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	PlanId string                 `protobuf:"bytes,1,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
+	// code 与 name 是成交快照上的身份：订单行与事件里都存这一份拷贝，套餐改名不影响历史订单。
+	Code string `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
+	Name string `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	// 套餐价，单位分。**它才是这一单会员行的价格**——order-service 拿它算 original_unit_price 与
+	// payable_amount，不读请求里的任何价格。
+	PriceCents int64 `protobuf:"varint,4,opt,name=price_cents,json=priceCents,proto3" json:"price_cents,omitempty"`
+	// 每期时长：month / year + 个数（连续包月 = month/1，年度会员 = year/1）。续期是日历加法，
+	// 别换算成天数。
+	Period      string `protobuf:"bytes,5,opt,name=period,proto3" json:"period,omitempty"`
+	PeriodCount int32  `protobuf:"varint,6,opt,name=period_count,json=periodCount,proto3" json:"period_count,omitempty"`
+	// 这个套餐要不要签微信委托代扣（到期自动续费）。
+	AutoRenew bool `protobuf:"varint,7,opt,name=auto_renew,json=autoRenew,proto3" json:"auto_renew,omitempty"`
+	// 会员价的来路与 coupon 模式下的发券配置，取值与 membership_plans 上的同名列逐字一致。
+	//
+	// 这三个字段会原样进订单行快照、再随 order.paid 回来：本服务开通与发券用的是**成交快照**，
+	// 不是那时现查的套餐（运营改了配置也不能改写已经卖出去的那一份）。
+	MemberPriceMode             string `protobuf:"bytes,8,opt,name=member_price_mode,json=memberPriceMode,proto3" json:"member_price_mode,omitempty"`
+	MemberPriceCouponTemplateId string `protobuf:"bytes,9,opt,name=member_price_coupon_template_id,json=memberPriceCouponTemplateId,proto3" json:"member_price_coupon_template_id,omitempty"`
+	MemberPriceCouponsPerPeriod int32  `protobuf:"varint,10,opt,name=member_price_coupons_per_period,json=memberPriceCouponsPerPeriod,proto3" json:"member_price_coupons_per_period,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
+}
+
+func (x *MembershipPlan) Reset() {
+	*x = MembershipPlan{}
+	mi := &file_membership_v1_membership_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MembershipPlan) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MembershipPlan) ProtoMessage() {}
+
+func (x *MembershipPlan) ProtoReflect() protoreflect.Message {
+	mi := &file_membership_v1_membership_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MembershipPlan.ProtoReflect.Descriptor instead.
+func (*MembershipPlan) Descriptor() ([]byte, []int) {
+	return file_membership_v1_membership_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *MembershipPlan) GetPlanId() string {
+	if x != nil {
+		return x.PlanId
+	}
+	return ""
+}
+
+func (x *MembershipPlan) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
+func (x *MembershipPlan) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *MembershipPlan) GetPriceCents() int64 {
+	if x != nil {
+		return x.PriceCents
+	}
+	return 0
+}
+
+func (x *MembershipPlan) GetPeriod() string {
+	if x != nil {
+		return x.Period
+	}
+	return ""
+}
+
+func (x *MembershipPlan) GetPeriodCount() int32 {
+	if x != nil {
+		return x.PeriodCount
+	}
+	return 0
+}
+
+func (x *MembershipPlan) GetAutoRenew() bool {
+	if x != nil {
+		return x.AutoRenew
+	}
+	return false
+}
+
+func (x *MembershipPlan) GetMemberPriceMode() string {
+	if x != nil {
+		return x.MemberPriceMode
+	}
+	return ""
+}
+
+func (x *MembershipPlan) GetMemberPriceCouponTemplateId() string {
+	if x != nil {
+		return x.MemberPriceCouponTemplateId
+	}
+	return ""
+}
+
+func (x *MembershipPlan) GetMemberPriceCouponsPerPeriod() int32 {
+	if x != nil {
+		return x.MemberPriceCouponsPerPeriod
+	}
+	return 0
+}
+
 var File_membership_v1_membership_proto protoreflect.FileDescriptor
 
 const file_membership_v1_membership_proto_rawDesc = "" +
 	"\n" +
-	"\x1emembership/v1/membership.proto\x12\x13panda.membership.v12\x13\n" +
-	"\x11MembershipServiceB=Z;github.com/panda-dev/panda-v2/contracts/proto/membership/v1b\x06proto3"
+	"\x1emembership/v1/membership.proto\x12\x13panda.membership.v1\";\n" +
+	" GetMemberPriceEntitlementRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\"\xf7\x01\n" +
+	"!GetMemberPriceEntitlementResponse\x12\x16\n" +
+	"\x06active\x18\x01 \x01(\bR\x06active\x12.\n" +
+	"\x13grants_member_price\x18\x02 \x01(\bR\x11grantsMemberPrice\x12*\n" +
+	"\x11member_price_mode\x18\x03 \x01(\tR\x0fmemberPriceMode\x12\x1b\n" +
+	"\tplan_code\x18\x04 \x01(\tR\bplanCode\x12\x1b\n" +
+	"\tplan_name\x18\x05 \x01(\tR\bplanName\x12$\n" +
+	"\x0eexpire_at_unix\x18\x06 \x01(\x03R\fexpireAtUnix\"3\n" +
+	"\x18GetMembershipPlanRequest\x12\x17\n" +
+	"\aplan_id\x18\x01 \x01(\tR\x06planId\"T\n" +
+	"\x19GetMembershipPlanResponse\x127\n" +
+	"\x04plan\x18\x01 \x01(\v2#.panda.membership.v1.MembershipPlanR\x04plan\"\x84\x03\n" +
+	"\x0eMembershipPlan\x12\x17\n" +
+	"\aplan_id\x18\x01 \x01(\tR\x06planId\x12\x12\n" +
+	"\x04code\x18\x02 \x01(\tR\x04code\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12\x1f\n" +
+	"\vprice_cents\x18\x04 \x01(\x03R\n" +
+	"priceCents\x12\x16\n" +
+	"\x06period\x18\x05 \x01(\tR\x06period\x12!\n" +
+	"\fperiod_count\x18\x06 \x01(\x05R\vperiodCount\x12\x1d\n" +
+	"\n" +
+	"auto_renew\x18\a \x01(\bR\tautoRenew\x12*\n" +
+	"\x11member_price_mode\x18\b \x01(\tR\x0fmemberPriceMode\x12D\n" +
+	"\x1fmember_price_coupon_template_id\x18\t \x01(\tR\x1bmemberPriceCouponTemplateId\x12D\n" +
+	"\x1fmember_price_coupons_per_period\x18\n" +
+	" \x01(\x05R\x1bmemberPriceCouponsPerPeriod2\x94\x02\n" +
+	"\x11MembershipService\x12\x8a\x01\n" +
+	"\x19GetMemberPriceEntitlement\x125.panda.membership.v1.GetMemberPriceEntitlementRequest\x1a6.panda.membership.v1.GetMemberPriceEntitlementResponse\x12r\n" +
+	"\x11GetMembershipPlan\x12-.panda.membership.v1.GetMembershipPlanRequest\x1a..panda.membership.v1.GetMembershipPlanResponseB=Z;github.com/panda-dev/panda-v2/contracts/proto/membership/v1b\x06proto3"
 
-var file_membership_v1_membership_proto_goTypes = []any{}
+var (
+	file_membership_v1_membership_proto_rawDescOnce sync.Once
+	file_membership_v1_membership_proto_rawDescData []byte
+)
+
+func file_membership_v1_membership_proto_rawDescGZIP() []byte {
+	file_membership_v1_membership_proto_rawDescOnce.Do(func() {
+		file_membership_v1_membership_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_membership_v1_membership_proto_rawDesc), len(file_membership_v1_membership_proto_rawDesc)))
+	})
+	return file_membership_v1_membership_proto_rawDescData
+}
+
+var file_membership_v1_membership_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_membership_v1_membership_proto_goTypes = []any{
+	(*GetMemberPriceEntitlementRequest)(nil),  // 0: panda.membership.v1.GetMemberPriceEntitlementRequest
+	(*GetMemberPriceEntitlementResponse)(nil), // 1: panda.membership.v1.GetMemberPriceEntitlementResponse
+	(*GetMembershipPlanRequest)(nil),          // 2: panda.membership.v1.GetMembershipPlanRequest
+	(*GetMembershipPlanResponse)(nil),         // 3: panda.membership.v1.GetMembershipPlanResponse
+	(*MembershipPlan)(nil),                    // 4: panda.membership.v1.MembershipPlan
+}
 var file_membership_v1_membership_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	4, // 0: panda.membership.v1.GetMembershipPlanResponse.plan:type_name -> panda.membership.v1.MembershipPlan
+	0, // 1: panda.membership.v1.MembershipService.GetMemberPriceEntitlement:input_type -> panda.membership.v1.GetMemberPriceEntitlementRequest
+	2, // 2: panda.membership.v1.MembershipService.GetMembershipPlan:input_type -> panda.membership.v1.GetMembershipPlanRequest
+	1, // 3: panda.membership.v1.MembershipService.GetMemberPriceEntitlement:output_type -> panda.membership.v1.GetMemberPriceEntitlementResponse
+	3, // 4: panda.membership.v1.MembershipService.GetMembershipPlan:output_type -> panda.membership.v1.GetMembershipPlanResponse
+	3, // [3:5] is the sub-list for method output_type
+	1, // [1:3] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_membership_v1_membership_proto_init() }
@@ -47,12 +474,13 @@ func file_membership_v1_membership_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_membership_v1_membership_proto_rawDesc), len(file_membership_v1_membership_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   0,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_membership_v1_membership_proto_goTypes,
 		DependencyIndexes: file_membership_v1_membership_proto_depIdxs,
+		MessageInfos:      file_membership_v1_membership_proto_msgTypes,
 	}.Build()
 	File_membership_v1_membership_proto = out.File
 	file_membership_v1_membership_proto_goTypes = nil

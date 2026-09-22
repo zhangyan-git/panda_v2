@@ -9,12 +9,14 @@ import {
   PageContainer,
   ProDescriptions,
   ProFormDependency,
+  ProFormDateTimePicker,
   ProFormDigit,
+  ProFormSelect,
   ProFormTextArea,
   ProTable,
 } from '@ant-design/pro-components';
 import type { ActionType, ProColumns } from '@ant-design/pro-components';
-import { useAccess } from '@umijs/max';
+import { history, useAccess } from '@umijs/max';
 import { Avatar, Button, Drawer, message, Popconfirm, Space, Tag } from 'antd';
 import { useRef, useState } from 'react';
 import {
@@ -25,6 +27,16 @@ import {
   type CoffeeBeanEntry,
   type CoffeeBeanEntryType,
 } from '../../services/coffeeBean';
+import { formatDateTime, toRFC3339 } from '../../services/datetime';
+import { enumMeta } from '../../services/labels';
+import {
+  grantMembership,
+  listMembershipPlans,
+  listMemberships,
+  type Membership,
+  type MembershipPlan,
+} from '../../services/membership';
+import { MEMBERSHIP_STATUS } from '../../services/membershipLabels';
 import {
   getMiniappUser,
   listMiniappUsers,
@@ -35,8 +47,10 @@ import {
   type MiniappUserStatus,
   type MiniappWechatIdentity,
 } from '../../services/miniappUser';
-import { toPageParams } from '../../services/pagination';
+import { fenToYuan, formatSignedYuan, formatYuan, yuanToFen } from '../../services/money';
+import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 import { requestErrorMessage } from '../../services/requestError';
+import { listStores, type Store } from '../../services/store';
 
 /**
  * 状态展示。deleted 是用户自己注销后留下的终态，后台不能把他改回去——
@@ -77,10 +91,12 @@ const beanEntryTypeMeta: Record<CoffeeBeanEntryType, { text: string; color: stri
 };
 
 /**
- * 一笔流水的金额文案。必须带符号：这个数是有符号的（调整充值为正、扣减为负），
- * 只显示绝对值会让一次扣减看起来像又充了一笔。
+ * 咖啡豆的金额：**接口给的是「分」，这一页一律按「元」展示与录入**——与订单、优惠券、
+ * 设备余额同一条约定（见 services/money.ts 开头那段）。
+ *
+ * 换算只发生在本文件的边界上：读出来的分过一遍 formatYuan，填进去的元过一遍 yuanToFen，
+ * 中间不再出现第二种单位。
  */
-const beanAmountText = (amount: number) => (amount > 0 ? `+${amount}` : `${amount}`);
 
 /** axios 错误里的 HTTP 状态码，没有响应（断网、超时）时是 undefined。 */
 const statusOf = (error: unknown) =>
@@ -106,11 +122,28 @@ export default function MiniappUsersPage() {
    */
   const [beanAccount, setBeanAccount] = useState<CoffeeBeanAccount | null>();
 
+  /**
+   * 会员资格（membership-service）。比咖啡豆**多一档**，四态：
+   *   undefined = 还没拉或正在拉，界面写「读取中…」；
+   *   null      = 拉了但失败（多半是没有 membership:read）；
+   *   'none'    = 拉到了，这个人**确实没有**会员资格；
+   *   对象      = 拉到了。
+   *
+   * 三态不够用正是因为这个 'none'：客服点开一个人最先问的就是「他是不是会员」，
+   * 而「不是会员」与「读不到」在界面上必须是两句不同的话——混成一个样子，前者的
+   * 答案是「不是」还是「不知道」就分不出来了。
+   */
+  const [membership, setMembership] = useState<Membership | 'none' | null>();
+
   // 余额调整
   const [beanAdjustOpen, setBeanAdjustOpen] = useState(false);
   // 幂等键，跟着「打开弹窗」走：同一个 requestId 重发只会记一次账，所以它必须在用户改金额
   // 时保持不动，只在这一轮调整结束时才换。
   const [beanRequestId, setBeanRequestId] = useState('');
+
+  // 开通会员。幂等键的规矩与余额调整一样：跟着「打开弹窗」走一次，重发沿用它。
+  const [grantOpen, setGrantOpen] = useState(false);
+  const [grantRequestId, setGrantRequestId] = useState('');
 
   const canManage = access.canManageMiniappUsers;
 
@@ -131,6 +164,21 @@ export default function MiniappUsersPage() {
     }
   };
 
+  /**
+   * 重新取一次这个人的会员资格。
+   *
+   * 按 userId 精确筛、只取一条：`memberships_user_unique` 保证一个用户至多一条会员记录，
+   * 所以「取第一条」不是「随便挑一条」。
+   */
+  const refreshMembership = async (id: string) => {
+    try {
+      const page = await listMemberships({ userId: id, page: 1, pageSize: 1 });
+      setMembership(page.items[0] ?? 'none');
+    } catch {
+      setMembership(null);
+    }
+  };
+
   const openDetail = async (id: string) => {
     try {
       setDetail(await getMiniappUser(id));
@@ -138,10 +186,12 @@ export default function MiniappUsersPage() {
       message.error(requestErrorMessage(error, '加载详情失败'));
       return;
     }
-    // 余额单独拉、单独失败：它是另一个上游（account-service）的另一件事，读不到只是那一个
-    // 区块显示「读不到余额」，不该让整个抽屉打不开——没有 account:read 的账号照样要能看用户。
+    // 余额与会员各自单独拉、单独失败：它们是另外两个上游（account-service / membership-service）
+    // 的两件事，读不到只是那一个区块显示「读不到」，不该让整个抽屉打不开——没有那两枚读权限的
+    // 账号照样要能看用户。先把两处都置回「读取中」，否则会拿上一个人的值糊在这一档上。
     setBeanAccount(undefined);
-    await refreshBeanAccount(id);
+    setMembership(undefined);
+    await Promise.all([refreshBeanAccount(id), refreshMembership(id)]);
   };
 
   const changeStatus = async (row: MiniappUser, status: 'active' | 'disabled') => {
@@ -345,20 +395,23 @@ export default function MiniappUsersPage() {
       },
     },
     {
-      title: '金额（分）',
+      // 带符号（+¥12.34 / -¥0.10）：这个数是有符号的（充值为正、扣减为负），只摆绝对值
+      // 会让一次扣减看起来像又进了一笔钱。
+      title: '金额（元）',
       dataIndex: 'amount',
-      width: 100,
+      width: 110,
       render: (_, row) => (
         <span style={{ color: row.amount > 0 ? '#3f8600' : '#cf1322' }}>
-          {beanAmountText(row.amount)}
+          {formatSignedYuan(row.amount)}
         </span>
       ),
     },
     {
       // 「变动后」而不是当前余额：冲正重放时只有它能回答「当时是多少」。
-      title: '变动后（分）',
+      title: '变动后（元）',
       dataIndex: 'balanceAfter',
       width: 110,
+      render: (_, row) => `¥${formatYuan(row.balanceAfter)}`,
     },
     {
       // 后端给的那句话（「后台充值」「下单支付」…），下面是操作人填的理由——调整那一条
@@ -382,6 +435,10 @@ export default function MiniappUsersPage() {
       render: (_, row) => row.referenceNo || '—',
     },
   ];
+
+  // 会员那一块要的三态里有两态不是对象（'none' / null），所以先把「真有会员」这一档
+  // 收成一个对象再渲染，免得每处都写一遍 `membership !== 'none'` 的收窄。
+  const currentMembership = typeof membership === 'object' && membership !== null ? membership : null;
 
   return (
     <PageContainer title="小程序用户">
@@ -478,10 +535,82 @@ export default function MiniappUsersPage() {
               size="small"
             />
 
-            {/* 咖啡豆账户（account-service 的用户维度余额，单位分）。
+            {/* 会员资格（membership-service）。与下面那块同理：它不是用户服务给的，
+                `detail` 里没有，要另发一次请求。会员库不 join 用户服务（跨库），所以
+                这里只拿得到一个 userId、一条资格，昵称手机号还是上面那份 detail。
+
+                **这里能开会员**（2026-09 起）：本域的设计是「会员在别处成交、在这里生效」，
+                唯一的例外就是这一颗按钮——客服补偿、线下活动、渠道争议都没有订单，不给这个
+                入口就没有任何补救路径。它是 membership:adjust（**直接白送钱**那一枚），
+                不是 manage，所以只有拿得到那枚权限的人才看得见。
+
+                已经有会员的人**不显示它**：后端遇到已有会员一律 409，不叠加续期。要给已经
+                过期的人恢复权益，走会员详情页的「调整有效期」——那本来就是干这个的。 */}
+            <div
+              style={{
+                marginTop: 24,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+              }}
+            >
+              <Space size={8}>
+                <strong>会员</strong>
+                {membership === undefined && <span style={{ color: '#8c8c8c' }}>读取中…</span>}
+                {membership === null && (
+                  <span style={{ color: '#8c8c8c' }}>读不到会员资格（可能没有查看权限）</span>
+                )}
+                {membership === 'none' && <Tag>非会员</Tag>}
+                {currentMembership && (
+                  <>
+                    <Tag color={enumMeta(MEMBERSHIP_STATUS, currentMembership.status).color}>
+                      {enumMeta(MEMBERSHIP_STATUS, currentMembership.status).text}
+                    </Tag>
+                    <span>{currentMembership.planName}</span>
+                    <span style={{ color: '#8c8c8c' }}>
+                      {/* 「有效至」还是「到期于」看接口算好的 active，不重算：
+                          到期扫描没跑完的那段时间里 status 还是 active 而 expireAt 已经过了。 */}
+                      {currentMembership.active ? '有效至' : '到期于'}{' '}
+                      {formatDateTime(currentMembership.expireAt)}
+                    </span>
+                    {/* 归属门店：「这个人算哪家店的业绩」，不参与任何金额计算。空串是没有归属，
+                        不是错误——而名字是后端现解的，解不出来时也是空串（这时候退回显示 id，
+                        至少还能对上账）。 */}
+                    <span style={{ color: '#8c8c8c' }}>
+                      归属门店：
+                      {currentMembership.storeName || currentMembership.storeId || '—'}
+                    </span>
+                  </>
+                )}
+              </Space>
+              <Space size={8}>
+                {currentMembership && (
+                  <Button onClick={() => history.push(`/membership/members/${currentMembership.id}`)}>
+                    查看会员详情
+                  </Button>
+                )}
+                {/* 只在「确实不是会员」这一档出现，而且只在能 adjust 的人手里出现——见上面那段注释。 */}
+                {membership === 'none' && access.canAdjustMembership && (
+                  <Button
+                    type="primary"
+                    onClick={() => {
+                      // 每开一次弹窗就是一次新的开通意图，配一枚新的幂等键。重发（网络抖动、
+                      // 手滑连点）沿用同一枚，后端据此认出「这是同一次点击」而不是「又来开一个」。
+                      setGrantRequestId(crypto.randomUUID());
+                      setGrantOpen(true);
+                    }}
+                  >
+                    开通会员
+                  </Button>
+                )}
+              </Space>
+            </div>
+
+            {/* 咖啡豆账户（account-service 的用户维度余额，接口回的是分、这里按元显示）。
                 与上面两块不同，它不是用户服务给的：`detail` 里没有余额，要另发一次请求。
                 所以这里既可能「还没拉到」，也可能「拉不到」（没有 account:read 时），
-                两种状态分开写，别把读失败显示成 0 分——那会让人以为用户真的一分没有。 */}
+                两种状态分开写，别把读失败显示成 ¥0.00——那会让人以为用户真的一分没有。 */}
             <div
               style={{
                 marginTop: 24,
@@ -499,7 +628,7 @@ export default function MiniappUsersPage() {
                 )}
                 {beanAccount && (
                   <span>
-                    余额：<strong>{beanAccount.balance}</strong> 分
+                    余额：<strong>¥{formatYuan(beanAccount.balance)}</strong>
                     {!beanAccount.hasAccount && (
                       <span style={{ color: '#8c8c8c' }}>（从未有过账户）</span>
                     )}
@@ -545,9 +674,9 @@ export default function MiniappUsersPage() {
         )}
       </Drawer>
 
-      {/* 余额调整。单位是**分**、金额**带符号**（充值为正、纠错为负），没有「方向」那一栏：
-          豆的金额本身就是分，而读它的地方（订单金额、流水）全按分看，这里换成元再让方向决定
-          符号，只会多出一处单位错位的机会。 */}
+      {/* 余额调整。**表单按元填**、金额**带符号**（充值为正、纠错为负），没有「方向」那一栏：
+          后台一律按元录入（与优惠券面额、饮品价格同一条约定），发出去之前过一遍 yuanToFen
+          换成分——符号本来就由金额自己带着，再让方向决定一次符号只会多一处错位的机会。 */}
       <ModalForm<BeanAdjustFormValues>
         // 换一个人换一个 key，关上再开靠 destroyOnClose 清字段。缺了这两个，改一个人之后再改
         // 另一个，上一行填的金额会跟着过去——而这是个「加钱」的弹窗。
@@ -558,9 +687,12 @@ export default function MiniappUsersPage() {
         modalProps={{ destroyOnClose: true }}
         onFinish={async (values) => {
           if (!detail) return false;
-          const amount = Number(values.amount);
-          if (!Number.isInteger(amount) || amount === 0) {
-            message.error('调整金额必须是不为 0 的整数（单位：分）');
+          // 表单里是元，发出去的是分。判断放在换算之后：`0` 与「换成分不足 1 分」的
+          // 0.001 元都会落到 amount === 0 上，而这两种后端都只回一句「金额不能为 0」，
+          // 说不清是被四舍五入吃掉了。
+          const amount = yuanToFen(values.amount);
+          if (amount === 0) {
+            message.error('调整金额不能为 0，最少 0.01 元');
             return false;
           }
           try {
@@ -569,7 +701,7 @@ export default function MiniappUsersPage() {
               requestId: beanRequestId,
               remark: values.remark,
             });
-            message.success(`已调整，当前余额 ${result.balance} 分`);
+            message.success(`已调整，当前余额 ¥${formatYuan(result.balance)}`);
             // 用返回的余额直接改对，不再多读一次：那个数就是刚写完这笔之后的余额，
             // 重新读一次拿到的可能是别人又动过的。
             setBeanAccount((prev) => ({
@@ -593,7 +725,9 @@ export default function MiniappUsersPage() {
               setBeanRequestId(crypto.randomUUID());
               message.warning(
                 latest
-                  ? `这次调整的流水已经记过账（上一次多半已经成功），当前余额 ${latest.balance} 分，请核对`
+                  ? `这次调整的流水已经记过账（上一次多半已经成功），当前余额 ¥${formatYuan(
+                      latest.balance,
+                    )}，请核对`
                   : '这次调整的流水已经记过账（上一次多半已经成功），请核对余额后再决定要不要重发',
               );
               return false;
@@ -612,19 +746,20 @@ export default function MiniappUsersPage() {
             if (!beanAccount) return null;
             // 后端把「扣成负数」回成 400，但那是点完保存才知道的。这里先算给自己看：
             // 一个把余额填成负数的输入，多半是少打了一位或符号填反了。
-            const after = beanAccount.balance + Number(amount ?? 0);
+            //
+            // 这一行**双方都是元**：余额是库里的分换算过来的，填的数本来就是元，所以直接相加。
+            const after = fenToYuan(beanAccount.balance) + Number(amount ?? 0);
             return (
               <div style={{ marginBottom: 16 }}>
                 <Space size="large">
                   <span>
-                    当前余额：<strong>{beanAccount.balance}</strong> 分
+                    当前余额：<strong>¥{formatYuan(beanAccount.balance)}</strong>
                   </span>
                   <span>
                     调整后：
                     <strong style={{ color: after < 0 ? '#cf1322' : undefined }}>
-                      {after}
-                    </strong>{' '}
-                    分
+                      ¥{after.toFixed(2)}
+                    </strong>
                   </span>
                 </Space>
                 {after < 0 && (
@@ -642,10 +777,13 @@ export default function MiniappUsersPage() {
           // min 是给手用的，不是业务规则：后端唯一的硬规矩是「不为 0」，余额扣穿了由
           // coffee_bean_accounts 的 CHECK 挡。设一个负的下限有两个用处——让输入框允许
           // 打 '-' 号，以及拦住多打几位 0 的手滑。真需要调这么大时改这一个数。
-          min={-100000000}
-          max={100000000}
-          fieldProps={{ precision: 0, step: 1, style: { width: '100%' } }}
-          extra="单位：分，可填负数（充值为正，把充错的豆调回来为负）"
+          // 上下限是**元**（±100 万元，与换算前的 ±1 亿分是同一个量级）。
+          min={-1000000}
+          max={1000000}
+          // precision 限死两位小数：再细就不到 1 分，yuanToFen 会把它四舍五入掉，
+          // 而界面上看起来像是「照着填的」。
+          fieldProps={{ precision: 2, step: 0.01, style: { width: '100%' } }}
+          extra="单位：元，可填负数（充值为正，把充错的豆调回来为负）"
           rules={[{ required: true, message: '请输入调整金额' }]}
         />
         <ProFormTextArea
@@ -653,6 +791,125 @@ export default function MiniappUsersPage() {
           label="备注"
           tooltip="余额调整全程留痕，备注会跟着这次操作一起记进流水"
           placeholder="例如：活动补偿 / 充错了调回"
+        />
+      </ModalForm>
+
+      {/* 开通会员。**会员域唯一的创建入口**——别的会员都是「在别处成交、在这里生效」，
+          只有这一条没有订单（客服补偿、线下活动、渠道争议）。后端会写一条平台审计。 */}
+      <ModalForm<{
+        planId: string;
+        storeId?: string;
+        expireAt?: unknown;
+        reason: string;
+        remark?: string;
+      }>
+        // key 与 destroyOnClose 缺一不可：换一个人再开，上一轮选的套餐 / 门店 / 日期会跟着
+        // 过去，而这是个**直接送钱**的弹窗。
+        key={`grant-${detail?.id ?? ''}`}
+        title={`给「${detail?.nickname || detail?.phone || detail?.id || ''}」开通会员`}
+        open={grantOpen}
+        onOpenChange={setGrantOpen}
+        modalProps={{ destroyOnClose: true, maskClosable: false }}
+        onFinish={async (values) => {
+          if (!detail) return false;
+          const expireAt = toRFC3339(values.expireAt);
+          try {
+            const granted = await grantMembership({
+              userId: detail.id,
+              planId: values.planId,
+              expireAt,
+              // 空串按「没选」发：后端把空串当没有归属，而空串与 undefined 在请求体里
+              // 确实是两回事（一个进了 JSON，一个没进）。
+              storeId: values.storeId || undefined,
+              reason: values.reason.trim(),
+              remark: values.remark?.trim() || undefined,
+              requestId: grantRequestId,
+            });
+            message.success(`已开通，有效期至 ${formatDateTime(granted.expireAt)}`);
+            // 重取一次而不是把返回值摆上去：这里要的是列表那一档的形状，而不多读一次的
+            // 收益只有几十毫秒。
+            await refreshMembership(detail.id);
+            return true;
+          } catch (error) {
+            if (statusOf(error) === 409) {
+              // 已经有会员了。**不能重试**：后端不叠加续期（一个人一条会员），而重试同一次
+              // 提交不会走到这里——那一条由 requestId 认出来是重放，回的是 200。
+              // 所以到这一档只有一种解释：这个人现在确实有会员了（多半是别人刚开过，
+              // 或者抽屉里那一档读的时候还没读到）。把真实状态摆出来让人自己看。
+              message.warning(requestErrorMessage(error, '这个人已经是会员了，不能重复开通'));
+              await refreshMembership(detail.id);
+              return true;
+            }
+            // 网络错误这类「不知道成没成」：弹窗不关、requestId 不换，重发还是同一次开通。
+            message.error(requestErrorMessage(error, '开通失败，请稍后重试'));
+            return false;
+          }
+        }}
+      >
+        <p>
+          这是给一个**还不是会员**的人直接开一条会员，不产生订单、不产生支付。到期之前不能续期
+          ——要延长已经开出去的会员，去会员详情页用「调整有效期」。
+        </p>
+        <ProFormSelect
+          name="planId"
+          label="套餐"
+          width="md"
+          // 只列在售（active）的：后端对草稿与已下架一律 409（「这个套餐现在不能卖」）。
+          // request 在弹窗每次打开时跑一次——destroyOnClose 会把内容卸掉，所以拿到的不是
+          // 上一次打开时的缓存。
+          request={async () => {
+            const page = await listMembershipPlans({ ...FULL_PAGE_PARAMS, status: 'active' });
+            return page.items.map((plan: MembershipPlan) => ({
+              label: `${plan.name}（¥${formatYuan(plan.priceCents)} / ${
+                plan.period === 'month' ? `${plan.periodCount} 个月` : `${plan.periodCount} 年`
+              }）`,
+              value: plan.id,
+            }));
+          }}
+          fieldProps={{ showSearch: true, optionFilterProp: 'label' }}
+          rules={[{ required: true, message: '请选择套餐' }]}
+        />
+        <ProFormSelect
+          name="storeId"
+          label="归属门店"
+          width="md"
+          tooltip="这个人算哪家店的业绩。与会员权益无关——会员价在哪家店用都一样，也不参与分账"
+          // 可以留空：线上来的会员没有归属门店。后端会先问一次「这家店在不在」，
+          // 不在就拒（不会留下一条查无此店的会员）。
+          request={async () => {
+            const page = await listStores(FULL_PAGE_PARAMS);
+            return page.items.map((store: Store) => ({
+              label: `${store.name}（${store.brandName || store.merchantName}）`,
+              value: store.id,
+            }));
+          }}
+          fieldProps={{ showSearch: true, optionFilterProp: 'label', allowClear: true }}
+        />
+        <ProFormDateTimePicker
+          name="expireAt"
+          label="到期时间"
+          width="md"
+          fieldProps={{ format: 'YYYY-MM-DD HH:mm:ss' }}
+          // **留空就是套餐自带的时长**（后端按 period / periodCount 从当下算），要「送到年底」
+          // 这类补偿时才在这里指定。不预填一个日期：那需要在浏览器里把后端的日历加法再实现
+          // 一遍（包月加一个月这条规则有两个实现就迟早会走偏），而留空本来就等价于那个默认值。
+          extra="留空 = 按所选套餐的时长自动计算"
+        />
+        <ProFormTextArea
+          name="reason"
+          label="原因"
+          fieldProps={{
+            rows: 3,
+            maxLength: 200,
+            showCount: true,
+            placeholder: '为什么开通（必填）。比如「店长答应的补偿，工单 12345」',
+          }}
+          rules={[{ required: true, message: '请填原因' }]}
+        />
+        <ProFormTextArea
+          name="remark"
+          label="备注"
+          fieldProps={{ rows: 2, maxLength: 500, showCount: true, placeholder: '补充说明（可选）' }}
         />
       </ModalForm>
     </PageContainer>

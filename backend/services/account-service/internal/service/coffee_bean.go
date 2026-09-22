@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -70,7 +71,7 @@ func (s *AccountService) ConsumeBeans(ctx context.Context, req BeanConsumeReques
 	})
 }
 
-// BeanReverseRequest 是一次退款冲正：售后审核通过，把这一单扣掉的豆还回去。
+// BeanReverseRequest 是一次退款冲正：这一单的退款成功了，把扣掉的豆还回去。
 type BeanReverseRequest struct {
 	OrderID     string
 	AfterSaleID string
@@ -79,6 +80,12 @@ type BeanReverseRequest struct {
 	// 行、再退整单）是常态，所以金额由调用方按退款范围给，本服务不整单照抄。
 	Amount int64
 	Remark string
+	// OccurredAt 是这笔账变的业务时刻。零值表示「就是现在」——gRPC 那条路（支付侧当场
+	// 发起冲正）本来就是即时发生的，不传这个字段。
+	//
+	// 事件那条路必须传：补投一条前几天的事件时，流水上的顺序得还是那几天，与同一拍上
+	// 福卡那几笔冲正（用事件的 refundedAt）对得起来。与发放、扣减同一条规矩。
+	OccurredAt time.Time
 }
 
 // ReverseBeans 把一单扣掉的豆还回去，返回「本次真的冲了一笔」。
@@ -100,13 +107,17 @@ func (s *AccountService) ReverseBeans(ctx context.Context, req BeanReverseReques
 	if req.Amount <= 0 {
 		return false, fmt.Errorf("%w: %d", ErrInvalidAmount, req.Amount)
 	}
+	occurredAt := req.OccurredAt
+	if occurredAt.IsZero() {
+		occurredAt = s.now()
+	}
 	return s.repository.ReverseBeans(ctx, repository.BeanReverseParams{
 		OrderID:     orderID,
 		AfterSaleID: strings.TrimSpace(req.AfterSaleID),
 		AfterSaleNo: afterSaleNo,
 		Amount:      req.Amount,
 		Remark:      strings.TrimSpace(req.Remark),
-		OccurredAt:  s.now(),
+		OccurredAt:  occurredAt,
 	})
 }
 

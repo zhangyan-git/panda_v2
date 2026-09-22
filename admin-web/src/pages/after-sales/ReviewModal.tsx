@@ -76,12 +76,23 @@ export default function ReviewModal({
             message.error('这一单赠送过福卡，需先确认福卡未参与抽奖');
             return false;
           }
+          if (requestErrorCode(error) === 'REFUND_NOT_STARTED') {
+            // 这一条**不是「审核失败」**：审核已经落库了（单已是「已通过」），只是紧接着那次
+            // 发起退款没成（支付服务抖了、或者没接上）。弹窗照常关掉、列表照常刷新——留在原地
+            // 会让人以为没审成，再点一次「通过」，而那张单已经不在待审核状态了，只会拿到
+            // 一个 409 死胡同。该怎么继续写进提示里：列表里那一行有「发起退款」。
+            message.warning(
+              `${requestErrorMessage(error, '已通过申请，但退款未发起')}；可在列表里对该单点「发起退款」重试`,
+            );
+            onReviewed();
+            return true;
+          }
           message.error(requestErrorMessage(error, isApprove ? '通过失败，请稍后重试' : '驳回失败，请稍后重试'));
           return false;
         }
-        // 通过不等于退款：钱由 payment-service 退（还没建）。提示里说清下一步在哪，
-        // 否则审核人会以为钱已经出去了，没人去追那一笔。
-        message.success(isApprove ? '已通过申请；退款由支付服务执行' : '已驳回');
+        // 通过即发起：审核与退款是同一件事的两步（钱由支付服务退，结果回写到这张单上）。
+        // 说清「发起」而不是「已退」——退款成没成要看回来的那个结果。
+        message.success(isApprove ? '已通过申请，并已向支付服务发起退款' : '已驳回');
         onReviewed();
         return true;
       }}
@@ -89,8 +100,10 @@ export default function ReviewModal({
       {isApprove ? (
         <>
           <Paragraph type="secondary">
-            通过后这张申请会变成「已通过」并进入退款流程。<Text strong>本页不会退钱</Text>
-            ——实际退款由支付服务执行，退款结果会回写到这张单上。
+            通过之后这一笔<Text strong>就会去退</Text>：服务端先记下「已通过」，紧接着向支付服务
+            发起退款，退款结果会回写到这张单上。若那一次发起没成，单据会停在「已通过」——那是一个
+            准确的停留态（同意退、退款还没发起），在列表里对该单点「发起退款」可以再推一次，
+            重发不会退两次钱。
           </Paragraph>
           {needsFortuneCardCheck && (
             <>

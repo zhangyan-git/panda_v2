@@ -19,8 +19,8 @@ import "github.com/panda-dev/panda-v2/backend/services/payment-service/internal/
 //	pending → expired     （超时关单扫描）
 //
 // closed 的两个箭头本轮走不到：关单的触发方是订单取消，而这一版不消费订单事件（见
-// 「明确不做」）。退款相关的状态（refunding/refunded）**不在这份状态机里**，也不在
-// payments.status 的取值里：退款是 payment_refunds 表上的独立聚合，退款期间支付单
+// 「明确不做」）。退款相关的状态**不在这份状态机里**，也不在 payments.status 的取值里：
+// 退款是 payment_refunds 表上的独立聚合（见下面的 refundTransitions），退款期间支付单
 // 本身仍是 succeeded。把退款塞进这张表会让「这笔钱收没收到」变得要读两个状态才知道。
 var paymentTransitions = map[string][]string{
 	model.PaymentCreated: {
@@ -70,6 +70,56 @@ var fundingTransitions = map[string][]string{
 	model.FundingReversed:  nil,
 }
 
+// refundTransitions 是退款单的状态机。
+//
+// 它是 payment_refunds 上的独立聚合，与 paymentTransitions **不共用任何状态**——这就是
+// paymentTransitions 里那句「退款不改 payments.status」的实现方式：钱退到哪一步只在这张
+// 表上，而「这笔钱收没收到」永远只读 payments。
+//
+// 三条能走到的转换：
+//
+//	pending → processing   渠道收下了这次退款请求，但还没给结论（应答 PROCESSING/UNKNOWN，
+//	                       或者调用超时）。之后由退款查询 worker 问出结论。
+//	pending → succeeded    账户出资那一路：没有第三方要问，建单即完成（见 service/refund.go
+//	                       里「豆那条路为什么不发渠道请求」那一段）。
+//	pending → failed       渠道明确拒绝，或者发起之前就发现这笔退不了（可退余额不够）。
+//	processing → succeeded 退款查询问出了 SUCCESS。
+//	processing → failed    退款查询问出了 FAIL。
+//
+// 没有 succeeded/failed 的出边：钱退回去了、或者退不了，两件都是终态。一笔退款**不可重试**
+// 也就是这个意思——重试是**同一张售后单**重发 CreateRefund，那会命中 after_sale_no 的幂等，
+// 拿回的是同一张退款单，而不是新开一张。
+var refundTransitions = map[string][]string{
+	model.RefundPending: {
+		model.RefundProcessing,
+		model.RefundSucceeded,
+		model.RefundFailed,
+	},
+	model.RefundProcessing: {
+		model.RefundSucceeded,
+		model.RefundFailed,
+	},
+	model.RefundSucceeded: nil,
+	model.RefundFailed:    nil,
+	// cancelled 今天没有写路径（见 model.RefundCancelled），挂在这里是为了让「它是个终态」
+	// 这件事在这张表上是看得见的，而不是靠读代码去确认没人写它。
+	model.RefundCancelled: nil,
+}
+
+// refundFundingTransitions 是退款出资行的状态机。
+//
+// 它比出资本身的 fundingTransitions **短得多**，因为退款这一侧没有预占那一步：一行要么
+// 还没退、要么退了、要么退不成。三条边全是终态——一笔出资的退款失败之后不会自己再试，
+// 要人看着那张退款单决定。
+var refundFundingTransitions = map[string][]string{
+	model.RefundFundingPending: {
+		model.RefundFundingSucceeded,
+		model.RefundFundingFailed,
+	},
+	model.RefundFundingSucceeded: nil,
+	model.RefundFundingFailed:    nil,
+}
+
 // CanTransition 判断支付单状态能不能从 from 走到 to。
 //
 // from 不在表里（库里出现了一个这一版不认识的状态）时返回 false——与 order-service 同一条
@@ -81,6 +131,16 @@ func CanTransition(from, to string) bool {
 // CanFundingTransition 判断出资行状态能不能从 from 走到 to。
 func CanFundingTransition(from, to string) bool {
 	return canTransition(fundingTransitions, from, to)
+}
+
+// CanRefundTransition 判断退款单状态能不能从 from 走到 to。
+func CanRefundTransition(from, to string) bool {
+	return canTransition(refundTransitions, from, to)
+}
+
+// CanRefundFundingTransition 判断退款出资行的状态能不能从 from 走到 to。
+func CanRefundFundingTransition(from, to string) bool {
+	return canTransition(refundFundingTransitions, from, to)
 }
 
 // canTransition 是支付单与出资行两张状态机表共用的判定。

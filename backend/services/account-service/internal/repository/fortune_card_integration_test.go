@@ -527,6 +527,47 @@ func releaseAfterSale(repo *PostgresRepository, afterSaleNo string) (bool, error
 	})
 }
 
+// testRecoverReason 与 testFreezeReason 同一条规矩：原因那句话归 service 管，仓储只负责
+// 原样存下来，所以这里不抄 service 的措辞。
+const testRecoverReason = "测试：退款成功，福卡已追回"
+
+func recoverAfterSale(repo *PostgresRepository, afterSaleNo string) (int64, error) {
+	return repo.RecoverAfterSale(context.Background(), RecoverParams{
+		AfterSaleNo: afterSaleNo,
+		Title:       "测试：退款追回",
+		Remark:      "测试：售后单退款成功",
+		Reason:      testRecoverReason,
+		OccurredAt:  time.Now().UTC(),
+	})
+}
+
+// entriesReversing 读指向某笔流水的冲正。
+//
+// 余额少了几张是个总数，看不出「哪几笔发放被注销了」——而追回要的正是后者：钱退了，
+// 这一单送的**那几张**卡必须各自有对应的冲正，只把冻结额放掉是不够的。所以按笔读。
+func entriesReversing(t *testing.T, pool *pgxpool.Pool, entryID string) []*model.FortuneCardEntry {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT `+entryColumns+` FROM fortune_card_entries WHERE reverses_entry_id = $1 ORDER BY id`, entryID)
+	if err != nil {
+		t.Fatalf("query reversals of %s: %v", entryID, err)
+	}
+	defer rows.Close()
+
+	var entries []*model.FortuneCardEntry
+	for rows.Next() {
+		entry, err := scanEntry(rows)
+		if err != nil {
+			t.Fatalf("scan reversal of %s: %v", entryID, err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read reversals of %s: %v", entryID, err)
+	}
+	return entries
+}
+
 func TestFreezeAfterSaleHoldsOnlyTheNamedKeys(t *testing.T) {
 	pool := fortuneCardIntegrationPool(t)
 	repo := NewPostgresRepository(pool)
@@ -955,5 +996,467 @@ func TestFreezeAfterSaleIsClampedToTheAvailableBalance(t *testing.T) {
 	}
 	if got := balanceOf(t, pool, userID); got != 0 {
 		t.Fatalf("a clamped freeze must not change the balance, got %d", got)
+	}
+}
+
+// TestPreviewFreezeReportsBothNumbersAndWritesNothing 是「受理退款申请之前问那一句」的正脸。
+//
+// 三个状态各验一次，因为它们的**答案是同一对数字但含义完全不同**，而订单域正是靠这两个数
+// 分开它们（见 service.assertFortuneCardsUnused）：
+//
+//	还没发放（申请早于发放）→ 0/0   —— 必须放行
+//	两张都在              → 2/2   —— 必须放行
+//	抽掉一张              → 2/1   —— 必须拒绝
+//
+// 后两种的 granted 都是 2：只看 freezable 也能过这一条，所以 granted 必须一起断言——
+// 一个把 granted 恒等于 freezable 的实现会让「还没发放」与「全被抽光」长得一模一样。
+//
+// 顺带验它**一行都不写**：这是它敢在受理之前被调用的全部理由。写完这次调用之后流水条数、
+// 冻结行数、余额、冻结额都得原样。
+func TestPreviewFreezeReportsBothNumbersAndWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	pool := fortuneCardIntegrationPool(t)
+	repo := NewPostgresRepository(pool)
+
+	// 第一档：这个人连账户行都还没有。
+	strangerID := uuid.NewString()
+	granted, freezable, err := repo.PreviewFreezeAfterSale(ctx, PreviewFreezeParams{
+		UserID:    strangerID,
+		EntryKeys: []string{model.BaseGrantKey(uuid.NewString())},
+	})
+	if err != nil {
+		t.Fatalf("preview for a user without an account: %v", err)
+	}
+	if granted != 0 || freezable != 0 {
+		t.Fatalf("want 0/0 for a user without an account, got %d/%d", granted, freezable)
+	}
+
+	// 第二档：发了卡，一张没动。
+	userID, orderID, orderNo := newAccountIDs()
+	baseKey := model.BaseGrantKey(orderID)
+	bonusKey := model.BonusGrantKey(orderID, "campaign-1")
+	if _, err := grant(repo, userID, orderID, orderNo,
+		GrantLine{Title: "订单完成赠送", Amount: 1, EntryKey: baseKey},
+		GrantLine{Title: "订单完成赠送（幸运杯套）", Amount: 1, EntryKey: bonusKey},
+	); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	// 只报这一单的两个键：账户上的张数按键算，不按人算——同一单的键少给一个，
+	// granted 就会少一张，那次判定也就松了一档。
+	keys := []string{baseKey, bonusKey}
+	beforeEntries := countEntries(t, pool, userID)
+
+	granted, freezable, err = repo.PreviewFreezeAfterSale(ctx, PreviewFreezeParams{UserID: userID, EntryKeys: keys})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if granted != 2 || freezable != 2 {
+		t.Fatalf("want 2/2 before any draw, got %d/%d", granted, freezable)
+	}
+
+	// 第三档：拿其中一张抽了奖。抽的那笔只记 draw:{requestId}，从不指向它消耗的是哪一次
+	// 发放（这就是池子模型），所以「少了一张」只能从 freezable 比 granted 小看出来。
+	if _, err := repo.Deduct(ctx, DeductParams{
+		UserID:        userID,
+		Amount:        1,
+		Title:         "参与抽奖",
+		ReferenceType: model.ReferenceTypeDraw,
+		EntryKey:      model.DrawKey("preview-" + uuid.NewString()),
+		OccurredAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("deduct: %v", err)
+	}
+	granted, freezable, err = repo.PreviewFreezeAfterSale(ctx, PreviewFreezeParams{UserID: userID, EntryKeys: keys})
+	if err != nil {
+		t.Fatalf("preview after a draw: %v", err)
+	}
+	if granted != 2 || freezable != 1 {
+		t.Fatalf("want 2/1 after spending one card, got %d/%d", granted, freezable)
+	}
+
+	// 只算不写：这三次调用一次都不该在库里留下痕迹——没有多出来的流水，没有冻结行，
+	// 余额与冻结额原地不动。
+	if got := countEntries(t, pool, userID); got != beforeEntries+1 {
+		t.Fatalf("预览写了流水：entries = %d, want %d（只多出上面那笔抽奖）", got, beforeEntries+1)
+	}
+	if got := countFreezes(t, pool, userID); got != 0 {
+		t.Fatalf("预览建了冻结行：%d 行", got)
+	}
+	frozen, available := frozenAndAvailable(t, pool, userID)
+	if frozen != 0 || available != 1 {
+		t.Fatalf("预览动了余额：%d frozen / %d available", frozen, available)
+	}
+}
+
+// TestPreviewFreezeScopesGrantedToTheKeysAndTheClampToTheAccount 把这两个数各自的**口径**
+// 钉住——它们量的不是同一件事，这正是它们不能合成一个的原因：
+//
+//	granted   只数**这几笔键**上还挂着的发放（这一单承诺了几张）
+//	freezable 拿这个数与**整个账户**的可用余额取小（这个人还掏得出几张）
+//
+// 后半句是池子模型的必然结论，不是这里的近似：抽奖扣的那一笔只记 `draw:{requestId}`，
+// 从不指向它是从哪一次发放里扣的，所以「少的那一张是谁家的」在库里没有答案。这张表把这
+// 个后果摆出来：同一个人的两单会互相占用彼此的余量，一单抽多了会把**其他单**的退款资格
+// 一起挡住。挡住了是保守的那一侧（拒了不给用户任何损失），反过来才是要命的——所以这个
+// 口径可以接受，但它必须是被写下来的，而不是被后来的某个人当成 bug「修」掉。
+//
+// 前两档的 key 数是刻意的：另一单发了 5 张，这一单只有 2 张。如果 granted 是「这个人的
+// 总发放」，第一档就会答 7——那会让这条判据彻底失效。
+func TestPreviewFreezeScopesGrantedToTheKeysAndTheClampToTheAccount(t *testing.T) {
+	ctx := context.Background()
+	pool := fortuneCardIntegrationPool(t)
+	repo := NewPostgresRepository(pool)
+	userID := uuid.NewString()
+
+	refundingOrderID, refundingOrderNo := uuid.NewString(), "ORD-PREVIEW-A-"+uuid.NewString()
+	otherOrderID, otherOrderNo := uuid.NewString(), "ORD-PREVIEW-B-"+uuid.NewString()
+	refundingKeys := []string{model.BaseGrantKey(refundingOrderID), model.BonusGrantKey(refundingOrderID, "c1")}
+	// 另一单先发、而且发得多：它在库里排在前面，池子里先被扣的就是它。
+	if _, err := grant(repo, userID, otherOrderID, otherOrderNo,
+		GrantLine{Title: "订单完成赠送", Amount: 5, EntryKey: model.BaseGrantKey(otherOrderID)},
+	); err != nil {
+		t.Fatalf("grant the other order: %v", err)
+	}
+	if _, err := grant(repo, userID, refundingOrderID, refundingOrderNo,
+		GrantLine{Title: "订单完成赠送", Amount: 1, EntryKey: refundingKeys[0]},
+		GrantLine{Title: "订单完成赠送（幸运杯套）", Amount: 1, EntryKey: refundingKeys[1]},
+	); err != nil {
+		t.Fatalf("grant the refunding order: %v", err)
+	}
+
+	// 第一档：一张没动。账上 7 张全可用，这一单的 granted 是 2 不是 7。
+	granted, freezable, err := repo.PreviewFreezeAfterSale(ctx, PreviewFreezeParams{UserID: userID, EntryKeys: refundingKeys})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if granted != 2 || freezable != 2 {
+		t.Fatalf("want 2/2 before any draw, got %d/%d（granted 只数这几笔键）", granted, freezable)
+	}
+
+	// 第二档：抽 5 张——按池子先扣的正是另一单那 5 张。账上还剩 2 张可用，这一单承诺 2 张
+	// 仍然冻得上，所以放行：库里认不出被抽掉的是谁家的，只有「这个人还掏得出 2 张」是事实。
+	if _, err := repo.Deduct(ctx, DeductParams{
+		UserID:        userID,
+		Amount:        5,
+		Title:         "参与抽奖",
+		ReferenceType: model.ReferenceTypeDraw,
+		EntryKey:      model.DrawKey("preview-keys-a-" + uuid.NewString()),
+		OccurredAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("deduct: %v", err)
+	}
+	granted, freezable, err = repo.PreviewFreezeAfterSale(ctx, PreviewFreezeParams{UserID: userID, EntryKeys: refundingKeys})
+	if err != nil {
+		t.Fatalf("preview after the draw: %v", err)
+	}
+	if granted != 2 || freezable != 2 {
+		t.Fatalf("want 2/2 while the account can still cover it, got %d/%d", granted, freezable)
+	}
+
+	// 第三档：再抽一张。账上只剩 1 张可用，冻不满这一单承诺的 2 张 ⇒ 不受理。**另一单的
+	// 余额被抽掉，挡住的却是这一单的退款资格**——这就是上面那段说的互相占用。
+	if _, err := repo.Deduct(ctx, DeductParams{
+		UserID:        userID,
+		Amount:        1,
+		Title:         "参与抽奖",
+		ReferenceType: model.ReferenceTypeDraw,
+		EntryKey:      model.DrawKey("preview-keys-b-" + uuid.NewString()),
+		OccurredAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("deduct: %v", err)
+	}
+	granted, freezable, err = repo.PreviewFreezeAfterSale(ctx, PreviewFreezeParams{UserID: userID, EntryKeys: refundingKeys})
+	if err != nil {
+		t.Fatalf("preview after overdrawing: %v", err)
+	}
+	if granted != 2 || freezable != 1 {
+		t.Fatalf("want 2/1 once the pool can no longer cover it, got %d/%d", granted, freezable)
+	}
+
+	// 同一时刻、同一个人，另一单自己问出来也是 5/1：它的 granted 是它自己的 5 张，而
+	// freezable 卡在同一个账户余额上。两个键不同、答案不同，差别只在 granted 那一半。
+	granted, freezable, err = repo.PreviewFreezeAfterSale(ctx, PreviewFreezeParams{
+		UserID:    userID,
+		EntryKeys: []string{model.BaseGrantKey(otherOrderID)},
+	})
+	if err != nil {
+		t.Fatalf("preview the other order: %v", err)
+	}
+	if granted != 5 || freezable != 1 {
+		t.Fatalf("want 5/1 for the other order, got %d/%d", granted, freezable)
+	}
+}
+
+// TestPreviewFreezeIgnoresReversedGrants 确认「已经被追回过的发放」不再算数：冲正过的发放
+// 不该让一个**已经退过一次款**的单看起来还有卡可冻。不排掉它的话，同一单第二次申请会被
+// 判成「没用过」放行，而那一笔钱退出去一张卡都追不回来。
+func TestPreviewFreezeIgnoresReversedGrants(t *testing.T) {
+	ctx := context.Background()
+	pool := fortuneCardIntegrationPool(t)
+	repo := NewPostgresRepository(pool)
+	userID, orderID, orderNo := newAccountIDs()
+	baseKey := model.BaseGrantKey(orderID)
+
+	if _, err := grant(repo, userID, orderID, orderNo,
+		GrantLine{Title: "订单完成赠送", Amount: 1, EntryKey: baseKey},
+	); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	entry := entryByKey(t, pool, baseKey)
+	if _, err := repo.Reverse(ctx, ReverseParams{
+		EntryID:    entry.ID,
+		Title:      "退款冲正",
+		OccurredAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("reverse: %v", err)
+	}
+	// 冲正之后余额归零，那一笔发放上多出一条冲正流水指向它。下面验的是预览**不认**这笔
+	// 发放了——先把这个前提坐实，否则 0/0 也可能只是发放没落库。
+	if got := balanceOf(t, pool, userID); got != 0 {
+		t.Fatalf("want balance 0 after the reversal, got %d", got)
+	}
+	if len(entriesReversing(t, pool, entry.ID)) != 1 {
+		t.Fatal("冲正没有落到那一笔发放上")
+	}
+
+	granted, freezable, err := repo.PreviewFreezeAfterSale(ctx, PreviewFreezeParams{UserID: userID, EntryKeys: []string{baseKey}})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if granted != 0 || freezable != 0 {
+		t.Fatalf("want 0/0 for an already reversed grant, got %d/%d", granted, freezable)
+	}
+}
+
+// TestRecoverAfterSaleVoidsTheGrantsAndFreesTheHold 是这一刀的正脸：钱退成了 ⇒ 冻着的卡
+// **从账上注销**，而不是放回可用。
+//
+// 与解冻的差别只有一件事，但那一件事就是全部：解冻之后余额还是 2（卡又能抽了），追回之后
+// 余额是 0（卡没了）。两个动作都让 frozen_balance 归零，所以只验「冻结行结掉了」是分不出
+// 它们的——必须验余额与那几笔冲正。
+func TestRecoverAfterSaleVoidsTheGrantsAndFreesTheHold(t *testing.T) {
+	pool := fortuneCardIntegrationPool(t)
+	repo := NewPostgresRepository(pool)
+	userID, orderID, orderNo := newAccountIDs()
+	baseKey := model.BaseGrantKey(orderID)
+	bonusKey := model.BonusGrantKey(orderID, "campaign-1")
+
+	if _, err := grant(repo, userID, orderID, orderNo,
+		GrantLine{Title: "订单完成赠送", Amount: 1, EntryKey: baseKey},
+		GrantLine{Title: "订单完成赠送（幸运杯套）", Amount: 1, EntryKey: bonusKey},
+	); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	afterSaleNo := "REF-TEST-" + uuid.NewString()
+	// 整单退：两张都冻上。这一单送的卡全在冻结里，追回时一张不少。
+	if _, err := freezeAfterSale(repo, userID, orderID, orderNo, afterSaleNo, baseKey, bonusKey); err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	if frozen, available := frozenAndAvailable(t, pool, userID); frozen != 2 || available != 0 {
+		t.Fatalf("want 2 frozen and 0 available before the recovery, got %d and %d", frozen, available)
+	}
+
+	recovered, err := recoverAfterSale(repo, afterSaleNo)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if recovered != 2 {
+		t.Fatalf("want 2 cards recovered, got %d", recovered)
+	}
+
+	freeze := freezeOf(t, pool, afterSaleNo)
+	if freeze.Status != model.FreezeStatusRecovered {
+		t.Fatalf("want status %q, got %q", model.FreezeStatusRecovered, freeze.Status)
+	}
+	// 追回的那一列与解冻那一列互斥：两条路只能走一条，两列同时有值就说明有一处写错了行。
+	if freeze.RecoveredAt == nil {
+		t.Fatalf("a recovered freeze must carry a timestamp: %+v", freeze)
+	}
+	if freeze.ReleasedAt != nil {
+		t.Fatalf("a recovered freeze must not look released: %+v", freeze)
+	}
+	// 全追回来了，没有「追不回来」那句话。
+	if freeze.Reason != testRecoverReason {
+		t.Fatalf("want the reason as given (%q), got %q", testRecoverReason, freeze.Reason)
+	}
+	// amount 与解冻那边一样不清零：审计要看当初冻了多少。
+	if freeze.Amount != 2 {
+		t.Fatalf("recovering must not erase how much was held, got %d", freeze.Amount)
+	}
+
+	// 余额真的少了。balanceOf 顺手验 SUM(amount) == balance 那条不变式。
+	if got := balanceOf(t, pool, userID); got != 0 {
+		t.Fatalf("a recovery must take the cards off the balance, got %d", got)
+	}
+	if frozen, available := frozenAndAvailable(t, pool, userID); frozen != 0 || available != 0 {
+		t.Fatalf("want 0 frozen and 0 available after the recovery, got %d and %d", frozen, available)
+	}
+	if got := countEntries(t, pool, userID); got != 4 {
+		t.Fatalf("want the two grants plus their two reversals, got %d entries", got)
+	}
+
+	// 每一笔发放各自有一条冲正指着它——「这一单送的卡注销掉了」这句话的全部证据。
+	for _, key := range []string{baseKey, bonusKey} {
+		grantEntry := entryByKey(t, pool, key)
+		reversals := entriesReversing(t, pool, grantEntry.ID)
+		if len(reversals) != 1 {
+			t.Fatalf("grant %q must have exactly one reversal, got %d", key, len(reversals))
+		}
+		reversal := reversals[0]
+		if reversal.EntryType != model.EntryTypeReverse || reversal.Amount != -grantEntry.Amount {
+			t.Fatalf("want a full reversal of %d, got %+v", grantEntry.Amount, reversal)
+		}
+		// 冲正的幂等键用 reverse:{entryId}，与 gRPC 的 Reverse 同一形状——同一笔冲两次会撞上
+		// 那把唯一索引，所以这个形状不是装饰。
+		if reversal.EntryKey != model.ReverseKey(grantEntry.ID) {
+			t.Fatalf("want entry key %q, got %q", model.ReverseKey(grantEntry.ID), reversal.EntryKey)
+		}
+		// 单号必须是**订单号**：订单详情那个福卡页签按 reference_no 取全，填成售后单号
+		// 这一笔就不会出现在它冲掉的那笔旁边。
+		if reversal.ReferenceNo != orderNo || reversal.ReferenceType != model.ReferenceTypeEntry {
+			t.Fatalf("a reversal must point back at the order, got %+v", reversal)
+		}
+		if reversal.BalanceAfter < 0 {
+			t.Fatalf("balance_after must never go negative, got %d", reversal.BalanceAfter)
+		}
+	}
+
+	// 重投同一条事件（broker 至少一次投递、消费侧重试）：no-op，不能再冲一遍。
+	again, err := recoverAfterSale(repo, afterSaleNo)
+	if err != nil {
+		t.Fatalf("a replayed recovery must not error: %v", err)
+	}
+	if again != 0 {
+		t.Fatalf("a replayed recovery must report nothing recovered, got %d", again)
+	}
+	if got := balanceOf(t, pool, userID); got != 0 {
+		t.Fatalf("a replayed recovery must not touch the balance again, got %d", got)
+	}
+	if got := countEntries(t, pool, userID); got != 4 {
+		t.Fatalf("a replayed recovery must not write ledger entries, got %d", got)
+	}
+	if _, available := frozenAndAvailable(t, pool, userID); available != 0 {
+		t.Fatalf("a replayed recovery must not free the hold twice, available = %d", available)
+	}
+}
+
+// TestRecoverAfterSaleReportsWhatWasAlreadySpent 盯的是**追不回来的那部分**。
+//
+// 卡在申请退款之前就被抽掉时，冻结按可用余额钳过，冻到的张数本来就小于发放额。追回只能
+// 追回冻上的那些，剩下的永远要不回来——这一步**不能报错**（钱是真的退回去了，为它失败只会
+// 让这条事件一路重试到死信），但要留一句话在冻结行的原因里，否则「钱退了、卡还有一张在
+// 外面」这件事在页面上一个字都看不到。
+func TestRecoverAfterSaleReportsWhatWasAlreadySpent(t *testing.T) {
+	pool := fortuneCardIntegrationPool(t)
+	repo := NewPostgresRepository(pool)
+	userID, orderID, orderNo := newAccountIDs()
+	baseKey := model.BaseGrantKey(orderID)
+
+	if _, err := grant(repo, userID, orderID, orderNo,
+		GrantLine{Title: "订单完成赠送", Amount: 3, EntryKey: baseKey}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	// 先抽掉一张，再来申请退款。这一刻余额 2、可用 2。
+	if _, err := repo.Deduct(context.Background(), DeductParams{
+		UserID:        userID,
+		Amount:        1,
+		Title:         "参与抽奖",
+		ReferenceType: model.ReferenceTypeDraw,
+		EntryKey:      model.DrawKey("recover-short-" + uuid.NewString()),
+		OccurredAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("deduct: %v", err)
+	}
+
+	afterSaleNo := "REF-TEST-" + uuid.NewString()
+	if _, err := freezeAfterSale(repo, userID, orderID, orderNo, afterSaleNo, baseKey); err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	if got := freezeOf(t, pool, afterSaleNo).Amount; got != 2 {
+		t.Fatalf("the freeze must be clamped to the available balance, got %d", got)
+	}
+
+	recovered, err := recoverAfterSale(repo, afterSaleNo)
+	if err != nil {
+		t.Fatalf("a recovery that cannot take everything back must not error: %v", err)
+	}
+	if recovered != 2 {
+		t.Fatalf("want the 2 frozen cards recovered, got %d", recovered)
+	}
+	// 余额归零而不是负数：那张已经被抽掉的卡不在追回范围里（它换来的奖已经发出去了）。
+	if got := balanceOf(t, pool, userID); got != 0 {
+		t.Fatalf("want a zero balance after the recovery, got %d", got)
+	}
+	if frozen, available := frozenAndAvailable(t, pool, userID); frozen != 0 || available != 0 {
+		t.Fatalf("want 0 frozen and 0 available, got %d and %d", frozen, available)
+	}
+
+	// 那一句话：追不回来的张数写在原因后面。少了它，客服只能看到一个「已追回」而账上
+	// 少掉两张——差的那一张没有任何解释。
+	freeze := freezeOf(t, pool, afterSaleNo)
+	want := testRecoverReason + "（1 张已参与抽奖，追不回来）"
+	if freeze.Reason != want {
+		t.Fatalf("want reason %q, got %q", want, freeze.Reason)
+	}
+	// 那笔发放**部分**冲正：3 张里只冲掉还在账上的 2 张。整笔进整笔出会把余额打成负数。
+	grantEntry := entryByKey(t, pool, baseKey)
+	reversals := entriesReversing(t, pool, grantEntry.ID)
+	if len(reversals) != 1 || reversals[0].Amount != -2 {
+		t.Fatalf("want a partial reversal of -2, got %+v", reversals)
+	}
+}
+
+// TestRecoverAfterSaleLeavesSettledRowsAlone 是三条「已经结束的路」撞上退款成功时的样子。
+//
+// 驳回/撤销/退款失败都会把冻结行结在 released，之后用户再申请一次，第二次退款成功是**另
+// 一张售后单**的事。这条用例钉的是：追回不去动一张已经解冻的行——真动了，冻结额会被第二
+// 次放掉（frozen_balance 减出负数），而余额会在用户没退成的那一单上被扣掉。
+func TestRecoverAfterSaleLeavesSettledRowsAlone(t *testing.T) {
+	pool := fortuneCardIntegrationPool(t)
+	repo := NewPostgresRepository(pool)
+	userID, orderID, orderNo := newAccountIDs()
+	baseKey := model.BaseGrantKey(orderID)
+
+	if _, err := grant(repo, userID, orderID, orderNo,
+		GrantLine{Title: "订单完成赠送", Amount: 1, EntryKey: baseKey}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	// 从头就没有过的售后单号：no-op 而不是错误（与解冻同一条取舍）。
+	recovered, err := recoverAfterSale(repo, "REF-TEST-"+uuid.NewString())
+	if err != nil {
+		t.Fatalf("recovering an unknown after-sale number must not error: %v", err)
+	}
+	if recovered != 0 {
+		t.Fatalf("an unknown after-sale number must recover nothing, got %d", recovered)
+	}
+
+	afterSaleNo := "REF-TEST-" + uuid.NewString()
+	if _, err := freezeAfterSale(repo, userID, orderID, orderNo, afterSaleNo, baseKey); err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	if _, err := releaseAfterSale(repo, afterSaleNo); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	recovered, err = recoverAfterSale(repo, afterSaleNo)
+	if err != nil {
+		t.Fatalf("recovering a released freeze must not error: %v", err)
+	}
+	if recovered != 0 {
+		t.Fatalf("a released freeze must recover nothing, got %d", recovered)
+	}
+	freeze := freezeOf(t, pool, afterSaleNo)
+	if freeze.Status != model.FreezeStatusReleased || freeze.RecoveredAt != nil {
+		t.Fatalf("a late recovery must not turn a released row into a recovered one: %+v", freeze)
+	}
+	if got := balanceOf(t, pool, userID); got != 1 {
+		t.Fatalf("a late recovery must not take the cards off the balance, got %d", got)
+	}
+	if _, available := frozenAndAvailable(t, pool, userID); available != 1 {
+		t.Fatalf("a late recovery must not free the hold twice, available = %d", available)
+	}
+	if got := countEntries(t, pool, userID); got != 1 {
+		t.Fatalf("a late recovery must not write ledger entries, got %d", got)
 	}
 }

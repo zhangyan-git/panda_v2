@@ -10,7 +10,7 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/coffee-machine-service/internal/model"
 )
 
-// ErrDeviceNotFound 表示按 ID 查不到设备。
+// ErrDeviceNotFound 表示按 ID 或序列号都查不到设备。
 var ErrDeviceNotFound = errors.New("device not found")
 
 // DeviceFilter 是设备列表的过滤条件。空串/空切片表示不过滤。
@@ -48,9 +48,19 @@ type DrinkFilter struct {
 // 幂等，随写接口一起加，不在这里留半成品方法。
 type MasterDataRepository interface {
 	GetDevice(ctx context.Context, id string) (*model.Device, error)
+	// GetDeviceBySerial 按机器序列号取设备。线下刷卡机回调（方案 §四）只报序列号，
+	// 那台机器不会知道我们的 uuid，所以这不是 GetDevice 的便利版，是那条路上唯一的入口。
+	GetDeviceBySerial(ctx context.Context, serialUnique string) (*model.Device, error)
 	ListDevices(ctx context.Context, filter DeviceFilter) ([]*model.Device, int64, error)
 	ListManufacturers(ctx context.Context) ([]*model.Manufacturer, error)
 	ListDrinks(ctx context.Context, filter DrinkFilter) ([]*model.Drink, int64, error)
+	// GetDeviceDrink 按机器报的饮品编号取这台设备上的那一杯。编号同时比 product_num 与
+	// origin_id：它落在哪一列取决于这家厂商当初的同步来源，调用方不该知道这件事。
+	GetDeviceDrink(ctx context.Context, deviceID, drinkCode string) (*model.Drink, error)
+	// GetDrink 按我们的 uuid 取一杯饮品（gRPC GetDrink 的落点）。它是 GetDeviceDrink 的
+	// 另一把钥匙：那一条收机器报上来的编号，这一条收主键——下单的调用方手里只有后者。
+	// 库里没有这一行时返回 ErrDrinkNotFound。
+	GetDrink(ctx context.Context, id string) (*model.Drink, error)
 	// ListDeviceDrinks 返回一台设备上的全部饮品。饮品行自带 device_id，所以这就是一次
 	// 带设备条件的列表查询，不再是两张表的连接。
 	ListDeviceDrinks(ctx context.Context, deviceID string) ([]*model.Drink, error)
@@ -93,15 +103,36 @@ func (r *postgresRepository) GetDevice(ctx context.Context, id string) (*model.D
 	return device, err
 }
 
+// GetDeviceBySerial 按机器序列号取设备。
+//
+// serial_unique 上建表时就带了 UNIQUE 约束（001_coffee_machine_core.sql），所以最多命中
+// 一行：不需要 LIMIT，也不需要决胜排序。空串的挡在 service 层，不落在这里——落到这里
+// 就成了一次「查不到」，而「没给序列号」与「没这台机器」是两回事。
+func (r *postgresRepository) GetDeviceBySerial(ctx context.Context, serialUnique string) (*model.Device, error) {
+	device, err := scanDevice(r.pool.QueryRow(ctx,
+		`SELECT `+deviceColumns+` FROM devices WHERE serial_unique = $1`, serialUnique))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrDeviceNotFound
+	}
+	return device, err
+}
+
 func (r *postgresRepository) ListDevices(ctx context.Context, filter DeviceFilter) ([]*model.Device, int64, error) {
 	// uuid 列必须转成 text 再比：PostgreSQL 会把参数按列类型解析，空串在 uuid 列上
 	// 直接报 invalid input syntax，即便 OR 左边永远为真。
 	//
-	// 门店那一条多了 coalesce：pgx 把 nil 切片编码成 NULL，而 cardinality(NULL) 是
-	// NULL——`NULL = 0` 不为真，整条 AND 求值成 NULL，于是「没选门店」会把每一行都
-	// 筛掉，列表空得毫无线索。
+	// 门店那一条判的是 **NULL 与空切片**，不是长度。这两种取值来自两个调用方，而它们
+	// 要的是相反的意思：
+	//
+	//   - 后台筛选栏：没选门店时参数缺席，pgx 把 nil 切片编码成 NULL → 不过滤，
+	//     后台的行为与改动前逐字一致。
+	//   - 商户域：范围展开出来的空集编码成 '{}' → ANY('{}') 恒假 → 命中零行，
+	//     这正是「这个账号一个点位都没授权」该有的结果。
+	//
+	// 写成 coalesce(cardinality($2::text[]), 0) = 0 会把后者读成前者——一个没授权任何
+	// 点位的商户账号就能看到全平台的设备。这句话以前只服务后台，所以那时它是对的。
 	const where = ` WHERE ($1 = '' OR manufacturer_id::text = $1)
-		AND (coalesce(cardinality($2::text[]), 0) = 0 OR store_id::text = ANY($2::text[]))
+		AND ($2::text[] IS NULL OR store_id::text = ANY($2::text[]))
 		AND ($3 = '' OR status = $3)
 		AND ($4 = '' OR serial_unique ILIKE '%' || $4 || '%')`
 	var total int64
@@ -194,6 +225,46 @@ func (r *postgresRepository) ListDrinks(ctx context.Context, filter DrinkFilter)
 		drinks = append(drinks, drink)
 	}
 	return drinks, total, rows.Err()
+}
+
+// GetDeviceDrink 按机器报上来的编号取这台设备上的那一杯饮品。
+//
+// 编号两列都试（product_num 或 origin_id）：厂商侧编号落在哪一列取决于当初的同步来源，
+// 老系统就是这么兜的（panda_serve 的 sync_order_handler `$or`），两种来源今天都还在库里。
+// 两个参数的空串挡在 service 层，不落在这里——落到这里就是一次「查不到」。
+//
+// **不按 status 过滤。** 走到这里说明钱已经在机器上收过了：这时候回「查不到」，这笔钱
+// 在库里就没有任何对应的饮品记录，比「卖了一杯已下架的饮品」严重得多。下架是给后台看
+// 的状态，不该在这里变成一次丢单。
+//
+// 它可能匹配到多行：product_num 上没有唯一约束（唯一的是 (device_id, manufacturer_id,
+// origin_id) 那个部分索引），同一台设备上两行共用一个 product_num 是允许的。此时
+// QueryRow 取第一行，取到哪一行由执行计划决定——老系统的 FindOne 也是这个行为。
+func (r *postgresRepository) GetDeviceDrink(ctx context.Context, deviceID, drinkCode string) (*model.Drink, error) {
+	drink, err := scanDrink(r.pool.QueryRow(ctx, `SELECT `+drinkColumns+`
+		FROM drinks WHERE device_id = $1 AND (product_num = $2 OR origin_id = $2)`,
+		deviceID, drinkCode))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrDrinkNotFound
+	}
+	return drink, err
+}
+
+// GetDrink 按主键取一杯饮品。与 GetDeviceDrink 是两把不同的钥匙，不要合并：那一条的答案
+// 在特定一台设备上（`device_id + product_num|origin_id`），这一条的答案是库里那一行，
+// 调用方手里只有我们的 uuid。
+//
+// **同样不按 status 过滤。** 这一条的调用方是 order-service 下单，它要判「这杯还卖不卖」，
+// 而判这件事需要知道 status——在这里过滤掉，就等于把「已下架」与「没有这一杯」说成同一件
+// 事，调用方只能把两者都拒了，而这两句话在收银台上差得很远。下架是一条事实，不是一次
+// 查询失败。
+func (r *postgresRepository) GetDrink(ctx context.Context, id string) (*model.Drink, error) {
+	drink, err := scanDrink(r.pool.QueryRow(ctx, `SELECT `+drinkColumns+`
+		FROM drinks WHERE id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrDrinkNotFound
+	}
+	return drink, err
 }
 
 // ListDeviceDrinks 返回一台设备上的全部饮品。

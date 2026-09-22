@@ -14,10 +14,12 @@ import "time"
 type Activation struct {
 	ID string `db:"id"`
 	// 门店 ID，属于商户服务，本库仅作跨库值引用，不建外键。
+	//
+	// **门店名不在这里**：它是商户域的事实，本库只存 id，显示时由 service 层向商户域
+	// 批量解析（见 service.Locations）。原先存过一份开通时的名字快照，2026-09-15 去掉了
+	// ——理由是那份快照换不来什么，却让「按门店名搜」和「显示当前店名」两件事只能二选一
+	// （见 migrations/lottery/003 的文件头注释）。
 	LocationID string `db:"location_id"`
-	// 门店名的展示快照，开通时写入。列表页显示旧名字是已知代价，比每次列表多跳一次
-	// 跨服务读划算。
-	LocationName string `db:"location_name"`
 	// enabled / disabled，见下面的常量。
 	Status string `db:"status"`
 	Remark string `db:"remark"`

@@ -34,6 +34,19 @@ const (
 	AggregatePayment = "payment"
 	AggregateFunding = "funding"
 	AggregateRefund  = "refund"
+	// AggregateAgreement：委托代扣的协议。它与支付单是两个聚合——签约不发钱、没有支付单
+	// （payments.order_no 是 NOT NULL 的订单号），所以它的状态只能落在自己的流水上。
+	//
+	// CHECK 里还有 reconciliation 一个值没有对应的常量，因为对账那条路今天没有写路径。
+	// 列在这里的是**代码里真会写出去**的那几个。
+	AggregateAgreement = "agreement"
+	// AggregateCharge：协议上**某一期**的扣款（payment_agreement_charges 的一行）。
+	//
+	// 它与 AggregateAgreement 是两个聚合，不能合：一期扣款的成败与协议的生死是两件事——
+	// 第三期扣款失败时协议仍然是 active（用户没失去授权，只是这一期没扣到钱，见
+	// model.ChargeStatusFailed）。挤在协议那一条流水上的话，「这份协议怎么了」会淹在一串
+	// 「这一期扣成没扣成」里。
+	AggregateCharge = "charge"
 )
 
 // 动作人类型，与 payment_state_transitions.actor_type 的 CHECK 逐字一致。

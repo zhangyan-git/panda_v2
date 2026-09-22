@@ -75,7 +75,10 @@ func (w *whereClause) sql() string {
 // 「默认活动」与「在跑的期次」由**子查询**取，而不是在 Go 里再跑两条查询：一页 200 家
 // 门店就是 400 次往返，而这几条子查询各自都走得到索引。
 type ActivationListRow struct {
-	Activation          *model.Activation
+	Activation *model.Activation
+	// LocationName 是**读出来之后**由 service 层向商户域解析填上的，不是本表的列
+	// （见 migrations/lottery/003）。仓储只管把 LocationID 带出来。
+	LocationName        string
 	DefaultCampaignID   string
 	DefaultCampaignName string
 	CampaignCount       int
@@ -117,7 +120,7 @@ const activationViewExtras = `,
 func scanActivationListRow(row scanner) (*ActivationListRow, error) {
 	item := &ActivationListRow{Activation: &model.Activation{}}
 	a := item.Activation
-	err := row.Scan(&a.ID, &a.LocationID, &a.LocationName, &a.Status, &a.Remark,
+	err := row.Scan(&a.ID, &a.LocationID, &a.Status, &a.Remark,
 		&a.ActivatedBy, &a.ActivatedAt, &a.DeactivatedAt, &a.CreatedAt, &a.UpdatedAt,
 		&item.DefaultCampaignID, &item.DefaultCampaignName, &item.CampaignCount,
 		&item.LiveRoundID, &item.LiveRoundNo, &item.LiveRoundSize, &item.LiveRoundDone)
@@ -138,9 +141,9 @@ func (r *PostgresRepository) ListActivations(ctx context.Context, q dto.Activati
 	if q.Status != "" {
 		w.add("a.status = $%d", q.Status)
 	}
-	if q.Name != "" {
-		w.add("a.location_name ILIKE '%%' || $%d || '%%'", q.Name)
-	}
+	// 按门店名搜这条路 2026-09-15 去掉了：名字不落库（migrations/lottery/003），而本表的
+	// 其他列里没有任何一列能表达「门店名含某几个字」。后台的筛选换成了从门店下拉里选一家
+	// （传 locationId，走上面那条等值比较），所以这里没有留下一个半功能的模糊搜。
 
 	var total int
 	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM lottery_activations a`+w.sql(), w.args...).Scan(&total); err != nil {
@@ -192,22 +195,22 @@ type CampaignListRow struct {
 	Campaign *model.Campaign
 	// 门店来自开通记录：活动挂在哪家店完全由 activation_id 决定（见 migrations/lottery/001
 	// 为什么不用 scope_type + scope_id 两列）。
-	LocationID   string
+	LocationID string
+	// LocationName 与 ActivationListRow 的同名字段一样：**不是本表的列**，由 service 层
+	// 拿着上面的 LocationID 向商户域批量解析后填上（见 migrations/lottery/003）。
 	LocationName string
-	// 奖池总名额 = 下一期的 winner_count。存成字段而不是让前端自己加：运营看的就是这个数。
-	PrizeTotalQuantity int32
-	RoundCount         int
-	LiveRoundID        string
-	LiveRoundNo        string
-	LiveRoundSize      int32
-	LiveRoundDone      int32
+	// 这里原先还有一个 prizeTotalQuantity = SUM(prizes.quantity)，即「下一期的 winner_count」。
+	// 名额恒为 1 之后它是一份恒等于 1 的第二事实（期次上那个冻结的 winnerCount 才是真的），
+	// 2026-09-15 连同列表页那一列一起删了。
+	RoundCount    int
+	LiveRoundID   string
+	LiveRoundNo   string
+	LiveRoundSize int32
+	LiveRoundDone int32
 }
 
 const campaignViewExtras = `,
 	a.location_id::text AS location_id,
-	a.location_name AS location_name,
-	COALESCE((SELECT SUM(p.quantity) FROM lottery_campaign_prizes p
-		WHERE p.campaign_id = c.id), 0)::int AS prize_total_quantity,
 	(SELECT COUNT(*) FROM lottery_rounds r WHERE r.campaign_id = c.id) AS round_count,
 	COALESCE(live.id::text, '') AS live_round_id,
 	COALESCE(live.round_no, '') AS live_round_no,
@@ -225,9 +228,9 @@ func scanCampaignListRow(row scanner) (*CampaignListRow, error) {
 	item := &CampaignListRow{Campaign: &model.Campaign{}}
 	c := item.Campaign
 	err := row.Scan(&c.ID, &c.ActivationID, &c.MachineID, &c.Code, &c.Name,
-		&c.ParticipantTarget, &c.Description, &c.IsDefault, &c.StartAt, &c.EndAt, &c.Status,
+		&c.ParticipantTarget, &c.Description, &c.IsDefault, &c.Status,
 		&c.CreatedBy, &c.UpdatedBy, &c.CreatedAt, &c.UpdatedAt,
-		&item.LocationID, &item.LocationName, &item.PrizeTotalQuantity,
+		&item.LocationID,
 		&item.RoundCount, &item.LiveRoundID, &item.LiveRoundNo,
 		&item.LiveRoundSize, &item.LiveRoundDone)
 	if err != nil {
@@ -335,7 +338,7 @@ func scanRoundListRow(row scanner) (*RoundListRow, error) {
 	round := item.Round
 	err := row.Scan(&round.ID, &round.CampaignID, &round.Seq, &round.RoundNo, &round.Status,
 		&round.ParticipantTarget, &round.ParticipantCount, &round.WinnerCount,
-		&round.StartsAt, &round.EndsAt, &round.DrawnAt, &round.CancelledAt,
+		&round.DrawnAt, &round.CancelledAt,
 		&round.CancelReason, &round.CancelledBy, &round.CreatedAt, &round.UpdatedAt,
 		&item.CampaignCode, &item.CampaignName, &item.DrawID,
 		&item.DrawMode, &item.DrawTrigger, &item.ActualWinnerCount)

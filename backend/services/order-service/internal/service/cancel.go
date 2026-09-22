@@ -40,7 +40,7 @@ func (s *OrderService) CancelOrder(ctx context.Context, in CancelOrderInput) (*r
 		if err != nil {
 			return nil, mapWriteError(err)
 		}
-		if order.UserID != in.UserID {
+		if !userMatches(order.UserID, in.UserID) {
 			// 别人的单回「不存在」而不是「无权限」：回 403 等于告诉调用方「这个 id 是真的」，
 			// 那就把一个能拿来遍历单号的接口送出去了。
 			return nil, ErrOrderNotFound

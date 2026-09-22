@@ -71,7 +71,7 @@ func TestDeriveSeedChangesWithEveryField(t *testing.T) {
 		"firstParticipationId": {RoundID: base.RoundID, FirstParticipationID: base.FirstParticipationID + "0", LastParticipationID: base.LastParticipationID, ParticipantCount: base.ParticipantCount, Trigger: base.Trigger},
 		"lastParticipationId":  {RoundID: base.RoundID, FirstParticipationID: base.FirstParticipationID, LastParticipationID: base.LastParticipationID + "0", ParticipantCount: base.ParticipantCount, Trigger: base.Trigger},
 		"participantCount":     {RoundID: base.RoundID, FirstParticipationID: base.FirstParticipationID, LastParticipationID: base.LastParticipationID, ParticipantCount: base.ParticipantCount + 1, Trigger: base.Trigger},
-		"trigger":              {RoundID: base.RoundID, FirstParticipationID: base.FirstParticipationID, LastParticipationID: base.LastParticipationID, ParticipantCount: base.ParticipantCount, Trigger: "deadline"},
+		"trigger":              {RoundID: base.RoundID, FirstParticipationID: base.FirstParticipationID, LastParticipationID: base.LastParticipationID, ParticipantCount: base.ParticipantCount, Trigger: "manual"},
 	}
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {

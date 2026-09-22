@@ -7,6 +7,7 @@ import { CLAIM_TYPE, REDEMPTION_TYPE, USER_COUPON_STATUS } from '../../services/
 import { enumMeta, searchOptions } from '../../services/labels';
 import { getMiniappUser } from '../../services/miniappUser';
 import { FULL_PAGE_PARAMS } from '../../services/pagination';
+import { requestErrorMessage } from '../../services/requestError';
 import { useAccess } from '@umijs/max';
 
 // 接口给的面值/最低消费是「分」的整数，列表和详情都按元展示。
@@ -225,11 +226,28 @@ export default function UserCouponsPage() {
         if (!actionTarget) return false;
         const { coupon, type } = actionTarget;
         const reason = values.reason?.trim();
-        if (type === 'redeem') await redeemUserCoupon(coupon.id, { reason });
-        else await revokeUserCoupon(coupon.id, { reason });
+        try {
+          if (type === 'redeem') await redeemUserCoupon(coupon.id, { reason });
+          else await revokeUserCoupon(coupon.id, { reason });
+        } catch (error) {
+          // 后端按「当下这一张是什么状态」判能不能核销/作废；客服手上那一行可能是
+          // 几秒前拉的，这期间券已经被别处核销掉了。理由得让人看见，并且返回 false
+          // 留着弹窗，填好的原因不丢。
+          message.error(requestErrorMessage(error, '操作失败，请稍后重试'));
+          return false;
+        }
         message.success(`${actionTitle(type)}成功`);
         actionRef.current?.reload();
-        if (detail?.id === coupon.id) setDetail(await getUserCoupon(coupon.id));
+        if (detail?.id === coupon.id) {
+          try {
+            setDetail(await getUserCoupon(coupon.id));
+          } catch (error) {
+            // 写已经成功了，这一步只是把抽屉里那份刷新一遍；取不到就关掉它——
+            // 留着的是改动前的状态，比空着更误导。
+            setDetail(undefined);
+            message.error(requestErrorMessage(error, '重新读取用户券详情失败'));
+          }
+        }
         return true;
       }}
     >

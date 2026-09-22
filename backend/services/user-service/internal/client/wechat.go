@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -229,7 +231,8 @@ func (c *WechatMiniappClient) invalidateAccessToken() {
 func (c *WechatMiniappClient) getJSON(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
-		return fmt.Errorf("%w: %v", service.ErrWechatUnavailable, err)
+		// 构造失败的错误同样是 *url.Error，Error() 里带完整 URL（含 secret）。
+		return &wechatTransportError{msg: "wechat request could not be created", cause: err}
 	}
 	return c.do(req, out)
 }
@@ -237,20 +240,67 @@ func (c *WechatMiniappClient) getJSON(ctx context.Context, path string, out any)
 func (c *WechatMiniappClient) postJSON(ctx context.Context, path string, body []byte, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("%w: %v", service.ErrWechatUnavailable, err)
+		return &wechatTransportError{msg: "wechat request could not be created", cause: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return c.do(req, out)
+}
+
+// wechatTransportError 是一次传输层失败的包装。
+//
+// 它存在的唯一理由是：http.Client.Do 与 http.NewRequest 返回的错误都是 *url.Error，
+// 而它的 Error() 里带**完整 URL**。微信的 appsecret 只能走查询串传（见 Code2Session
+// 的注释），把底层错误原样拼进来，等于把密钥写进日志、错误串和链路追踪。
+//
+// 所以 Error() 只有一句固定短语，可供判定的信息全在 Unwrap 链上：errors.Is 命中
+// service.ErrWechatUnavailable（调用方的分支依据）以及 context.DeadlineExceeded /
+// context.Canceled，errors.As 能取到 *net.OpError。两样都要，所以这里返回两个错误
+// （Go 1.20 的多重 Unwrap），而不是在「保 Unwrap」和「保干净」之间二选一。
+type wechatTransportError struct {
+	msg   string
+	cause error
+}
+
+func (e *wechatTransportError) Error() string { return e.msg }
+
+func (e *wechatTransportError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{service.ErrWechatUnavailable}
+	}
+	return []error{service.ErrWechatUnavailable, e.cause}
+}
+
+// transportFailure 把一次网络层失败翻成固定短句，只保留「哪一类失败」这个可判定
+// 的信息，不把底层错误的文本带出来——理由见 wechatTransportError。
+func transportFailure(err error) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return &wechatTransportError{msg: "wechat request timed out", cause: err}
+	case errors.Is(err, context.Canceled):
+		return &wechatTransportError{msg: "wechat request canceled", cause: err}
+	}
+	// *url.Error 自身也实现 net.Error，它的 Timeout() 会问到里面那层。
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return &wechatTransportError{msg: "wechat request timed out", cause: err}
+		}
+		return &wechatTransportError{msg: "wechat connection failed", cause: err}
+	}
+	return &wechatTransportError{msg: "wechat request failed", cause: err}
 }
 
 // do 发请求并解 JSON。
 //
 // 微信的失败几乎都是 HTTP 200 + 非零 errcode，所以这里不能只看状态码；
 // 反过来，状态码非 200 时响应体也不是 JSON，不能拿去解析。
+//
+// 传输层失败一律经 transportFailure 翻译：底层 *url.Error 带着完整 URL，
+// 而 URL 上挂着 appsecret（见 Code2Session 的注释）。
 func (c *WechatMiniappClient) do(req *http.Request, out any) error {
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", service.ErrWechatUnavailable, err)
+		return transportFailure(err)
 	}
 	defer resp.Body.Close()
 	// 限长：这些响应都是几百字节，读到 1 MiB 还没结束说明对面不是微信。

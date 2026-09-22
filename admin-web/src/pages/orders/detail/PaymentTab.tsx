@@ -3,10 +3,11 @@ import type { ColumnsType } from 'antd/es/table';
 import { formatDateTime } from '../../../services/datetime';
 import { formatYuan } from '../../../services/money';
 import type { OrderDetail, OrderPaymentLine } from '../../../services/order';
-import { PAYMENT_LINE_STATUS, PAYMENT_LINE_TYPE } from '../../../services/orderLabels';
+import { PAYMENT_LINE_STATUS } from '../../../services/orderLabels';
+import { paymentMethodLabel } from '../../../services/paymentMethodLabels';
 
 /**
- * 订单详情 → 出资分摊：这一单的钱是哪几笔凑出来的（微信 / 咖啡豆 / 消费金）。
+ * 订单详情 → 出资分摊：这一单的钱是哪几笔凑出来的（支付宝 / 咖啡豆 …）。
  *
  * 老系统这一屏是「支付流水」，列的是渠道返回的一笔笔流水。本服务里没有那张表——渠道流水与
  * 退款单都属于 payment-service（还没建），这里有的是**出资分摊**：一笔支付按来源拆成的行。
@@ -26,13 +27,13 @@ export default function PaymentTab({ order }: { order: OrderDetail }) {
   const columns: ColumnsType<OrderPaymentLine> = [
     { title: '行号', dataIndex: 'lineNo', width: 60 },
     {
-      title: '出资方式',
+      // lineType 是支付方式的 code，与订单表上的 paymentMethod 同一个值——文案走订单页与
+      // 支付页共用的那一份，认不出来的原样回显（从前是手工 `PAYMENT_LINE_TYPE[x] ?? x`，
+      // 那套词表已经退场，回显也就成了唯一的兜底）。
+      title: '支付方式',
       dataIndex: 'lineType',
-      width: 110,
-      render: (_, row) => {
-        const meta = PAYMENT_LINE_TYPE[row.lineType] ?? { text: row.lineType, color: 'default' };
-        return <Tag color={meta.color}>{meta.text}</Tag>;
-      },
+      width: 150,
+      render: (_, row) => paymentMethodLabel(row.lineType),
     },
     { title: '金额', dataIndex: 'amount', width: 100, render: (_, row) => money(row.amount) },
     {
@@ -94,7 +95,8 @@ export default function PaymentTab({ order }: { order: OrderDetail }) {
       columns={columns}
       dataSource={order.paymentLines}
       pagination={false}
-      scroll={{ x: 1400 }}
+      // 1440 = 60+150+100+90+190+140+200+170+170+170，各列 width 之和。
+      scroll={{ x: 1440 }}
     />
   );
 }

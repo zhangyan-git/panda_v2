@@ -7,7 +7,10 @@
 package v1
 
 import (
+	context "context"
 	grpc "google.golang.org/grpc"
+	codes "google.golang.org/grpc/codes"
+	status "google.golang.org/grpc/status"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -15,12 +18,67 @@ import (
 // Requires gRPC-Go v1.64.0 or later.
 const _ = grpc.SupportPackageIsVersion9
 
+const (
+	MembershipService_GetMemberPriceEntitlement_FullMethodName = "/panda.membership.v1.MembershipService/GetMemberPriceEntitlement"
+	MembershipService_GetMembershipPlan_FullMethodName         = "/panda.membership.v1.MembershipService/GetMembershipPlan"
+)
+
 // MembershipServiceClient is the client API for MembershipService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// Contract placeholder; domain methods are added only after business scope approval.
+// 会员域的内部契约。
+//
+// 它只回答**两个问题**，两个都是别的服务非知道不可、又只有本域答得上来的：
+//
+//   - 这个用户此刻算不算会员价（GetMemberPriceEntitlement）。会员价本身不在本库：饮品上有
+//     原价 / 会员价 / 提货码价三列，价格归 coffee-machine-service；本库只有资格（谁、到什么
+//     时候、走哪条路）。所以下游要知道能不能按会员价卖，只能来问这里，没有第二条路。
+//   - 这个套餐现在卖的是什么（GetMembershipPlan）。下单要冻进订单行的那份套餐快照必须由本
+//     服务给出——它同时决定了用户付多少钱、买到多长、会员价怎么来，让调用方自己填就等于让
+//     调用方定价。
+//
+// ⚠️ 调用方是**服务**，不是客户端。小程序与后台读会员状态、套餐列表、变更流水走 HTTP
+// （`/v1/miniapp/membership*`、`/v1/admin/membership-*`），不走这里——那些请求要的是
+// 「我的会员长什么样」，而这里要的是「这个用户能不能便宜」。两件事，两种入口。
+//
+// 时间一律是 Unix 秒（`_at_unix`），与 payment / coffee_machine 两份契约同形；金额不在本契约
+// 里出现（会员套餐的价格走 HTTP，本 RPC 不做任何定价）。
 type MembershipServiceClient interface {
+	// 问「这个用户此刻算不算会员价」。
+	//
+	// 两个调用方，问的是同一件事的两面：
+	//   - order-service 下单时定价：这一单的饮品该不该按会员价算；
+	//   - coffee-machine-service 展示：饮品列表要不要给这个人标出会员价。
+	//
+	// **它不是会员查询**：要「这个人是不是会员、什么时候到期」也顺带答得上来（active /
+	// expire_at），但那两个字段是给上面那两处做提示文案用的，不是给后台列表用的——后台看会员
+	// 走 HTTP，那里的口径（状态、快照、变更流水）比这里宽得多。
+	//
+	// 失败只有一种：user_id 不是 uuid，回 InvalidArgument。**不是会员不是错误**——那是
+	// 绝大多数请求的正常答案，回 active=false，不是 NotFound、更不是 5xx。
+	GetMemberPriceEntitlement(ctx context.Context, in *GetMemberPriceEntitlementRequest, opts ...grpc.CallOption) (*GetMemberPriceEntitlementResponse, error)
+	// 问「这个套餐现在卖的是什么」——order-service 下单定价的**唯一**来源。
+	//
+	// 它存在的理由是「订单行上那份快照不能由调用方给」：membership_plan_snapshot 同时决定三件
+	// 事——用户付多少钱（price_cents）、买到的时长（period / period_count）、会员价怎么来
+	// （member_price_mode 决定自动享还是发券）。这三件全是本域的事实，收客户端填的那一份就等于
+	// 让客户端定价：一条 originalUnitPrice=1、快照写 year 的请求能花一分钱开一年会员。
+	//
+	// 所以这条路的形状是：客户端只给 plan_id，order-service 拿它来问这里，把**这一份**答案冻进
+	// 订单行；付款之后 order.paid 再把那一份原样带回来，本服务据此开通。往返一圈，价格与时长
+	// 始终只有一个来源，而且它是本域的。
+	//
+	// **拿到的是一份「此刻」的拷贝，调用方必须存下来**：这就是快照的意义。用户买了之后运营改价、
+	// 改时长、下架，都不影响他这一单——本服务开通时读的也是那份存下来的快照，不回头现查套餐。
+	//
+	// 失败有三种，调用方该做的处理各不相同：
+	//
+	//	InvalidArgument    plan_id 不是 uuid。改了才能成，重试没用。
+	//	NotFound           没有这个套餐（客户端拿着一个过期的 id）。
+	//	FailedPrecondition 套餐存在但**不卖**（draft / disabled）。与 NotFound 分开是给运营留的
+	//	                   线索：这句话在后台就是「这个套餐下架了」，而在客户端是「买不了」。
+	GetMembershipPlan(ctx context.Context, in *GetMembershipPlanRequest, opts ...grpc.CallOption) (*GetMembershipPlanResponse, error)
 }
 
 type membershipServiceClient struct {
@@ -31,12 +89,82 @@ func NewMembershipServiceClient(cc grpc.ClientConnInterface) MembershipServiceCl
 	return &membershipServiceClient{cc}
 }
 
+func (c *membershipServiceClient) GetMemberPriceEntitlement(ctx context.Context, in *GetMemberPriceEntitlementRequest, opts ...grpc.CallOption) (*GetMemberPriceEntitlementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMemberPriceEntitlementResponse)
+	err := c.cc.Invoke(ctx, MembershipService_GetMemberPriceEntitlement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *membershipServiceClient) GetMembershipPlan(ctx context.Context, in *GetMembershipPlanRequest, opts ...grpc.CallOption) (*GetMembershipPlanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMembershipPlanResponse)
+	err := c.cc.Invoke(ctx, MembershipService_GetMembershipPlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MembershipServiceServer is the server API for MembershipService service.
 // All implementations must embed UnimplementedMembershipServiceServer
 // for forward compatibility.
 //
-// Contract placeholder; domain methods are added only after business scope approval.
+// 会员域的内部契约。
+//
+// 它只回答**两个问题**，两个都是别的服务非知道不可、又只有本域答得上来的：
+//
+//   - 这个用户此刻算不算会员价（GetMemberPriceEntitlement）。会员价本身不在本库：饮品上有
+//     原价 / 会员价 / 提货码价三列，价格归 coffee-machine-service；本库只有资格（谁、到什么
+//     时候、走哪条路）。所以下游要知道能不能按会员价卖，只能来问这里，没有第二条路。
+//   - 这个套餐现在卖的是什么（GetMembershipPlan）。下单要冻进订单行的那份套餐快照必须由本
+//     服务给出——它同时决定了用户付多少钱、买到多长、会员价怎么来，让调用方自己填就等于让
+//     调用方定价。
+//
+// ⚠️ 调用方是**服务**，不是客户端。小程序与后台读会员状态、套餐列表、变更流水走 HTTP
+// （`/v1/miniapp/membership*`、`/v1/admin/membership-*`），不走这里——那些请求要的是
+// 「我的会员长什么样」，而这里要的是「这个用户能不能便宜」。两件事，两种入口。
+//
+// 时间一律是 Unix 秒（`_at_unix`），与 payment / coffee_machine 两份契约同形；金额不在本契约
+// 里出现（会员套餐的价格走 HTTP，本 RPC 不做任何定价）。
 type MembershipServiceServer interface {
+	// 问「这个用户此刻算不算会员价」。
+	//
+	// 两个调用方，问的是同一件事的两面：
+	//   - order-service 下单时定价：这一单的饮品该不该按会员价算；
+	//   - coffee-machine-service 展示：饮品列表要不要给这个人标出会员价。
+	//
+	// **它不是会员查询**：要「这个人是不是会员、什么时候到期」也顺带答得上来（active /
+	// expire_at），但那两个字段是给上面那两处做提示文案用的，不是给后台列表用的——后台看会员
+	// 走 HTTP，那里的口径（状态、快照、变更流水）比这里宽得多。
+	//
+	// 失败只有一种：user_id 不是 uuid，回 InvalidArgument。**不是会员不是错误**——那是
+	// 绝大多数请求的正常答案，回 active=false，不是 NotFound、更不是 5xx。
+	GetMemberPriceEntitlement(context.Context, *GetMemberPriceEntitlementRequest) (*GetMemberPriceEntitlementResponse, error)
+	// 问「这个套餐现在卖的是什么」——order-service 下单定价的**唯一**来源。
+	//
+	// 它存在的理由是「订单行上那份快照不能由调用方给」：membership_plan_snapshot 同时决定三件
+	// 事——用户付多少钱（price_cents）、买到的时长（period / period_count）、会员价怎么来
+	// （member_price_mode 决定自动享还是发券）。这三件全是本域的事实，收客户端填的那一份就等于
+	// 让客户端定价：一条 originalUnitPrice=1、快照写 year 的请求能花一分钱开一年会员。
+	//
+	// 所以这条路的形状是：客户端只给 plan_id，order-service 拿它来问这里，把**这一份**答案冻进
+	// 订单行；付款之后 order.paid 再把那一份原样带回来，本服务据此开通。往返一圈，价格与时长
+	// 始终只有一个来源，而且它是本域的。
+	//
+	// **拿到的是一份「此刻」的拷贝，调用方必须存下来**：这就是快照的意义。用户买了之后运营改价、
+	// 改时长、下架，都不影响他这一单——本服务开通时读的也是那份存下来的快照，不回头现查套餐。
+	//
+	// 失败有三种，调用方该做的处理各不相同：
+	//
+	//	InvalidArgument    plan_id 不是 uuid。改了才能成，重试没用。
+	//	NotFound           没有这个套餐（客户端拿着一个过期的 id）。
+	//	FailedPrecondition 套餐存在但**不卖**（draft / disabled）。与 NotFound 分开是给运营留的
+	//	                   线索：这句话在后台就是「这个套餐下架了」，而在客户端是「买不了」。
+	GetMembershipPlan(context.Context, *GetMembershipPlanRequest) (*GetMembershipPlanResponse, error)
 	mustEmbedUnimplementedMembershipServiceServer()
 }
 
@@ -47,6 +175,12 @@ type MembershipServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedMembershipServiceServer struct{}
 
+func (UnimplementedMembershipServiceServer) GetMemberPriceEntitlement(context.Context, *GetMemberPriceEntitlementRequest) (*GetMemberPriceEntitlementResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMemberPriceEntitlement not implemented")
+}
+func (UnimplementedMembershipServiceServer) GetMembershipPlan(context.Context, *GetMembershipPlanRequest) (*GetMembershipPlanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMembershipPlan not implemented")
+}
 func (UnimplementedMembershipServiceServer) mustEmbedUnimplementedMembershipServiceServer() {}
 func (UnimplementedMembershipServiceServer) testEmbeddedByValue()                           {}
 
@@ -68,13 +202,58 @@ func RegisterMembershipServiceServer(s grpc.ServiceRegistrar, srv MembershipServ
 	s.RegisterService(&MembershipService_ServiceDesc, srv)
 }
 
+func _MembershipService_GetMemberPriceEntitlement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMemberPriceEntitlementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MembershipServiceServer).GetMemberPriceEntitlement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MembershipService_GetMemberPriceEntitlement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MembershipServiceServer).GetMemberPriceEntitlement(ctx, req.(*GetMemberPriceEntitlementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MembershipService_GetMembershipPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMembershipPlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MembershipServiceServer).GetMembershipPlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MembershipService_GetMembershipPlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MembershipServiceServer).GetMembershipPlan(ctx, req.(*GetMembershipPlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // MembershipService_ServiceDesc is the grpc.ServiceDesc for MembershipService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var MembershipService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "panda.membership.v1.MembershipService",
 	HandlerType: (*MembershipServiceServer)(nil),
-	Methods:     []grpc.MethodDesc{},
-	Streams:     []grpc.StreamDesc{},
-	Metadata:    "membership/v1/membership.proto",
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetMemberPriceEntitlement",
+			Handler:    _MembershipService_GetMemberPriceEntitlement_Handler,
+		},
+		{
+			MethodName: "GetMembershipPlan",
+			Handler:    _MembershipService_GetMembershipPlan_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "membership/v1/membership.proto",
 }

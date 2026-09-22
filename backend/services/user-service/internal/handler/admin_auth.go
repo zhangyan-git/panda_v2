@@ -126,13 +126,30 @@ type refreshRequest struct {
 
 // Logout godoc
 //
-//	@Summary     退出平台管理员登录
+//	@Summary     退出平台管理员登录（撤销这枚 refresh token 对应的会话）
+//	@Description 无需 access token：令牌过期时最需要退出，要求它有效反而让最需要的时候用不了。对未知令牌一律返回成功；body 可以不带 refreshToken（老客户端不带），此时服务端无会话可撤销。
 //	@Tags        admin-auth
 //	@Accept      json
 //	@Produce     json
+//	@Param       body body refreshRequest false "refresh token"
 //	@Success     200 {object} api.Response
+//	@Failure     400 {object} api.Response
 //	@Router      /v1/admin/auth/logout [post]
 func (h *AdminAuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	// 空 body 是允许的：后台前端至今只发一个不带内容的 POST，把「没有令牌」
+	// 当成请求格式错误会让退出登录直接失败。令牌为空时 service 按无会话可撤销
+	// 处理，与它对未知令牌的态度一致。
+	var req refreshRequest
+	if r.ContentLength != 0 {
+		if err := decodeJSON(r, &req); err != nil {
+			api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "请求格式错误")
+			return
+		}
+	}
+	if err := h.authSvc.Logout(r.Context(), req.RefreshToken); err != nil {
+		api.Error(w, http.StatusInternalServerError, api.CodeInternal, "退出失败")
+		return
+	}
 	api.Success(w, nil)
 }
 
@@ -145,7 +162,8 @@ func (h *AdminAuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 //	@Param       body body refreshRequest true "refresh token"
 //	@Success     200 {object} api.Response{data=tokenResponse}
 //	@Failure     400 {object} api.Response
-//	@Failure     401 {object} api.Response
+//	@Failure     401 {object} api.Response "refresh token 无效、过期或已被使用过"
+//	@Failure     403 {object} api.Response "账号已禁用"
 //	@Router      /v1/admin/auth/refresh [post]
 func (h *AdminAuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	var req refreshRequest
@@ -155,7 +173,17 @@ func (h *AdminAuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.authSvc.Refresh(r.Context(), req.RefreshToken)
 	if err != nil {
-		api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, "token 无效或已过期")
+		// 与 C 端刷新同一套映射：令牌不可用是 401，账号不能用是 403，
+		// 两者客户端要做的事不同——一个是重新登录，一个是找管理员。
+		switch {
+		case errors.Is(err, service.ErrRefreshTokenInvalid),
+			errors.Is(err, service.ErrRefreshTokenReused):
+			api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, err.Error())
+		case errors.Is(err, service.ErrAdminUserDisabled):
+			api.Error(w, http.StatusForbidden, api.CodeForbidden, err.Error())
+		default:
+			api.Error(w, http.StatusInternalServerError, api.CodeInternal, "服务内部错误")
+		}
 		return
 	}
 	api.Success(w, tokenResponse{

@@ -74,14 +74,18 @@ func (s *LotteryService) DrawManually(ctx context.Context, roundID string, req d
 	return outcome, nil
 }
 
-// DrawAutomatically 是自动开奖 worker 的入口：达标或到点，把这一期开掉。
+// DrawAutomatically 是自动开奖 worker 的入口：**收满门槛**的期次，把它开掉。
+//
+// 这是自动开奖唯一的一条路（2026-09-15 起）。期次等级上没有截止时间，一个没收满的期次
+// 不会被 worker 碰——它的出路是管理员人工开奖或作废。
 //
 // **返回 (nil, nil) 表示「不用开」，而且这是正常的**。worker 扫到的 id 是几十毫秒前那一
 // 眼的状态，锁内重新判定之后可能发现：
 //   - 另一个副本已经开过了（ErrRoundAlreadyDrawn）；
 //   - 已经被人工开奖抢先（同上）；
 //   - 已经被作废（ErrRoundCancelled）；
-//   - 状态在扫描之后又变了，不再满足开奖条件（ErrRoundNotAwaitingDraw）。
+//   - 状态在扫描之后又变了，不再满足开奖条件（ErrRoundNotAwaitingDraw）——扫描只看
+//     status='closed'，这四种的共同点都是「它已经不是那个收满待开的期次了」。
 //
 // 这四种都不是故障，是「多副本 + 无选主」这套设计的**正常噪声**——它们能被区分出来，正是
 // 因为真正的开奖判定在行锁内做，而不是在扫描时做（见 repository.DrawRound）。
@@ -145,7 +149,7 @@ func (s *LotteryService) CancelRound(ctx context.Context, roundID string, req dt
 // 它只是**扫描**：真正的判定在 DrawRound 的锁内重做一遍。这两处必须都在，而且不能把扫描
 // 的结论当成结论——扫描到调用之间隔着几十毫秒，其间期次可能已经达标、已经被人开掉。
 func (s *LotteryService) RoundsAwaitingDraw(ctx context.Context, limit int) ([]string, error) {
-	return s.repository.RoundsAwaitingDraw(ctx, s.now(), limit)
+	return s.repository.RoundsAwaitingDraw(ctx, limit)
 }
 
 // GetRound 读一期。
@@ -186,7 +190,11 @@ func (s *LotteryService) GetDraw(ctx context.Context, id string) (*model.Draw, [
 		return nil, nil, err
 	}
 	winners, _, err := s.repository.ListWins(ctx, dto.WinQuery{
-		RoundID:  draw.RoundID,
+		RoundID: draw.RoundID,
+		// Page 必须显式给 1：这里不是分页读，是「这一期的全部中奖记录」。WinQuery 的零值是
+		// 0，而 repository 把 page 原样交给 api.PageOffset 算 (page-1)*pageSize——0 会算成
+		// 负偏移，PostgreSQL 直接拒掉整条查询（SQLSTATE 2201X），于是「看开奖」弹窗永远打不开。
+		Page:     1,
 		PageSize: dto.MaxPageSize,
 	})
 	if err != nil {

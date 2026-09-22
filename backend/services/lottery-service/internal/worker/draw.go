@@ -1,9 +1,12 @@
 // Package worker 是抽奖服务的两个后台任务：开奖与参与修复。
 //
 // 两个都是**补偿任务**而不是「精确定时」的任务：它们随服务启停、只依赖传进来的 ctx，按周期
-// 扫一批该做的事。抽奖这边比支付那边更宽松一点——期次到点之后没有人卡在一个转不完的圈上等
-// 它（用户在看抽奖中心，界面显示的是「已结束，开奖中」），所以晚十几秒开奖是可以接受的，
-// 而「到点必达」要的是一套调度基础设施，不是这个阶段该引入的东西。
+// 扫一批该做的事。抽奖这边比支付那边更宽松一点——一个期次收满门槛之后没有人卡在一个转不完
+// 的圈上等它（用户在看抽奖中心，界面显示的是「已结束，开奖中」），所以晚十几秒开奖是可以
+// 接受的，而「毫秒级必达」要的是一套调度基础设施，不是这个阶段该引入的东西。
+//
+// 开奖那个任务**只在期次收满（closed）时才有事可做**：期次与活动都没有截止时间，一个没收满
+// 的期次不会被它碰（2026-09-15 去掉了「到点必开」）。
 //
 // 两个 worker 都不选主，多副本同时跑是**设计如此**：真正的判定在数据库的行锁里重做一遍
 // （见 repository.DrawRound / Confirm），扫描只是「谁该被看一眼」的清单。多一个副本只是多
@@ -23,8 +26,8 @@ import (
 // DefaultDrawInterval 是开奖扫描的默认周期。
 //
 // 十五秒而不是像支付关单那样一分钟：这一条的等待是**用户看得见的**。期次达标的那一瞬间
-// 界面就从「还差 0 人」变成「开奖中」，用户大概率正盯着那一页等结果；一分钟才开一次奖会
-// 让人觉得「是不是卡住了」。而每十五秒一次、每次一批的扫描，在一张只按状态与 ends_at 建过
+// 界面就从「还差 0 次」变成「开奖中」，用户大概率正盯着那一页等结果；一分钟才开一次奖会
+// 让人觉得「是不是卡住了」。而每十五秒一次、每次一批的扫描，在一张只按状态与开期时刻建过
 // 索引的表（lottery_rounds_sweep_idx）上代价可以忽略。
 const DefaultDrawInterval = 15 * time.Second
 
@@ -40,7 +43,7 @@ const DefaultDrawBatch = 50
 // 一直不回到 select，ctx 取消也就迟迟看不到——停机时最需要它停的东西反而停得最慢。
 const maxDrawsPerTick = 5
 
-// DrawWorker 把到点或已达标的期次开掉。
+// DrawWorker 把已达标的期次开掉。
 type DrawWorker struct {
 	lottery  *service.LotteryService
 	interval time.Duration
@@ -60,7 +63,7 @@ func NewDrawWorker(lottery *service.LotteryService, interval time.Duration, batc
 
 // Run 先扫一次再按周期扫。
 //
-// 先扫一次的理由是重启：服务停的这段时间里到点或达标的期次都堆着，等一个完整周期才处理
+// 先扫一次的理由是重启：服务停的这段时间里达标的期次都堆着，等一个完整周期才处理
 // 会让它们多挂十五秒；而在这十五秒里，那一期的用户看到的是「正在进行」——界面在骗人，
 // 那一期其实已经不再收人了（达标的那一期在确认时就被置成 closed 了）。
 func (w *DrawWorker) Run(ctx context.Context) error {
@@ -112,8 +115,8 @@ func (w *DrawWorker) sweep(ctx context.Context) {
 //
 // 四种「没做成」要分开记，因为它们对运维的含义完全不同：
 //
-//   - (nil, nil)：本期被别人抢先开了、被人作废了、或者已经不在开奖窗口里。多副本下这是
-//     **正常噪声**，一条都不能告警——否则每多一个副本，告警就多一份。
+//   - (nil, nil)：本期被别人抢先开了或被作废了。多副本下这是**正常噪声**，一条都不能
+//     告警——否则每多一个副本，告警就多一份。
 //   - Draw 为 nil 的 outcome：零人参与，这一期直接作废并开了下一期。这不是失败，是
 //     「没人来」。它也**不该**被当成一次告警，但值得留一条 info：一个长期零人参与的活动
 //     是运营要看见的事。
@@ -143,13 +146,13 @@ func (w *DrawWorker) drawOne(ctx context.Context, roundID string) {
 		"participants", outcome.Draw.ParticipantCount,
 		"winners", outcome.Draw.WinnerCount,
 		"seed", outcome.Draw.Seed,
-		"campaignEnded", outcome.CampaignEnded)
+		"nextRoundId", nextRoundID(outcome.NextRound))
 }
 
 // nextRoundID / roundNo 是给日志用的两个小取值器。
 //
 // 写成函数而不是在日志行里内联一个个 nil 判断：开奖结果里这两个指针**正常就是空的**
-// （活动窗口结束、或者零人参与那一条路），日志那一行不该被三个问号塞满。
+// （活动被暂停/结束/还是草稿，或者零人参与那一条路），日志那一行不该被三个问号塞满。
 func nextRoundID(round *model.Round) string {
 	if round == nil {
 		return ""

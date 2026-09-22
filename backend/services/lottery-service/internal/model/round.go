@@ -5,9 +5,10 @@ import "time"
 // Round 对应 lottery_rounds 表：活动下面滚动开的一期一期。
 //
 // 原型里 LAKE-202608-12 已经到第 12 期，所以**不是一期一活动**：开奖后在同一个事务里
-// 开下一期，一直到活动窗口结束或活动停用。活动带 start_at / end_at，期次在窗口内滚动，
-// 每期的 ends_at 都取 campaign.end_at（「一期的截止就是活动的截止」）。**没有
-// max_rounds**——原型没有这个概念。
+// 开下一期，只要活动还是 enabled 就一直滚下去。**没有 max_rounds**——原型没有这个概念。
+//
+// 期次**没有截止时间**：它只有三条出路——收满 participant_target 转 closed 并开奖、
+// 管理员人工开奖、管理员作废。收不满就一直开着，这是有意的，不是兜底。
 type Round struct {
 	ID         string `db:"id"`
 	CampaignID string `db:"campaign_id"`
@@ -25,9 +26,7 @@ type Round struct {
 	ParticipantCount int32 `db:"participant_count"`
 	// 开期时 = 奖池 SUM(quantity)。实际抽出的人数还可能被参与数封顶
 	// （min(winner_count, participant_count)，见 Draw）。
-	WinnerCount int32     `db:"winner_count"`
-	StartsAt    time.Time `db:"starts_at"`
-	EndsAt      time.Time `db:"ends_at"`
+	WinnerCount int32 `db:"winner_count"`
 	// 与 status 由 CHECK 绑定：drawn ⇔ 非空。开奖时刻不是一个可以忘的字段。
 	DrawnAt *time.Time `db:"drawn_at"`
 	// 作废那一组同理，与 status='cancelled' 绑定。
@@ -53,39 +52,34 @@ const (
 
 // AcceptsParticipation 是参与入口在锁内用的那一条判定。
 //
-// 只看 status 不看时间：到点（NOW() >= ends_at）但状态还是 open 的期次，在开奖 worker
-// 扫到它之前**仍然收人**是有意的——用户的卡已经在借记路上了，为了一个还没发生的开奖
-// 抢先把人挡在门外，只会让「期次看起来还能点、点了报错」。
-func (r *Round) AcceptsParticipation(now time.Time) bool {
-	return r.Status == RoundOpen && now.Before(r.EndsAt)
+// 只看 status。**期次没有截止时间**：一个 open 的期次会一直收人，直到参与数把它顶到
+// closed（见 repository.Confirm 里那一句 CASE）、管理员人工开奖、或管理员作废。
+func (r *Round) AcceptsParticipation() bool {
+	return r.Status == RoundOpen
 }
 
 // AwaitingDraw 回答「这一期现在该不该开奖」，以及是哪种触发。
 //
-// 两条路谁先到算谁：达标（status 已经是 closed，参与确认那一步置的）或到点
-// （still open 但 NOW() >= ends_at）。返回值第二个是 trigger，与 lottery_draws.trigger
-// 的 CHECK 逐字一致。
+// 只有一条路：**收满门槛**——status 已经是 closed，那是参与确认那一步置的。返回值第二个
+// 是 trigger，与 lottery_draws.trigger 的 CHECK 逐字一致。
 //
-// **到点必开，不流局**：流局要把 N 张卡沿着 N 次跨服务冲正还回去，而那条路没有截止
-// 时间；「参与后不可撤回」也是原型的明文规则。零人参与是唯一的例外，那一条在 worker
-// 里直接 cancelled，不写开奖记录。
-func (r *Round) AwaitingDraw(now time.Time) (bool, string) {
-	switch {
-	case r.Status == RoundClosed:
+// 这里曾经还有第二条路（到点，open 且 ends_at 已过），2026-09-15 拿掉了：运营的心智是
+// 「说好收满 10 次就开奖」，一个截止时间只会制造出「10 次没到也开了奖」这种没人预期过的
+// 结果。**收不满就一直等着**，出口是管理员人工开奖或作废。
+//
+// 「参与后不可撤回」仍是原型的明文规则，所以也没有流局。零人参与只在人工开奖那一条路上
+// 会遇到，那一条在 worker 里直接 cancelled，不写开奖记录。
+func (r *Round) AwaitingDraw() (bool, string) {
+	if r.Status == RoundClosed {
 		return true, TriggerThreshold
-	case r.Status == RoundOpen && !now.Before(r.EndsAt):
-		return true, TriggerDeadline
-	default:
-		return false, ""
 	}
+	return false, ""
 }
 
 // 开奖触发方式，与 lottery_draws.trigger 的 CHECK 逐字一致。
 const (
-	// TriggerThreshold 是人数达标。
+	// TriggerThreshold 是参与次数达标。
 	TriggerThreshold = "threshold"
-	// TriggerDeadline 是到点（ends_at 已过）。
-	TriggerDeadline = "deadline"
 	// TriggerManual 是人工开奖。它与 mode='manual' 由 CHECK 绑成同一件事。
 	TriggerManual = "manual"
 )

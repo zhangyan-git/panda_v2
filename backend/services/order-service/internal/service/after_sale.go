@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/client"
 	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/repository"
 )
@@ -94,6 +95,22 @@ func (s *OrderService) ApplyAfterSale(ctx context.Context, in ApplyAfterSaleInpu
 		return nil, false, err
 	}
 
+	// 受理之前先过一遍那条业务规则：**这一单赠送的福卡一张都没被用过，才允许申请退款**。
+	//
+	// 放在这里而不是仓储的锁内，是因为判据在**另一个服务**里（福卡的流水在账户域）：把它
+	// 塞进锁里等于握着一行订单的锁去等一个下游。这是一次便宜的先看一眼，权威的那一次仍然
+	// 在锁内——下面这次调用会重读订单、重拆一遍键。
+	//
+	// 顺序上它在形状校验之后、落库之前：形状不对的请求（scope 与行对不上、没写理由）先
+	// 拿到它们各自该拿的错，不会先撞上这一句。
+	if plan, checkable, err := s.repository.FortuneCardFreezeGate(ctx, in.OrderID, in.UserID, in.Scope); err != nil {
+		return nil, false, err
+	} else if checkable && plan.Cards > 0 {
+		if err := s.assertFortuneCardsUnused(ctx, in.UserID, plan); err != nil {
+			return nil, false, err
+		}
+	}
+
 	// 单号在这里生成，重放时会被作废（仓储回放已有结果，不落第二张单）——同下单那条路。
 	row, replayed, err := s.repository.ApplyAfterSale(ctx, repository.ApplyAfterSaleParams{
 		IdempotencyKey: in.IdempotencyKey,
@@ -115,6 +132,56 @@ func (s *OrderService) ApplyAfterSale(ctx context.Context, in ApplyAfterSaleInpu
 	return row, replayed, nil
 }
 
+// assertFortuneCardsUnused 执行那条业务规则：一单赠送的福卡一张都没被用过，才允许申请退款。
+//
+// # 判据为什么只能是「冻得上几张」
+//
+// 福卡的流水是一口**池子**：抽奖扣的那一笔只记 `draw:{requestId}`，从不指向它消耗的是哪
+// 一次发放。所以「这一单送的那几张还在不在」在库里没有直接答案。能问出来的只有账户域的
+// 那两个数，判据因此是：这几笔发放还挂着的张数（Granted）与此刻真的冻得上的张数
+// （Freezable，= min(还挂着的, 账户可用)）。冻不满承诺的张数，就是「这片池子里已经有卡
+// 被抽走了」——退钱也追不回来。这是池子模型的必然结论，不是这里的近似。
+//
+// # 两个数不能合成一个
+//
+// Granted 为 0 是**「发放还没落库」**，不是「用过了」：一张订单可以先申请退款再完成
+// （申请早于发放是设计支持的，那时冻结行是个空壳，等发放落库时由账户域补上）。只看
+// Freezable 的话这两种情形都是 0——一种是正常的，另一种要给用户一句拒绝，混了就把一条
+// 正常路径堵死了。
+//
+// # 拒了之后
+//
+// 用户手上的卡没有被动过：**受理之前**就拒了，所以没有冻结行要解、没有任何补偿要做。
+// 这与过去的行为正好相反——过去是照收申请、冻结时悄悄钳住，等到退款成功才发现有几张
+// 追不回来。审核时那个人工确认闸门（ErrFortuneCardConfirmationRequired）仍然在，它现在
+// 是第二道：申请时判得出来就不到人那里，申请之后到审核之间又抽掉的，由它兜。
+func (s *OrderService) assertFortuneCardsUnused(ctx context.Context, userID string, plan repository.FortuneCardFreezePlan) error {
+	if s.fortuneCards == nil {
+		// 「这个部署没接账户域」。**不能当成放行**：这条规则挡的是「卡已经抽掉了还想退钱」，
+		// 静默失效的代价是把追不回来的卡退出去。回 503 让调用方重试。
+		return ErrFortuneCardQuoteUnavailable
+	}
+
+	quote, err := s.fortuneCards.FreezeQuote(ctx, client.FreezeQuoteInput{
+		UserID:    userID,
+		EntryKeys: plan.EntryKeys,
+	})
+	if err != nil {
+		// 问不到就是没结论（见 ErrFortuneCardQuoteUnavailable）：既不放行，也不说「你的卡
+		// 用过了」——那是另一个结论，只有拿到数才敢下。
+		return err
+	}
+	if quote.Granted == 0 {
+		// 还没发卡。这不是「用过了」：冻结会照建，等发放落库时补上。
+		return nil
+	}
+	if quote.Freezable < plan.Cards {
+		return fmt.Errorf("%w: order promised %d cards, only %d freezable",
+			ErrAfterSaleFortuneCardsUsed, plan.Cards, quote.Freezable)
+	}
+	return nil
+}
+
 // ReviewAfterSaleInput 是后台的一次审核决定。
 type ReviewAfterSaleInput struct {
 	AfterSaleNo string
@@ -129,9 +196,16 @@ type ReviewAfterSaleInput struct {
 
 // ReviewAfterSale 审核一张售后单：通过或驳回。
 //
-// 通过不等于订单退款完成——它只是「同意退这笔钱」。真正的退款单、渠道调用在
-// payment-service（未建），所以审核通过**不改订单主状态**，只把结果写进售后单并发事件
-// （见 repository.ReviewAfterSale 的注释与规则 11）。
+// **通过 = 同意退这笔钱 + 当场去退。** 它不是「审核完就完了」：审核通过之后紧接着调支付域
+// 建退款单，再落 refunding（见 service/refund.go 顶上那三段）。分三步而不是一步，是因为
+// 中间那次调用是网络调用，不能待在事务里，而**每一段停下来都是一个准确的描述**：
+//
+//	挂在事务 A 与调用之间 → approved：同意退，退款单还没建成（点重试）
+//	调用回来了、事务 B 失败 → 还是 approved：同上，重试会命中幂等键拿回同一张退款单
+//	两段都成了 → refunding：钱在路上了，等支付侧的退款结果事件
+//
+// 前两种都回 ErrRefundNotStarted：审核**已经生效**了，只是钱还没上路。后台要把这两件事
+// 分开告诉操作人，否则他会再点一次「通过」，而第二次只会得到「不在待审核状态」。
 func (s *OrderService) ReviewAfterSale(ctx context.Context, in ReviewAfterSaleInput) (*repository.AfterSaleRow, error) {
 	in.AfterSaleNo = strings.TrimSpace(in.AfterSaleNo)
 	in.Remark = strings.TrimSpace(in.Remark)
@@ -176,7 +250,19 @@ func (s *OrderService) ReviewAfterSale(ctx context.Context, in ReviewAfterSaleIn
 	if err != nil {
 		return nil, mapWriteError(err)
 	}
-	return row, nil
+	if in.Action != model.AfterSaleActionApprove {
+		// 驳回到此为止：没有钱要退，也没有下游动作。
+		return row, nil
+	}
+
+	// 事务外的第二步与第三步。支付域没配（payments 为 nil）时这里会明确失败，而**审核已经
+	// 落库了**——这与「审核没生效」是两句不同的话，由 ErrRefundNotStarted 分开（见上面的
+	// 函数注释）。所以这里不把 row 丢掉：调用方拿它看得到「批是批了」。
+	started, err := s.startRefund(ctx, row, in.ReviewedBy, in.TraceID)
+	if err != nil {
+		return nil, err
+	}
+	return started, nil
 }
 
 // CancelAfterSaleInput 是用户撤销自己的一次退款申请。

@@ -78,6 +78,55 @@ func TestDeductDefaultsTitleAndReference(t *testing.T) {
 	}
 }
 
+// TestPreviewFreezeRejectsNonUUIDUser 与 Deduct / Reverse 同一条口径：拿不到一个能对上账户
+// 行的用户 id 就不去问仓储。预览是**只读**的，这里拒掉不会造成任何副作用，但一个
+// `WHERE user_id = 'nope'::uuid` 会以 SQL 报错的形式回给订单域，而那是一次 500。
+func TestPreviewFreezeRejectsNonUUIDUser(t *testing.T) {
+	repo := &stubRepository{}
+	if _, _, err := New(repo).PreviewFreeze(context.Background(), "nope", []string{"order:x:base"}); !errors.Is(err, ErrInvalidUserID) {
+		t.Fatalf("want %v, got %v", ErrInvalidUserID, err)
+	}
+	if len(repo.previewParams) != 0 {
+		t.Fatalf("a rejected preview must not reach the repository, got %d calls", len(repo.previewParams))
+	}
+}
+
+// TestPreviewFreezePassesBothNumbersThrough 钉住这个方法是**纯转发**：判定在订单域那侧
+// （见 PreviewFreeze 的说明），本服务只给两个事实。所以两个数必须一个不减一个不并地交回去，
+// 尤其是 freezable < granted 这一档——它正是「这片池子里已经有卡被抽走了」的那个信号，
+// 在这里被「修正」成 granted 的话，那条业务规则就永远看不出卡被用过。
+func TestPreviewFreezePassesBothNumbersThrough(t *testing.T) {
+	repo := &stubRepository{previewGranted: 3, previewFreezable: 1}
+	userID := uuid.NewString()
+
+	granted, freezable, err := New(repo).PreviewFreeze(context.Background(), " "+userID+" ", []string{" order:x:base ", ""})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if granted != 3 || freezable != 1 {
+		t.Fatalf("granted/freezable = %d/%d, want 3/1", granted, freezable)
+	}
+	params := repo.previewParams[0]
+	if params.UserID != userID {
+		t.Fatalf("user id = %q, 没有去空白", params.UserID)
+	}
+	// 键与 Freeze 同一个去空白规则（trimKeys）：空串是调用方那边拼键拼漏了，不是一笔发放，
+	// 带进 SQL 只会让 `entry_key = ''` 恒不命中，静默少算一张。
+	if len(params.EntryKeys) != 1 || params.EntryKeys[0] != "order:x:base" {
+		t.Fatalf("entry keys = %v", params.EntryKeys)
+	}
+}
+
+// TestPreviewFreezeForwardsRepositoryError 确认读账户失败不会被翻译成「冻不上几张」。
+// 这两个 0 在订单域眼里是「发放还没落库」——一次抖动会被读成一条放行的理由。
+func TestPreviewFreezeForwardsRepositoryError(t *testing.T) {
+	boom := errors.New("boom")
+	repo := &stubRepository{previewErr: boom}
+	if _, _, err := New(repo).PreviewFreeze(context.Background(), uuid.NewString(), []string{"order:x:base"}); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want 原样透出的仓储错误", err)
+	}
+}
+
 func TestReverseRejectsNonUUIDEntryID(t *testing.T) {
 	repo := &stubRepository{}
 	if _, err := New(repo).Reverse(context.Background(), ReverseRequest{EntryID: "  "}); !errors.Is(err, ErrInvalidEntryID) {

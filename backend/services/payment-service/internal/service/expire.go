@@ -121,7 +121,7 @@ func (s *PaymentService) settleOverdueAccountPayment(ctx context.Context, paymen
 // 走到这里只有一种情形：这张单已经不在能结算的状态了（最常见的是一次并发——同一张订单的
 // 另一张支付单先成了，payments_one_succeeded_per_order 把这一张挡在外面）。豆是在账户域
 // 独立扣走的，本地没有任何办法把它还回去（支付域对账户域只有扣减一个动作，冲正走的是
-// order.after_sale.reviewed 事件，见 BeanLedger 的注释）。所以这里能做、也必须要做的，
+// 退款结果那条事件，见 BeanLedger 的注释）。所以这里能做、也必须要做的，
 // 是**不让它继续隐身**：
 //
 //   - 先看清楚它是不是已经成了——并发下这很常见，成了就什么都不用做，也不能动它。
@@ -165,17 +165,21 @@ func (s *PaymentService) concludeUnsettleableAccountPayment(ctx context.Context,
 //
 // 查不到就回空串。**不报错**：它影响的只是一次幂等回放里那个动作字段，而这次结算本身
 // （钱进哪张单、发什么事件）与它无关——为它挡住一次真实的收款是把轻重搞反了。
+//
+// 从前的「查不到」有两条来源（支付方式被删了、渠道行没了）。今天支付方式是代码里的常量，
+// 所以剩下的唯一来源是**这张单上那个 code 是历史值**——写在一次目录变更之前，跟不上了。
+// 这一条同样是 warn 而不是错误，理由不变。
 func (s *PaymentService) accountFundingAction(ctx context.Context, payment *model.Payment) string {
-	if payment.PaymentMethodID == nil || *payment.PaymentMethodID == "" {
+	if payment.PaymentMethod == "" {
 		return ""
 	}
-	method, err := s.repository.FindPaymentMethod(ctx, *payment.PaymentMethodID)
+	method, err := s.catalog.Method(payment.PaymentMethod)
 	if err != nil {
 		slog.WarnContext(ctx, "cannot resolve the payment method action while settling an overdue payment",
-			"payment_no", payment.PaymentNo, "error", err)
+			"payment_no", payment.PaymentNo, "method", payment.PaymentMethod, "error", err)
 		return ""
 	}
-	return string(method.Method.Action)
+	return string(method.Action)
 }
 
 // accountEntryIDOf 取支付单上记着的账变 ID，取不到时回空串。

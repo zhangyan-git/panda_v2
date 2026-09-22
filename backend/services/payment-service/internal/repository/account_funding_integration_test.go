@@ -71,12 +71,12 @@ func newFundedPaymentFixture(t *testing.T, pool *pgxpool.Pool, accountEntryID st
 	}
 	// expires_at 在过去：这张单在关单扫描的判定里已经是「到点未支付」。
 	_, err := pool.Exec(context.Background(), `INSERT INTO payments
-		(id, payment_no, order_no, user_id, amount, funding_type, status,
+		(id, payment_no, order_no, user_id, amount, payment_method, status,
 		 request_id, expires_at, account_entry_id, account_funded_at)
 		VALUES ($1,$2,$3,$4,$5,$6,'created',$7,NOW() - INTERVAL '1 hour',
 			NULLIF($8,'')::uuid, $9)`,
 		fixture.paymentID, fixture.paymentNo, fixture.orderNo, uuid.NewString(),
-		fixture.amount, model.FundingCoffeeBean, "req-"+fixture.paymentID,
+		fixture.amount, "coffee_bean", "req-"+fixture.paymentID,
 		fixture.accountEntryID, fixture.fundedAt)
 	if err != nil {
 		t.Fatalf("insert payment: %v", err)

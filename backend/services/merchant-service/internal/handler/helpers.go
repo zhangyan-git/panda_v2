@@ -35,7 +35,8 @@ func decodeJSON(r *http.Request, v any) error {
 
 func writeMerchantError(w http.ResponseWriter, err error, internalMsg string) {
 	switch {
-	case errors.Is(err, service.ErrMerchantNameRequired), errors.Is(err, service.ErrMerchantStatusTransition), errors.Is(err, service.ErrMerchantHasUsers):
+	case errors.Is(err, service.ErrMerchantNameRequired), errors.Is(err, service.ErrMerchantStatusTransition),
+		errors.Is(err, service.ErrMerchantHasUsers), errors.Is(err, service.ErrMerchantHasBrandsOrStores):
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, err.Error())
 	case errors.Is(err, pgx.ErrNoRows):
 		api.Error(w, http.StatusNotFound, api.CodeNotFound, "商户不存在")

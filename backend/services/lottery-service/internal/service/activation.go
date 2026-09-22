@@ -23,6 +23,10 @@ import (
 // 短名（code）**由门店 ID 派生**，不是写死一个好看的常量：code 上有全局唯一索引（它是
 // 期次号的前缀），而开通是每家门店一次的动作，写死意味着第二家店开通即撞车
 // （见 repository.DefaultCampaignCode）。
+//
+// 门店名**不由请求体带上来**（原来带，2026-09-15 去掉）：名字是商户域的事实，本库只存 id
+// （见 migrations/lottery/003）。开通前先问一次商户域「这家店存在吗」，问不出来就不受理
+// ——那一次调用顺带就把「幽灵门店」堵掉了，而名字在每次读的时候现解。
 func (s *LotteryService) Activate(ctx context.Context, req dto.ActivateRequest, actor *string) (*repository.ActivationListRow, error) {
 	locationID := strings.TrimSpace(req.LocationID)
 	if locationID == "" {
@@ -31,12 +35,6 @@ func (s *LotteryService) Activate(ctx context.Context, req dto.ActivateRequest, 
 	if _, err := uuid.Parse(locationID); err != nil {
 		return nil, ErrLocationIDInvalid
 	}
-	locationName := strings.TrimSpace(req.LocationName)
-	if locationName == "" {
-		return nil, ErrLocationNameRequired
-	}
-
-	now := s.now()
 	target := int32(DefaultCampaignTarget)
 	if req.ParticipantTarget != nil {
 		if *req.ParticipantTarget <= 0 {
@@ -48,35 +46,27 @@ func (s *LotteryService) Activate(ctx context.Context, req dto.ActivateRequest, 
 	if name == "" {
 		name = DefaultCampaignName
 	}
-	// 窗口：两个都没给就取「现在起 90 天」。只给一个也接受——运营常常只想改结束时间，
-	// 而让「只填了一个」变成一次校验失败是拿一个我们自己造出来的规矩去挡人。
-	startAt, endAt := now, now.Add(DefaultCampaignWindow)
-	if req.StartAt != nil {
-		startAt = *req.StartAt
-	}
-	if req.EndAt != nil {
-		endAt = *req.EndAt
-	}
-	if !endAt.After(startAt) {
-		return nil, ErrCampaignWindowInvalid
+	// 门店存在性放在**本地校验之后**：一个连门店 id 都不合法的请求不该付一次跨服务往返，
+	// 而且先报出来的是「你填错了」而不是「商户域不可达」——后者会让人去查一个没坏的东西。
+	if err := s.requireStore(ctx, locationID); err != nil {
+		return nil, err
 	}
 
 	created, err := s.repository.Activate(ctx, repository.ActivateParams{
-		LocationID:   locationID,
-		LocationName: locationName,
-		Remark:       strings.TrimSpace(req.Remark),
-		ActivatedBy:  actor,
+		LocationID:  locationID,
+		Remark:      strings.TrimSpace(req.Remark),
+		ActivatedBy: actor,
 		Campaign: repository.DefaultCampaign{
 			Code:              repository.DefaultCampaignCode(locationID),
 			Name:              name,
 			Description:       "开通抽奖时自动创建，可在活动里修改或停用。",
 			ParticipantTarget: target,
-			StartAt:           startAt,
-			EndAt:             endAt,
+			// 两张图都留空。封面在后台表单上是必填，但开通**不**受那条约束：逼运营先找
+			// 一张图才能开通，等于把整个抽奖域的入口抬高。空封面由前端落到占位块上，等
+			// 真要办活动了，编辑这个默认活动时那条校验会要他传图（见 repository.DefaultPrize）。
 			Prize: repository.DefaultPrize{
-				PrizeKind: model.PrizeKindCustom,
-				Name:      DefaultPrizeName,
-				Quantity:  1,
+				Name:     DefaultPrizeName,
+				Quantity: 1,
 			},
 		},
 	})
@@ -87,7 +77,12 @@ func (s *LotteryService) Activate(ctx context.Context, req dto.ActivateRequest, 
 	// 回读一次富行而不是手工拼响应：列表页、详情页、开通返回的这三份必须是同一份形状，
 	// 手工拼出来的第四个版本迟早会少一个字段（比如漏掉 LiveRoundNo，于是开通完的页面上
 	// 那一格是空的，而刷新一下又有了）。这一次读在开完通之后，代价是毫秒级。
-	return s.repository.GetActivationView(ctx, created.Activation.ID)
+	row, err := s.repository.GetActivationView(ctx, created.Activation.ID)
+	if err != nil {
+		return nil, err
+	}
+	s.fillActivationNames(ctx, []*repository.ActivationListRow{row})
+	return row, nil
 }
 
 // UpdateActivationStatus 启用 / 停用一家门店的抽奖。
@@ -106,7 +101,7 @@ func (s *LotteryService) UpdateActivationStatus(ctx context.Context, id string, 
 	if _, err := s.repository.UpdateActivationStatus(ctx, id, status, strings.TrimSpace(req.Remark), actor); err != nil {
 		return nil, err
 	}
-	return s.repository.GetActivationView(ctx, id)
+	return s.GetActivation(ctx, id)
 }
 
 // GetActivation 读一条开通记录的富行。
@@ -114,7 +109,12 @@ func (s *LotteryService) GetActivation(ctx context.Context, id string) (*reposit
 	if _, err := uuid.Parse(strings.TrimSpace(id)); err != nil {
 		return nil, ErrLocationIDInvalid
 	}
-	return s.repository.GetActivationView(ctx, id)
+	row, err := s.repository.GetActivationView(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.fillActivationNames(ctx, []*repository.ActivationListRow{row})
+	return row, nil
 }
 
 // FindActivationByLocation 按门店读一条开通记录（「这家店开通了没有」）。
@@ -137,7 +137,12 @@ func (s *LotteryService) ListActivations(ctx context.Context, q dto.ActivationQu
 			return nil, 0, err
 		}
 	}
-	return s.repository.ListActivations(ctx, q)
+	rows, total, err := s.repository.ListActivations(ctx, q)
+	if err != nil {
+		return nil, 0, err
+	}
+	s.fillActivationNames(ctx, rows)
+	return rows, total, nil
 }
 
 // normaliseActivationStatus 校验并归一化开通状态。

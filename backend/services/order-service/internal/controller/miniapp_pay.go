@@ -32,11 +32,11 @@ func (c *MiniappOrderController) pay(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 	action, err := c.orders.InitiatePayment(r.Context(), service.InitiatePaymentInput{
-		OrderNo:         orderNo,
-		UserID:          userID,
-		PaymentMethodID: body.PaymentMethodID,
-		RequestID:       idempotencyKey,
-		TraceID:         traceID(r),
+		OrderNo:       orderNo,
+		UserID:        userID,
+		PaymentMethod: body.PaymentMethod,
+		RequestID:     idempotencyKey,
+		TraceID:       traceID(r),
 	})
 	if err != nil {
 		writeOrderError(w, err, "failed to initiate payment")

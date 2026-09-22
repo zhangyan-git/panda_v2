@@ -32,7 +32,7 @@ type RoundDrawnPayload struct {
 	CampaignID string `json:"campaignId"`
 	// auto / manual。
 	Mode string `json:"mode"`
-	// threshold / deadline / manual。
+	// threshold / manual。
 	Trigger          string `json:"trigger"`
 	Seed             string `json:"seed"`
 	Algorithm        string `json:"algorithm"`

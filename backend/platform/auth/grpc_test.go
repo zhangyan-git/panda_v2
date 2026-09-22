@@ -7,15 +7,29 @@ import (
 	"time"
 
 	"github.com/go-kratos/kratos/v2/middleware"
+	"github.com/go-kratos/kratos/v2/transport"
 	kgrpc "github.com/go-kratos/kratos/v2/transport/grpc"
 	"github.com/golang-jwt/jwt/v5"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+// stubTransporter stands in for the server transport Kratos installs on the
+// context before it runs the middleware chain. The interceptor only reads
+// Operation from it, so that is all this carries; a real server fills one in
+// per call and the unit test below builds the same shape without a network.
+type stubTransporter struct{ operation string }
+
+func (stubTransporter) Kind() transport.Kind            { return transport.KindGRPC }
+func (stubTransporter) Endpoint() string                { return "grpc://127.0.0.1:0" }
+func (s stubTransporter) Operation() string             { return s.operation }
+func (stubTransporter) RequestHeader() transport.Header { return nil }
+func (stubTransporter) ReplyHeader() transport.Header   { return nil }
 
 const testServiceToken = "0123456789abcdef0123456789abcdef"
 
@@ -203,6 +217,70 @@ func TestUnaryMiddlewarePropagatesRejection(t *testing.T) {
 	}
 }
 
+// TestUnaryMiddlewareReadsMethodFromTransport is the regression test for the
+// adapter path, which is the only path the services actually run.
+//
+// UnaryMiddleware hands the interceptor a bare &grpc.UnaryServerInfo{} — Kratos
+// consumed the real one before invoking the middleware chain — so a method read
+// from info alone is the empty string, unauthenticatedMethod never matches, and
+// the documented probe exemption silently never fires. This test builds the
+// context exactly as Kratos' gRPC interceptor does and asserts both halves: a
+// framework method passes without credentials, a business method still does not,
+// and passing does not hand the caller an identity.
+func TestUnaryMiddlewareReadsMethodFromTransport(t *testing.T) {
+	adapted := UnaryMiddleware(UnaryServerInterceptor(newTestService(t), testServiceToken))
+	call := func(method string, md metadata.MD) (context.Context, error) {
+		var seen context.Context
+		handler := adapted(func(ctx context.Context, req any) (any, error) {
+			seen = ctx
+			return "handled", nil
+		})
+		ctx := context.Background()
+		if md != nil {
+			ctx = metadata.NewIncomingContext(ctx, md)
+		}
+		ctx = transport.NewServerContext(ctx, stubTransporter{operation: method})
+		_, err := handler(ctx, "req")
+		return seen, err
+	}
+
+	for _, method := range []string{
+		"/grpc.health.v1.Health/Check",
+		"/grpc.health.v1.Health/Watch",
+		"/grpc.reflection.v1.ServerReflection/ServerReflectionInfo",
+		"/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo",
+	} {
+		t.Run(method, func(t *testing.T) {
+			ctx, err := call(method, metadata.MD{})
+			if err != nil {
+				t.Fatalf("%s required credentials through the adapter: %v", method, err)
+			}
+			// The bypass must not be a backdoor into the authenticated identity.
+			if ServiceFromContext(ctx) {
+				t.Fatal("bypassed probe was given a service identity")
+			}
+			if _, ok := IdentityFromContext(ctx); ok {
+				t.Fatal("bypassed probe was given a user identity")
+			}
+		})
+	}
+
+	businessMethod := "/panda.user.v1.UserService/HasUsers"
+	t.Run(businessMethod, func(t *testing.T) {
+		// The transport must not be read as an excuse to skip verification.
+		if _, err := call(businessMethod, metadata.MD{}); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("got %v, want Unauthenticated", err)
+		}
+		ctx, err := call(businessMethod, metadata.Pairs(MetadataServiceToken, testServiceToken))
+		if err != nil {
+			t.Fatalf("service token rejected through the adapter: %v", err)
+		}
+		if !ServiceFromContext(ctx) {
+			t.Fatal("adapter did not pass the authenticated context to the next handler")
+		}
+	})
+}
+
 func TestGRPCServerOptionBuilds(t *testing.T) {
 	if option := GRPCServerOption(newTestService(t), testServiceToken); option == nil {
 		t.Fatal("GRPCServerOption returned nil")
@@ -284,5 +362,41 @@ func TestGRPCServerOptionComposesWithDefaultMiddleware(t *testing.T) {
 	}
 	if instrumented.Load() != 2 {
 		t.Fatalf("runtime middleware ran %d times, want 2", instrumented.Load())
+	}
+}
+
+// TestGRPCServerOptionAnswersHealthProbe is the same regression end to end,
+// against a server assembled the way a service assembles one. It is the shape
+// the bug was reported in: a readiness probe answered UNAUTHENTICATED by the
+// gRPC listener while the HTTP /readyz next to it reports everything is fine, so
+// the replica never becomes ready and nothing in the logs says why.
+func TestGRPCServerOptionAnswersHealthProbe(t *testing.T) {
+	srv := kgrpc.NewServer(
+		kgrpc.Address("127.0.0.1:0"),
+		GRPCServerOption(newTestService(t), testServiceToken),
+	)
+	endpoint, err := srv.Endpoint()
+	if err != nil {
+		t.Fatalf("endpoint: %v", err)
+	}
+	go func() { _ = srv.Start(context.Background()) }()
+	defer func() { _ = srv.Stop(context.Background()) }()
+	conn, err := grpc.NewClient(endpoint.Host, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// The default (all services) status is SERVING on a freshly started Kratos
+	// server, so a probe that gets through answers OK rather than reporting on a
+	// server it never reached.
+	resp, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
+	if err != nil {
+		t.Fatalf("health probe was refused: %v", err)
+	}
+	if resp.GetStatus() != healthpb.HealthCheckResponse_SERVING {
+		t.Fatalf("health status = %v, want SERVING", resp.GetStatus())
 	}
 }

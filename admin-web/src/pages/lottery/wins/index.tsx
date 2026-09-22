@@ -17,7 +17,6 @@ import {
 } from '../../../services/lottery';
 import {
   LOTTERY_ACTOR_TYPE,
-  PRIZE_KIND,
   WIN_EVENT_TYPE,
   WIN_STATUS,
 } from '../../../services/lotteryLabels';
@@ -66,7 +65,7 @@ export default function LotteryWinsPage() {
    *
    * 走的是详情接口而不是列表里那一行：**流水不在列表里**，而「这条奖是谁、什么时候、
    * 因为什么产生的」正是 lottery_win_events 那张只增表存在的理由。本轮那张表里只会有一条
-   * created（actor 是 system，因为开奖是人到点或达标触发的，没有人「做了」这件事）。
+   * created（actor 是 system，因为开奖是收满门槛触发的，没有人「做了」这件事）。
    */
   const openDetail = async (id: string) => {
     setLoadingDetail(true);
@@ -152,22 +151,15 @@ export default function LotteryWinsPage() {
       fieldProps: { placeholder: '完整用户 ID' },
     },
     {
+      // 这里原先还有一个奖品类型的 Tag（PRIZE_KIND），2026-09-15 随类型那一列删了。
       title: '奖品',
       dataIndex: 'prizeId',
       search: false,
       ellipsis: true,
       width: 200,
-      render: (_, row) => {
-        const meta = enumMeta(PRIZE_KIND, row.prizeKind);
-        return (
-          <span>
-            <Tag color={meta.color}>{meta.text}</Tag>
-            {/* 显示 current 而不是 original：换奖之后用户手上的是现奖品。原奖品在详情里
-                分两行摆出来，那一列才是「当时开出来的是什么」。本轮两者相同（没有换奖）。 */}
-            {row.currentPrizeName}
-          </span>
-        );
-      },
+      // 显示 current 而不是 original：换奖之后用户手上的是现奖品。原奖品在详情里
+      // 分两行摆出来，那一列才是「当时开出来的是什么」。本轮两者相同（没有换奖）。
+      render: (_, row) => row.currentPrizeName,
     },
     {
       // 本轮只可能出现 pending——核销整块延后了（其余取值是最终状态机的一部分，先登记着，

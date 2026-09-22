@@ -21,6 +21,7 @@ import {
   type MenuInput,
   type MenuNode,
 } from '../../services/menu';
+import { requestErrorMessage } from '../../services/requestError';
 
 type MenuRow = MenuNode & { children?: MenuRow[] };
 
@@ -120,9 +121,14 @@ const MenusPage: React.FC = () => {
             <Popconfirm
               title="确认删除该菜单？"
               onConfirm={async () => {
-                await deleteMenu(row.id);
-                message.success('已删除');
-                actionRef.current?.reload();
+                try {
+                  await deleteMenu(row.id);
+                  message.success('已删除');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  // 还有子菜单、或角色还绑着它时后端会拒；不提示的话点了等于没反应。
+                  message.error(requestErrorMessage(error, '删除失败，请稍后重试'));
+                }
               }}
             >
               <Button type="link" size="small" danger icon={<DeleteOutlined />}>
@@ -191,13 +197,18 @@ const MenusPage: React.FC = () => {
             icon: values.icon ?? '',
             sort: values.sort ?? 0,
           };
-          if (editing) {
-            await updateMenu(editing.id, data);
-            message.success('已更新');
-          } else {
-            await createMenu(data);
-            message.success('已创建');
+          try {
+            if (editing) {
+              await updateMenu(editing.id, data);
+            } else {
+              await createMenu(data);
+            }
+          } catch (error) {
+            // 父级成环、路径重复这类判断都在后端；返回 false 让弹窗留着，别让人重填一遍。
+            message.error(requestErrorMessage(error, '保存失败，请稍后重试'));
+            return false;
           }
+          message.success(editing ? '已更新' : '已创建');
           actionRef.current?.reload();
           return true;
         }}

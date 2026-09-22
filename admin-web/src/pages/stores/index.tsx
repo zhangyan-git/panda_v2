@@ -26,7 +26,7 @@ import { auditStore, createStore, deleteStore, listStores, updateStore, updateSt
 import { listBrands } from '../../services/brand';
 import { listMerchants } from '../../services/merchant';
 import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
-import { deletionErrorMessage } from '../../services/requestError';
+import { deletionErrorMessage, requestErrorMessage } from '../../services/requestError';
 import { uploadImage } from '../../services/upload';
 
 import type { AuditStatus } from '../../services/brand';
@@ -84,6 +84,29 @@ const StoresPage: React.FC = () => {
     { title: '门店名称', dataIndex: 'name', width: 180, ellipsis: true },
     { title: '所属商户', dataIndex: 'merchantName', width: 150, ellipsis: true },
     { title: '所属品牌', dataIndex: 'brandName', width: 150, ellipsis: true },
+    // 订货系统的客户三列。空串表示「还没编码」，历史门店大多为空——所以空值显示「—」
+    // 而不是留白，免得看起来像加载失败。
+    {
+      title: '客户编码',
+      dataIndex: 'customerCode',
+      width: 130,
+      ellipsis: true,
+      render: (_, r) => r.customerCode || '—',
+    },
+    {
+      title: 'DMS 编码',
+      dataIndex: 'dmsCode',
+      width: 130,
+      ellipsis: true,
+      render: (_, r) => r.dmsCode || '—',
+    },
+    {
+      title: '客户类型',
+      dataIndex: 'customerType',
+      width: 100,
+      ellipsis: true,
+      render: (_, r) => r.customerType || '—',
+    },
     {
       title: '地址',
       dataIndex: 'address',
@@ -154,9 +177,13 @@ const StoresPage: React.FC = () => {
             <Popconfirm
               title="禁用后该门店在商户端不可用，确认禁用？"
               onConfirm={async () => {
-                await updateStoreStatus(row.id, 'disabled');
-                message.success('已禁用');
-                actionRef.current?.reload();
+                try {
+                  await updateStoreStatus(row.id, 'disabled');
+                  message.success('已禁用');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  message.error(requestErrorMessage(error, '禁用失败，请稍后重试'));
+                }
               }}
             >
               <Button type="link" size="small" danger icon={<PauseCircleOutlined />}>
@@ -168,9 +195,13 @@ const StoresPage: React.FC = () => {
             <Popconfirm
               title="确认启用该门店？"
               onConfirm={async () => {
-                await updateStoreStatus(row.id, 'active');
-                message.success('已启用');
-                actionRef.current?.reload();
+                try {
+                  await updateStoreStatus(row.id, 'active');
+                  message.success('已启用');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  message.error(requestErrorMessage(error, '启用失败，请稍后重试'));
+                }
               }}
             >
               <Button type="link" size="small" icon={<PlayCircleOutlined />}>
@@ -219,9 +250,10 @@ const StoresPage: React.FC = () => {
         actionRef={actionRef}
         rowKey="id"
         columns={columns}
-        // 必须等于各列 width 之和：180+150+150+220+130+80+100+160+360=1530。
+        // 必须等于各列 width 之和：
+        // 180+150+150+130+130+100+220+130+80+100+160+360=1890。
         // 之前是 1500，比实际列宽之和小，钉在右边的操作列跟表体是错开的。
-        scroll={{ x: 1530 }}
+        scroll={{ x: 1890 }}
         search={false}
         request={async (params) => {
           const result = await listStores(toPageParams(params));
@@ -275,6 +307,9 @@ const StoresPage: React.FC = () => {
                 contactName: editing.contactName,
                 contactPhone: editing.contactPhone,
                 businessHours: editing.businessHours,
+                customerCode: editing.customerCode,
+                dmsCode: editing.dmsCode,
+                customerType: editing.customerType,
                 detail: editing.detail,
                 remark: editing.remark,
                 visible: editing.visible,
@@ -287,13 +322,19 @@ const StoresPage: React.FC = () => {
           // 会把 editing 上的原值原样带回来——绝不能因为打开一次编辑就把老数据洗成空。
           const { region, ...rest } = values;
           const payload = { ...rest, ...regionFields(region, editing) };
-          if (editing) {
-            await updateStore(editing.id, { ...payload, merchantId: editing.merchantId });
-            message.success('已保存，修改直接生效并留痕');
-          } else {
-            await createStore(payload);
-            message.success('已创建，审核状态为待审核');
+          try {
+            if (editing) {
+              await updateStore(editing.id, { ...payload, merchantId: editing.merchantId });
+            } else {
+              await createStore(payload);
+            }
+          } catch (error) {
+            // 客户编码/DMS 编码重名一类只有后端判得了（各有一条部分唯一索引）；
+            // 返回 false 让弹窗留着，别让人把二十来个字段重填一遍。
+            message.error(requestErrorMessage(error, '保存失败，请稍后重试'));
+            return false;
           }
+          message.success(editing ? '已保存，修改直接生效并留痕' : '已创建，审核状态为待审核');
           actionRef.current?.reload();
           return true;
         }}
@@ -358,6 +399,26 @@ const StoresPage: React.FC = () => {
           colProps={{ span: 12 }}
           placeholder="如 09:00-22:00"
         />
+        {/* 订货系统的客户三列。两个编码各有一条部分唯一索引，重复的非空编码会被后端拒掉；
+            「留空」是合法状态（历史门店还没编码），所以三个都非必填。 */}
+        <ProFormText
+          name="customerCode"
+          label="客户编码"
+          colProps={{ span: 8 }}
+          tooltip="订货系统里对账用的客户编号；留空表示还没编码，填了就不能与别的门店重复"
+        />
+        <ProFormText
+          name="dmsCode"
+          label="DMS 编码"
+          colProps={{ span: 8 }}
+          tooltip="供应商 / 经销商系统里的编号；留空表示未接入"
+        />
+        <ProFormText
+          name="customerType"
+          label="客户类型"
+          colProps={{ span: 8 }}
+          tooltip="取值还没定型，先按实际分类填"
+        />
         <ProFormImageUpload
           name="photos"
           label="门店照片"
@@ -383,7 +444,13 @@ const StoresPage: React.FC = () => {
         modalProps={{ destroyOnClose: true }}
         onFinish={async (values) => {
           if (!auditTarget) return false;
-          await auditStore(auditTarget.row.id, auditTarget.approve, values.remark);
+          try {
+            await auditStore(auditTarget.row.id, auditTarget.approve, values.remark);
+          } catch (error) {
+            // 同上：审核抢状态失败（409）的理由要让人看见，驳回原因也别丢。
+            message.error(requestErrorMessage(error, '审核失败，请稍后重试'));
+            return false;
+          }
           message.success(auditTarget.approve ? '已通过' : '已驳回');
           actionRef.current?.reload();
           return true;

@@ -4,7 +4,8 @@
 --   1. 设备厂商及其接入凭据、令牌生命周期   → manufacturers / manufacturer_credentials
 --   2. 咖啡机设备主数据                     → devices / device_payment_methods
 --   3. 饮品主数据、三级价格、上下架          → drinks
---   4. 设备与饮品的供应关系                 → device_drinks
+--   4. 设备与饮品的供应关系                 → device_drinks（003 已 DROP：饮品直接挂在
+--                                            设备上，见那个文件的说明）
 --   5. 设备事件日志、设备余额账变流水        → device_events / device_balance_ledger
 --
 -- 门店、商户、用户、订单、支付方式目录、库存、出杯任务都不是本库的。外部服务的 ID

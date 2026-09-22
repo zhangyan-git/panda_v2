@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -32,7 +33,7 @@ func activationResponse(row *repository.ActivationListRow) dto.ActivationRespons
 	return dto.ActivationResponse{
 		ID:                  activation.ID,
 		LocationID:          activation.LocationID,
-		LocationName:        activation.LocationName,
+		LocationName:        row.LocationName,
 		Status:              activation.Status,
 		Remark:              activation.Remark,
 		DefaultCampaignID:   row.DefaultCampaignID,
@@ -62,36 +63,33 @@ func campaignResponse(detail *service.CampaignDetail) dto.CampaignResponse {
 	row := detail.View
 	campaign := row.Campaign
 	response := dto.CampaignResponse{
-		ID:                 campaign.ID,
-		ActivationID:       campaign.ActivationID,
-		LocationID:         row.LocationID,
-		LocationName:       row.LocationName,
-		MachineID:          campaign.MachineID,
-		Code:               campaign.Code,
-		Name:               campaign.Name,
-		ParticipantTarget:  campaign.ParticipantTarget,
-		Description:        campaign.Description,
-		IsDefault:          campaign.IsDefault,
-		StartAt:            campaign.StartAt,
-		EndAt:              campaign.EndAt,
-		Status:             campaign.Status,
-		Prizes:             prizeResponses(detail.Prizes),
-		PrizeTotalQuantity: row.PrizeTotalQuantity,
-		LiveRoundID:        row.LiveRoundID,
-		LiveRoundNo:        row.LiveRoundNo,
-		LiveRoundSize:      row.LiveRoundSize,
-		LiveRoundDone:      row.LiveRoundDone,
-		RoundCount:         row.RoundCount,
-		CreatedAt:          campaign.CreatedAt,
-		UpdatedAt:          campaign.UpdatedAt,
+		ID:                campaign.ID,
+		ActivationID:      campaign.ActivationID,
+		LocationID:        row.LocationID,
+		LocationName:      row.LocationName,
+		MachineID:         campaign.MachineID,
+		Code:              campaign.Code,
+		Name:              campaign.Name,
+		ParticipantTarget: campaign.ParticipantTarget,
+		Description:       campaign.Description,
+		IsDefault:         campaign.IsDefault,
+		Status:            campaign.Status,
+		Prize:             prizeResponse(detail.Prize),
+		LiveRoundID:       row.LiveRoundID,
+		LiveRoundNo:       row.LiveRoundNo,
+		LiveRoundSize:     row.LiveRoundSize,
+		LiveRoundDone:     row.LiveRoundDone,
+		RoundCount:        row.RoundCount,
+		CreatedAt:         campaign.CreatedAt,
+		UpdatedAt:         campaign.UpdatedAt,
 	}
 	return response
 }
 
-// campaignSummaryResponse 是列表页的活动形状：与详情同一个结构，只把奖池留空。
+// campaignSummaryResponse 是列表页的活动形状：与详情同一个结构，只把奖品留空（nil）。
 //
 // 用同一个结构体而不是另开一个 Summary 类型：前端那一张表同时服务两处，两个类型意味着
-// 两套 dataIndex，而它们的差别只有「有没有 prizes」——那种差别用「空数组」表达就够了。
+// 两套 dataIndex，而它们的差别只有「有没有 prize」——那个差别用「空值」表达就够了。
 func campaignSummaryResponse(row *repository.CampaignListRow) dto.CampaignResponse {
 	return campaignResponse(&service.CampaignDetail{View: row})
 }
@@ -104,19 +102,31 @@ func campaignSummaryResponses(rows []*repository.CampaignListRow) []dto.Campaign
 	return responses
 }
 
-func prizeResponses(prizes []*model.CampaignPrize) []dto.CampaignPrizeResponse {
+// prizeResponse 翻一个奖品。nil（活动没有奖品行）原样回 nil——前端那张详情页按「还没有
+// 奖品」渲染，而不是一个名字为空的奖品。
+func prizeResponse(prize *model.CampaignPrize) *dto.CampaignPrizeResponse {
+	if prize == nil {
+		return nil
+	}
+	return &dto.CampaignPrizeResponse{
+		ID:                prize.ID,
+		Name:              prize.Name,
+		CoverImage:        prize.CoverImage,
+		PosterImage:       prize.PosterImage,
+		ClaimInstructions: prize.ClaimInstructions,
+	}
+}
+
+// prizeListResponse 翻 GET /campaigns/{id}/prizes 那条路由的数组。
+//
+// 那条路由没有调用方（详情接口已经带上 prize 了），留着是因为删一条公开接口不在这次改动
+// 范围里。奖池只剩一行，它回的就是一个长度 0 或 1 的数组。
+func prizeListResponse(prizes []*model.CampaignPrize) []dto.CampaignPrizeResponse {
 	responses := make([]dto.CampaignPrizeResponse, 0, len(prizes))
 	for _, prize := range prizes {
-		responses = append(responses, dto.CampaignPrizeResponse{
-			ID:                prize.ID,
-			SortOrder:         prize.SortOrder,
-			PrizeKind:         prize.PrizeKind,
-			Name:              prize.Name,
-			CouponTemplateID:  prize.CouponTemplateID,
-			ImageURL:          prize.ImageURL,
-			ClaimInstructions: prize.ClaimInstructions,
-			Quantity:          prize.Quantity,
-		})
+		if mapped := prizeResponse(prize); mapped != nil {
+			responses = append(responses, *mapped)
+		}
 	}
 	return responses
 }
@@ -134,8 +144,6 @@ func roundResponse(row *repository.RoundListRow) dto.RoundResponse {
 		ParticipantTarget: round.ParticipantTarget,
 		ParticipantCount:  round.ParticipantCount,
 		WinnerCount:       round.WinnerCount,
-		StartsAt:          round.StartsAt,
-		EndsAt:            round.EndsAt,
 		DrawnAt:           round.DrawnAt,
 		CancelledAt:       round.CancelledAt,
 		CancelReason:      round.CancelReason,
@@ -199,7 +207,6 @@ func winResponse(win *model.Win) dto.WinResponse {
 		ParticipationID:    win.ParticipationID,
 		UserID:             win.UserID,
 		PrizeID:            win.PrizeID,
-		PrizeKind:          win.PrizeKind,
 		OriginalPrizeName:  win.OriginalPrizeName,
 		CurrentPrizeName:   win.CurrentPrizeName,
 		ClaimNo:            win.ClaimNo,
@@ -264,7 +271,6 @@ func drawResponse(outcome *repository.DrawOutcome) dto.DrawResponse {
 		WinnerCount:      draw.WinnerCount,
 		CreatedAt:        draw.CreatedAt,
 		Winners:          winResponses(outcome.Winners),
-		CampaignEnded:    outcome.CampaignEnded,
 	}
 	if outcome.Round != nil {
 		response.RoundNo = outcome.Round.RoundNo
@@ -307,7 +313,7 @@ func requireConsumer(w http.ResponseWriter, r *http.Request) (string, bool) {
 func requireAdmin(w http.ResponseWriter, r *http.Request) (string, bool) {
 	identity, ok := auth.IdentityFromRequest(r)
 	if !ok || strings.TrimSpace(identity.UserID) == "" {
-		api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, "unauthorized")
+		api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, msgUnauthorized)
 		return "", false
 	}
 	return identity.UserID, true
@@ -315,46 +321,202 @@ func requireAdmin(w http.ResponseWriter, r *http.Request) (string, bool) {
 
 // —— 错误 ——
 
+// 几个在请求解析阶段就要回给用户的中文句子。
+//
+// 抽成常量而不是在十来处各写一遍字面量：这些调用点本来就有同一个含义，而写十遍的结果一定
+// 是改的时候漏掉两三处——后台是中文界面，漏掉的那几处就会弹英文（2026-09-15 之前它们就是
+// 字面量英文 "invalid request body" / "status is invalid"）。
+//
+// 它们不进 userMessages：那张表按**错误值**索引，而这几句产生在错误值出现之前
+// （query 里的 status 还没变成 ErrStatusInvalid 就被挡下了）。
+const (
+	msgInvalidBody   = "请求体格式不正确"
+	msgStatusInvalid = "状态取值不合法"
+	msgUnauthorized  = "未登录"
+)
+
+// userMessages 是「服务层的错误值 → 给用户看的那句话」。
+//
+// **为什么要有这张表**：服务层的错误串一律是英文（`errors.New("this location already has
+// lottery enabled")`），这是 Go 的惯例，也让 grep 日志的语义保持清楚。但 admin-web 的
+// requestErrorMessage 会**优先用后端返回的 errorMessage**，于是这些英文原样弹到了运营脸上
+// ——2026-09-15 开通弹窗上就是一句「this location already has lottery enabled」。
+//
+// 所以人话在这一层决定：controller 是 HTTP 边界，也是唯一同时知道「这是哪一条错误」和
+// 「这句话是给谁看的」的地方。原来的写法是 `api.Error(..., err.Error())`，等于把日志文案
+// 直接当成产品文案。
+//
+// **这张表必须是全集**：漏一条不会报错，只会静默退回兜底那句话（日志里留一条 warn）。
+// userMessages_test.go 拿 service 的几组错误逐个钉住，新增错误值忘了加表会红。
+//
+// 措辞对着「运营看到这句话之后该做什么」写，不是对着英文直译：
+// 「这家门店已经开通了抽奖」比「location already activated」有用，
+// 「这一期的状态已经变了，请刷新后重试」比「round changed」有用。
+var userMessages = []struct {
+	err  error
+	text string
+}{
+	// —— 请求不合法（400）——
+	{service.ErrLocationIDRequired, "请选择门店"},
+	{service.ErrLocationIDInvalid, "门店 ID 不是合法的 UUID"},
+	{service.ErrStatusRequired, "缺少状态"},
+	{service.ErrStatusInvalid, "状态取值不合法"},
+	{service.ErrCampaignIDRequired, "缺少活动 ID"},
+	{service.ErrCampaignIDInvalid, "活动 ID 不是合法的 UUID"},
+	{service.ErrMachineIDInvalid, "咖啡机 ID 不是合法的 UUID"},
+	{service.ErrCampaignCodeRequired, "缺少活动短名"},
+	{service.ErrCampaignCodeInvalid, "活动短名只能是 1-16 位大写字母或数字"},
+	{service.ErrCampaignNameRequired, "缺少活动名称"},
+	{service.ErrTargetNotPositive, "参与门槛必须大于 0"},
+	{service.ErrPrizeIDInvalid, "奖品 ID 不是合法的 UUID"},
+	{service.ErrPrizeNameRequired, "缺少奖品名称"},
+	{service.ErrPrizeCoverRequired, "请上传奖品封面图"},
+	{service.ErrOrderIDInvalid, "订单 ID 不是合法的 UUID"},
+	{service.ErrRoundIDRequired, "缺少期次 ID"},
+	{service.ErrRoundIDInvalid, "期次 ID 不是合法的 UUID"},
+	{service.ErrReasonRequired, "请填写理由"},
+	{service.ErrReasonTooLong, "理由不能超过 200 个字"},
+	{service.ErrIdempotencyNeeded, "缺少订单号，也没有带 Idempotency-Key 请求头"},
+
+	// —— 找不到（404）——
+	{service.ErrActivationNotFound, "这家门店没有开通抽奖"},
+	{service.ErrCampaignNotFound, "活动不存在"},
+	{service.ErrRoundNotFound, "期次不存在"},
+	{service.ErrParticipationNotFound, "参与记录不存在"},
+	{service.ErrWinNotFound, "中奖记录不存在"},
+	{service.ErrDrawNotFound, "开奖记录不存在"},
+	// 门店不存在是「你选的那家店在门店库里查不到」——运营看到它该做的是刷新门店下拉，
+	// 所以这句里要带上「重选」的动作，而不是干说一句「不存在」。
+	{service.ErrStoreNotFound, "这家门店在门店库里不存在，请刷新后重新选择"},
+
+	// —— 状态冲突（409）：请求本身没问题，是现在这个局面不接受它 ——
+	{service.ErrLocationAlreadyActivated, "这家门店已经开通了抽奖"},
+	{service.ErrCampaignCodeTaken, "活动短名已被别的活动占用"},
+	{service.ErrDefaultCampaignExists, "这条开通记录已经有默认活动了"},
+	{service.ErrRoundAlreadyLive, "这个活动已经有一期在收了"},
+	{service.ErrRoundClosed, "这一期已经停止收人了"},
+	{service.ErrRoundChanged, "这一期的状态已经变了，请刷新后重试"},
+	{service.ErrRoundAlreadyDrawn, "这一期已经开过奖了"},
+	{service.ErrRoundNotAwaitingDraw, "这一期当前不该开奖，请刷新后重试"},
+	{service.ErrRoundCancelled, "这一期已经被作废"},
+	{service.ErrRoundHasParticipations, "已经有参与者的一期不能作废"},
+	{service.ErrIdempotencyKeyConflict, "这次参与和已有的一条参与记录撞了，请勿重复提交"},
+	{service.ErrMachineMismatch, "这是设备级活动，参与时要指到那台咖啡机"},
+	{service.ErrCampaignEnded, "这个活动已经结束了"},
+	{service.ErrCampaignStatusTransition, "当前状态不允许这样切换"},
+	{service.ErrParticipationFailed, "这次参与已经失败过了"},
+
+	// —— 身份缺失（401）：userId / 操作人不在请求体里，它来自令牌 ——
+	{service.ErrUserIDRequired, "未登录"},
+	{service.ErrActorRequired, "未登录"},
+}
+
+// userMessage 取这条错误给用户看的那句话；第二个返回值是「表里有它」。
+//
+// 用 errors.Is 逐个比而不是 map[error]string：service 与 repository 会把错误包一层上下文
+// 再往上返，包装之后两个值不再相等，map 查不到。
+func userMessage(err error) (string, bool) {
+	for _, entry := range userMessages {
+		if errors.Is(err, entry.err) {
+			return entry.text, true
+		}
+	}
+	return "", false
+}
+
+// genericErrorMessage 是表里没有这条错误时的兜底。
+//
+// 它**故意不是 err.Error()**：兜底存在的意义就是守住「不把英文和内部报错弹给用户」这条
+// 规矩。真走到这里说明表漏了一条，日志里有原文（下面记 warn）。
+const genericErrorMessage = "操作失败，请稍后重试"
+
+// userFacingMessage 取人话，取不到就兜底并记一条 warn。
+//
+// 记 warn 而不是 error：漏一条表不该让一次请求以 500 收场，那是两件事。但它在日志里必须
+// 找得到——不然后台只会说「操作失败」，谁也看不出漏的是哪一条。
+func userFacingMessage(ctx context.Context, err error) string {
+	if text, ok := userMessage(err); ok {
+		return text
+	}
+	slog.WarnContext(ctx, "lottery error has no user-facing message", "error", err)
+	return genericErrorMessage
+}
+
+// 分组：writeLotteryError 按组映射 HTTP 状态，userMessages_test.go 按组核对人话表。
+//
+// 分成组而不是把 errors.Is 一条条写进 switch，是为了让「新增一条 404 错误」变成一处改动，
+// 而不是两处（switch 一处、测试一处）——两处的写法漏过一次之后，测试就不再可信了。
+var (
+	// notFoundErrors：都是「你要的那个东西找不到」。
+	//
+	// 门店不存在与「开通记录不存在」同组：对调用方来说它们是同一件事。它与下面
+	// storesUnavailableErrors 成对——把问不到说成不存在，会让运营反复重试一个合法的开通。
+	notFoundErrors = []error{
+		service.ErrActivationNotFound,
+		service.ErrCampaignNotFound,
+		service.ErrRoundNotFound,
+		service.ErrParticipationNotFound,
+		service.ErrWinNotFound,
+		service.ErrDrawNotFound,
+		service.ErrStoreNotFound,
+	}
+
+	// conflictErrors：请求本身没问题，是现在这个局面不接受它。
+	conflictErrors = []error{
+		service.ErrLocationAlreadyActivated,
+		service.ErrCampaignCodeTaken,
+		service.ErrDefaultCampaignExists,
+		service.ErrRoundAlreadyLive,
+		service.ErrRoundClosed,
+		service.ErrRoundChanged,
+		service.ErrRoundAlreadyDrawn,
+		service.ErrRoundNotAwaitingDraw,
+		service.ErrRoundCancelled,
+		service.ErrRoundHasParticipations,
+		service.ErrIdempotencyKeyConflict,
+		service.ErrMachineMismatch,
+		service.ErrCampaignEnded,
+		service.ErrCampaignStatusTransition,
+		service.ErrParticipationFailed,
+	}
+
+	// unauthorizedErrors：userId / 操作人不在请求体里，它来自令牌。走到这里说明装配处漏挂了
+	// 认证中间件，不是用户填错了什么。
+	unauthorizedErrors = []error{service.ErrUserIDRequired, service.ErrActorRequired}
+)
+
+// matches 判断 err 是不是这一组里的某一个。
+func matches(err error, group []error) bool {
+	for _, candidate := range group {
+		if errors.Is(err, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 // writeLotteryError 把业务层的错误映射成 HTTP 响应。
 //
 // 顺序有讲究：**先认业务结论，再认请求不合法**。两边的错误值不重叠，所以顺序本身不影响
 // 结果，但它决定了新增一个错误值时最先要问的问题——「这是一次说得清楚的结果，还是调用方
-// 传错了？」。默认落到 500 且不把内部描述回给用户：那些字符串里会有账户域的错误、SQL 的
-// 报错，它们是给日志的，不是给小程序弹窗的。
+// 传错了？」。
+//
+// 回给用户的一律是中文（见 userMessages）。`fallback` 是**给日志的**：它是「这是哪一次
+// 请求」的英文描述，配合 slog 里的 error 才能定位，它不进响应体。
 func writeLotteryError(w http.ResponseWriter, r *http.Request, err error, fallback string) {
 	switch {
 	case service.IsValidationError(err):
 		// 错误码用字面量 "INVALID_ARGUMENT"，与 order-service / coupon-service 一致
 		// （platform/api 的常量表里没有它，那个表是给跨服务的通用码用的）。
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", userFacingMessage(r.Context(), err))
 
 	// —— 找不到（404）——
-	case errors.Is(err, service.ErrActivationNotFound),
-		errors.Is(err, service.ErrCampaignNotFound),
-		errors.Is(err, service.ErrRoundNotFound),
-		errors.Is(err, service.ErrParticipationNotFound),
-		errors.Is(err, service.ErrWinNotFound),
-		errors.Is(err, service.ErrDrawNotFound):
-		api.Error(w, http.StatusNotFound, api.CodeNotFound, err.Error())
+	case matches(err, notFoundErrors):
+		api.Error(w, http.StatusNotFound, api.CodeNotFound, userFacingMessage(r.Context(), err))
 
-	// —— 状态冲突（409）：请求本身没问题，是现在这个局面不接受它 ——
-	case errors.Is(err, service.ErrLocationAlreadyActivated),
-		errors.Is(err, service.ErrCampaignCodeTaken),
-		errors.Is(err, service.ErrDefaultCampaignExists),
-		errors.Is(err, service.ErrRoundAlreadyLive),
-		errors.Is(err, service.ErrRoundClosed),
-		errors.Is(err, service.ErrRoundChanged),
-		errors.Is(err, service.ErrRoundAlreadyDrawn),
-		errors.Is(err, service.ErrRoundNotAwaitingDraw),
-		errors.Is(err, service.ErrRoundCancelled),
-		errors.Is(err, service.ErrRoundHasParticipations),
-		errors.Is(err, service.ErrIdempotencyKeyConflict),
-		errors.Is(err, service.ErrMachineMismatch),
-		errors.Is(err, service.ErrCampaignEnded),
-		errors.Is(err, service.ErrCampaignWindowOver),
-		errors.Is(err, service.ErrCampaignStatusTransition),
-		errors.Is(err, service.ErrParticipationFailed):
-		api.Error(w, http.StatusConflict, api.CodeConflict, err.Error())
+	// —— 状态冲突（409）——
+	case matches(err, conflictErrors):
+		api.Error(w, http.StatusConflict, api.CodeConflict, userFacingMessage(r.Context(), err))
 
 	// —— 福卡不够：400 加一个**业务码** ——
 	//
@@ -363,11 +525,9 @@ func writeLotteryError(w http.ResponseWriter, r *http.Request, err error, fallba
 	case errors.Is(err, service.ErrInsufficientFortuneCards):
 		api.Error(w, http.StatusBadRequest, "INSUFFICIENT_FORTUNE_CARDS", "福卡不足")
 
-	// —— 身份缺失（401）：userId / 操作人不在请求体里，它来自令牌 ——
-	//
-	// 走到这里说明装配处漏挂了认证，不是用户填错了什么。
-	case errors.Is(err, service.ErrUserIDRequired), errors.Is(err, service.ErrActorRequired):
-		api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, err.Error())
+	// —— 身份缺失（401）——
+	case matches(err, unauthorizedErrors):
+		api.Error(w, http.StatusUnauthorized, api.CodeUnauthorized, "未登录")
 
 	// —— 账户域不可用：503 而不是 500 ——
 	//
@@ -375,17 +535,25 @@ func writeLotteryError(w http.ResponseWriter, r *http.Request, err error, fallba
 	case errors.Is(err, service.ErrFortuneCardsUnavailable):
 		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "福卡账户不可用")
 
+	// —— 商户域不可用：503 ——
+	//
+	// 开通前那次存在性检查没问出结果。**这一条必须是 503 而不是 404**：我们并不知道这家店
+	// 存不存在，说「不存在」是在替商户域下一个我们证不出来的结论。
+	case errors.Is(err, service.ErrStoresUnavailable):
+		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "门店信息不可用")
+
 	// —— 本服务自己的 bug：500 ——
 	//
 	// 参数被账户域判非法意味着我们传错了东西。**大声记日志**：这类 bug 不会自己消失，
-	// 而用户那边只该看到一句「系统繁忙」。
+	// 而用户那边只该看到一句兜底话——`fallback` 只进日志，不进响应体。
 	case errors.Is(err, service.ErrInvalidDeductRequest):
-		slog.ErrorContext(r.Context(), "lottery service sent an invalid deduction request", "error", err)
-		api.Error(w, http.StatusInternalServerError, api.CodeInternal, fallback)
+		slog.ErrorContext(r.Context(), "lottery service sent an invalid deduction request",
+			"error", err, "op", fallback)
+		api.Error(w, http.StatusInternalServerError, api.CodeInternal, genericErrorMessage)
 
 	default:
-		slog.ErrorContext(r.Context(), "lottery request failed", "error", err, "fallback", fallback)
-		api.Error(w, http.StatusInternalServerError, api.CodeInternal, fallback)
+		slog.ErrorContext(r.Context(), "lottery request failed", "error", err, "op", fallback)
+		api.Error(w, http.StatusInternalServerError, api.CodeInternal, genericErrorMessage)
 	}
 }
 

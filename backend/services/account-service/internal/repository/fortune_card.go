@@ -81,12 +81,32 @@ type FreezeParams struct {
 	OccurredAt  time.Time
 }
 
+// PreviewFreezeParams 是一次「冻得上吗」的预览：订单域在受理退款申请之前问的那一句。
+//
+// 只有用户与发放键：预览不看售后单，它问的不是「这张单冻过没有」而是「此刻冻得上几张」。
+type PreviewFreezeParams struct {
+	UserID    string
+	EntryKeys []string
+}
+
 // ReleaseParams 是一次解冻（申请被驳回或用户撤销）。
 //
 // 只有售后单号：解冻不需要知道冻了哪些键、冻了多少——那些都在冻结行上，而这一动作的
 // 语义是「把这张申请冻住的全部放回去」。
 type ReleaseParams struct {
 	AfterSaleNo string
+	Reason      string
+	OccurredAt  time.Time
+}
+
+// RecoverParams 是一次追回（退款成功，这一单送出去的福卡从账上收回来）。
+//
+// 只有售后单号：要冲哪几笔发放、总共几张，都在冻结行上（entry_keys 与 amount）——
+// 让调用方再送一份就是把订单域拆分层的规则复制到第二个地方，两份迟早对不上。
+type RecoverParams struct {
+	AfterSaleNo string
+	Title       string
+	Remark      string
 	Reason      string
 	OccurredAt  time.Time
 }
@@ -381,13 +401,17 @@ func (r *PostgresRepository) FreezeAfterSale(ctx context.Context, params FreezeP
 	return created, nil
 }
 
-// freezableAmount 是这批发放键现在能冻多少张：只算还挂着的发放。
+// freezableAmount 是这批发放键现在**还挂着**多少张：发放总额里没被冲正过的那些。
 //
-// 两个条件今天都用不上（退款成功后的追回还没做），留着是为了将来它落地之后仍然对：
-// 一笔已经被冲正的发放没有任何可冻的东西，而重投一条旧的 applied 事件会碰到这种行。
-func freezableAmount(ctx context.Context, tx pgx.Tx, userID string, entryKeys []string) (int64, error) {
+// 「只算还挂着的」那个条件今天真的会用上：退款成功后的追回会把发放冲掉，而重投一条旧的
+// applied 事件（或者用户第二次申请退款）会碰到这种已经被冲正的行——一笔冲正过的发放没有
+// 任何可冻的东西，按全额冻会让可用变成负数。
+//
+// RecoverAfterSale 也拿它算「追不回来多少张」：这个数比冻结额大出来的部分，正是申请退款
+// 之前就被抽掉的卡。两处用的是同一句 SQL，对「这笔还挂着」的判断必须是同一个。
+func freezableAmount(ctx context.Context, q rowQuerier, userID string, entryKeys []string) (int64, error) {
 	var net int64
-	err := tx.QueryRow(ctx, `SELECT coalesce(sum(e.amount), 0)
+	err := q.QueryRow(ctx, `SELECT coalesce(sum(e.amount), 0)
 		FROM fortune_card_entries e
 		WHERE e.user_id = $1 AND e.entry_key = ANY($2) AND e.entry_type = $3
 		  AND NOT EXISTS (SELECT 1 FROM fortune_card_entries r WHERE r.reverses_entry_id = e.id)`,
@@ -396,6 +420,51 @@ func freezableAmount(ctx context.Context, tx pgx.Tx, userID string, entryKeys []
 		return 0, mapPGError(err)
 	}
 	return net, nil
+}
+
+// rowQuerier 是「能查一行」的最小面：*pgxpool.Pool 与 pgx.Tx 都满足它。
+//
+// 拆出来只为一件事：freezableAmount 那句 SQL 要被**两条路**用——写的那条在事务里
+// （FreezeAfterSale），只读的那条不开事务（PreviewFreezeAfterSale）。让两边各抄一遍
+// SQL 的话，「还挂着多少张」这个判断就会有两个版本，而它正是冻结与预览必须一致的那个数。
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// PreviewFreezeAfterSale 是「此刻冻这一批发放冻得上几张」：FreezeAfterSale 的只读版本。
+//
+// 两个返回值是**两个不同的事实**，调用方要分开看：
+//
+//	granted   这几笔发放还挂着多少张（没被冲正过的）。**0 表示发放还没落库**——一张订单
+//	          可以先申请退款再完成（申请早于发放是设计支持的，那时冻结行是个空壳，等
+//	          发放落库时由 bindGrantToFreezes 补上）。所以它不能读成「卡被用掉了」。
+//	freezable 此刻真的冻得上的张数 = min(granted, 账户可用)。
+//
+// 少了 granted 就没法把「还没发」与「发过但已经抽光了」分开：两种情况下 freezable 都是 0，
+// 而前者该放行、后者该拒。
+func (r *PostgresRepository) PreviewFreezeAfterSale(ctx context.Context, params PreviewFreezeParams) (granted, freezable int64, err error) {
+	// 键已经在 service 那一层清过空白（与 FreezeAfterSale 同一条规矩），这里只管空列表：
+	// 这一单没承诺福卡、或者退的是不送福卡的会员套餐，两个数都是 0。
+	keys := params.EntryKeys
+	if len(keys) == 0 {
+		return 0, 0, nil
+	}
+
+	// 账户行可能是懒创建之前的：没有行就是余额 0、可用 0，与「一张都没有」同一件事。
+	var balance, frozen int64
+	err = r.pool.QueryRow(ctx, `SELECT balance, frozen_balance FROM fortune_card_accounts
+		WHERE user_id = $1`, params.UserID).Scan(&balance, &frozen)
+	if errors.Is(err, pgx.ErrNoRows) {
+		balance, frozen = 0, 0
+	} else if err != nil {
+		return 0, 0, mapPGError(err)
+	}
+
+	granted, err = freezableAmount(ctx, r.pool, params.UserID, keys)
+	if err != nil {
+		return 0, 0, err
+	}
+	return granted, min(granted, max(balance-frozen, 0)), nil
 }
 
 // lookupFreeze 说这张售后单是不是已经冻过了。
@@ -483,15 +552,201 @@ func (r *PostgresRepository) ReleaseAfterSale(ctx context.Context, params Releas
 	return released, nil
 }
 
+// RecoverAfterSale 追回：钱退成了，这一单送出去的福卡收回来。
+//
+// 它是「退款成功」这一拍的收口，冻结行只有在这里才走到 recovered。与 ReleaseAfterSale 的
+// 差别是一件事：解冻只把可用放回去（余额一分不动），追回还要**真的把余额扣掉**——所以它
+// 写冲正流水，而解冻不写。
+//
+// 两条铁律，都写在这段代码的形状里：
+//
+//  1. **先解冻，再冲正。** 顺序反过来写的那一瞬间 frozen_balance > balance，
+//     fortune_card_accounts_frozen_within_balance 那条 CHECK 当场炸（migrations/account/003
+//     的注释就是为这一步留的）。
+//  2. **部分冲正是常态。** 申请退款之前就已经被抽掉的卡追不回来——冻结时按可用余额钳过
+//     （见 FreezeAfterSale），冻结额本来就小于发放额。所以冲正总额以冻结额为上限，逐笔
+//     「有多少冲多少」，冲不满的那一笔只冲差额。整笔进整笔出会把余额打成负数。
+//
+// 幂等压在 status 上：不是 frozen 就直接返回，重投与乱序都安全。**不靠流水键兜底**是因为
+// 一次追回要冲好几笔发放，那几把键各管各的，凑不出「这件事做过了」这一个判断。
+//
+// 返回的是实际追回的张数（可能小于冻结额，见上）。追不回来的那部分写进冻结行的 reason，
+// 让它在页面上看得见——「钱退了、卡还剩几张在外面」是要有人知道的事。
+func (r *PostgresRepository) RecoverAfterSale(ctx context.Context, params RecoverParams) (int64, error) {
+	var recovered int64
+	err := r.inTx(ctx, func(tx pgx.Tx) error {
+		// 不加锁地读一次，只为拿到 user_id：锁账户行需要它当参数。与 ReleaseAfterSale 同一句，
+		// 权威值在锁内重读一遍。
+		var userID string
+		err := tx.QueryRow(ctx, `SELECT user_id::text FROM fortune_card_freezes
+			WHERE after_sale_no = $1`, params.AfterSaleNo).Scan(&userID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// 这一单没承诺过福卡（没有冻结行），追回无从谈起。不是错误。
+			return nil
+		}
+		if err != nil {
+			return mapPGError(err)
+		}
+
+		// 账户行先锁、冻结行后锁：与发放/扣减/冻结/解冻抢的是同一把锁，顺序也必须一样，
+		// 反过来两条路成环（见 ReleaseAfterSale 那段注释）。
+		var locked string
+		if err := tx.QueryRow(ctx, `SELECT user_id::text FROM fortune_card_accounts
+			WHERE user_id = $1 FOR UPDATE`, userID).Scan(&locked); err != nil {
+			return mapPGError(err)
+		}
+
+		var (
+			id        string
+			amount    int64
+			status    string
+			orderNo   string
+			entryKeys []string
+		)
+		err = tx.QueryRow(ctx, `SELECT id::text, amount, status, order_no, entry_keys
+			FROM fortune_card_freezes WHERE after_sale_no = $1 FOR UPDATE`,
+			params.AfterSaleNo).Scan(&id, &amount, &status, &orderNo, &entryKeys)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return mapPGError(err)
+		}
+		if status != model.FreezeStatusFrozen {
+			// 已经解冻（驳回/撤销/退款失败）或者已经追回过。重投到这里结束。
+			return nil
+		}
+
+		// 第一步：把冻结额放掉。
+		if _, err := tx.Exec(ctx, `UPDATE fortune_card_accounts
+			SET frozen_balance = frozen_balance - $2, updated_at = NOW() WHERE user_id = $1`,
+			userID, amount); err != nil {
+			return mapPGError(err)
+		}
+
+		// 第二步：冲正。预算就是冻结额，一笔一笔用到完。
+		//
+		// 动手之前先问一句「这些键下现在还挂着多少张」。它比冻结额大出来的那一部分，就是
+		// 申请退款之前已经被抽掉的卡：冻结按可用余额钳过，它们从来没有被冻上，这一刀也就
+		// 追不回来。这个数只用来写下面那句说明，不参与「怎么冲」——预算仍然是冻结额。
+		live, err := freezableAmount(ctx, tx, userID, entryKeys)
+		if err != nil {
+			return err
+		}
+		budget := amount
+		for _, key := range entryKeys {
+			if budget <= 0 {
+				break
+			}
+			taken, err := r.reverseGrantsUnderKey(ctx, tx, userID, key, orderNo, &budget, params)
+			if err != nil {
+				return err
+			}
+			recovered += taken
+		}
+
+		reason := params.Reason
+		if short := live - recovered; short > 0 {
+			// 追不回来的张数写进原因里，让它在页面上看得见——「钱退了、卡还有几张在外面」
+			// 是客服要知道的事。
+			//
+			// **不报错**：钱是真的退回去了，为这个失败只会让这条事件一路重试到死信，而它
+			// 要表达的事早就完成了。
+			reason = fmt.Sprintf("%s（%d 张已参与抽奖，追不回来）", reason, short)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE fortune_card_freezes
+			SET status = $2, reason = $3, recovered_at = $4, updated_at = NOW() WHERE id = $1`,
+			id, model.FreezeStatusRecovered, reason, params.OccurredAt); err != nil {
+			return mapPGError(err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return recovered, nil
+}
+
+// reverseGrantsUnderKey 把一把发放键下还没被冲正的发放逐笔冲掉，直到预算用完。
+//
+// 键下可能有多笔（同一单命中两次加赠、或者订单域拆重了），所以是「逐笔」而不是「一笔」。
+// 已经被冲正的发放不在此列：那把 `NOT EXISTS` 与 freezableAmount 用的是同一句，两处对
+// 「这笔还挂着」的判断必须是同一个。
+//
+// 冲正的幂等键用 reverse:{entryId}，与 gRPC 的 Reverse 同一形状——同一笔发放冲两次会撞上
+// 那把唯一索引，这里的循环也因此在多副本下是安全的。
+func (r *PostgresRepository) reverseGrantsUnderKey(ctx context.Context, tx pgx.Tx, userID, entryKey, orderNo string, budget *int64, params RecoverParams) (int64, error) {
+	rows, err := tx.Query(ctx, `SELECT e.id::text, e.amount
+		FROM fortune_card_entries e
+		WHERE e.user_id = $1 AND e.entry_key = $2 AND e.entry_type = $3
+		  AND NOT EXISTS (SELECT 1 FROM fortune_card_entries r WHERE r.reverses_entry_id = e.id)
+		ORDER BY e.occurred_at, e.id`, userID, entryKey, model.EntryTypeGrant)
+	if err != nil {
+		return 0, mapPGError(err)
+	}
+	type grant struct {
+		id     string
+		amount int64
+	}
+	var grants []grant
+	for rows.Next() {
+		var g grant
+		if err := rows.Scan(&g.id, &g.amount); err != nil {
+			rows.Close()
+			return 0, mapPGError(err)
+		}
+		grants = append(grants, g)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, mapPGError(err)
+	}
+
+	var taken int64
+	for _, g := range grants {
+		if *budget <= 0 {
+			break
+		}
+		// 有多少冲多少：这一笔可能比剩下的预算大（申请前被抽掉过几张），也可能小
+		// （同一把键下有好几笔）。差额那一半留在账上，不属于这次退款要追回的部分。
+		take := min(g.amount, *budget)
+		if take <= 0 {
+			continue
+		}
+		entryID := g.id
+		if _, err := r.applyEntry(ctx, tx, entryParams{
+			UserID:    userID,
+			EntryType: model.EntryTypeReverse,
+			Amount:    -take,
+			Title:     params.Title,
+			// 与 Reverse 同一套：冲正指向被冲的那笔流水，单号带着订单号，订单详情那个
+			// 福卡页签按订单号取全——填错这一笔就不会出现在它冲掉的那笔旁边。
+			ReferenceType:   model.ReferenceTypeEntry,
+			ReferenceID:     entryID,
+			ReferenceNo:     orderNo,
+			EntryKey:        model.ReverseKey(entryID),
+			ReversesEntryID: &entryID,
+			Remark:          params.Remark,
+			OccurredAt:      params.OccurredAt,
+		}); err != nil {
+			return 0, err
+		}
+		*budget -= take
+		taken += take
+	}
+	return taken, nil
+}
+
 // freezeColumns 是 fortune_card_freezes 的读取列，顺序与 scanFreeze 严格一一对应。
 const freezeColumns = `id::text, user_id::text, after_sale_no, order_id, order_no, entry_keys,
-	amount, status, reason, occurred_at, released_at, created_at, updated_at`
+	amount, status, reason, occurred_at, released_at, recovered_at, created_at, updated_at`
 
 func scanFreeze(row interface{ Scan(...any) error }) (*model.FortuneCardFreeze, error) {
 	freeze := &model.FortuneCardFreeze{}
 	if err := row.Scan(&freeze.ID, &freeze.UserID, &freeze.AfterSaleNo, &freeze.OrderID,
 		&freeze.OrderNo, &freeze.EntryKeys, &freeze.Amount, &freeze.Status, &freeze.Reason,
-		&freeze.OccurredAt, &freeze.ReleasedAt, &freeze.CreatedAt, &freeze.UpdatedAt); err != nil {
+		&freeze.OccurredAt, &freeze.ReleasedAt, &freeze.RecoveredAt, &freeze.CreatedAt,
+		&freeze.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return freeze, nil

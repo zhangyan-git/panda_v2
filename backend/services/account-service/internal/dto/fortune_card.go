@@ -78,17 +78,21 @@ type FreezeQuery struct {
 // EntryKeys 一起给出来：客服判断「冻的是哪张卡」要看它（base 是订单基础赠送、
 // bonus:{campaignId} 是加购加赠），而按退款范围冻的语义全在这几个键里。
 type FreezeResponse struct {
-	ID          string     `json:"id"`
-	UserID      string     `json:"userId"`
-	AfterSaleNo string     `json:"afterSaleNo"`
-	OrderID     string     `json:"orderId"`
-	OrderNo     string     `json:"orderNo"`
-	EntryKeys   []string   `json:"entryKeys"`
-	Amount      int64      `json:"amount"`
-	Status      string     `json:"status"`
-	Reason      string     `json:"reason"`
-	OccurredAt  time.Time  `json:"occurredAt"`
+	ID          string    `json:"id"`
+	UserID      string    `json:"userId"`
+	AfterSaleNo string    `json:"afterSaleNo"`
+	OrderID     string    `json:"orderId"`
+	OrderNo     string    `json:"orderNo"`
+	EntryKeys   []string  `json:"entryKeys"`
+	Amount      int64     `json:"amount"`
+	Status      string    `json:"status"`
+	Reason      string    `json:"reason"`
+	OccurredAt  time.Time `json:"occurredAt"`
+	// ReleasedAt 与 RecoveredAt 互斥：一条冻结行只会走到两者之一，走到哪个看 Status。
+	// 分成两个字段而不是一个「结束时间」：解冻与追回是不同的两件事（余额一个没动、
+	// 一个真的少了），前端那一列要不要合并是前端的事，接口不说谎。
 	ReleasedAt  *time.Time `json:"releasedAt"`
+	RecoveredAt *time.Time `json:"recoveredAt"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
 }

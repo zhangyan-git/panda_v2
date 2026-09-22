@@ -47,7 +47,7 @@ type SeedInput struct {
 // DeriveSeed 算出这一期的种子，十六进制小写 64 字符。
 //
 // 拼接不加分隔符是安全的：round_id 与参与 id 都是定长 36 字符的 UUID，count 是十进制
-// 整数，trigger 取自一个三个取值的闭集（threshold / deadline / manual），而拼接的总长度
+// 整数，trigger 取自一个两个取值的闭集（threshold / manual），而拼接的总长度
 // 由参与数决定——没有哪两组的拼接结果会碰巧相等。
 //
 // 参与集合为空时**不该调用它**：零人参与不写开奖记录，直接作废（见 worker/draw.go），
@@ -70,10 +70,14 @@ type Winner struct {
 	PrizeIndex int
 }
 
-// Prizes 是分配名额用的奖池视图：按 sort_order 升序，每项带自己的 quantity。
+// Prize 是分配名额用的奖池视图：一项奖带自己的 quantity。
 //
 // 用切片而不是 []*model.CampaignPrize 是为了让算法不依赖数据库行——它的输入只有
 // 「有几种奖、各多少份」，别的一概无关。
+//
+// 现在一个活动只有一个奖品，所以传进来的切片恒为一个元素、Quantity 恒为 1——**但这里
+// 没有按这个前提改写**：它是纯函数、有多奖品分配的单测，而在上层收到约束比在这一层写死
+// 一个「反正只有一个」要好（真要一期发多份时，动的只是 campaignParams 里那个 quantity）。
 type Prize struct {
 	ID       string
 	Quantity int
@@ -107,8 +111,9 @@ func SelectWinners(seed string, participationIDs []string, prizes []Prize) []Win
 		return ranked[i].id < ranked[j].id
 	})
 
-	// 名额按 sort_order 依次分配：第一档拿满自己的 quantity 份，再轮到下一档。
-	// 名额与奖池对不上时以参与集合为准（见上），所以这里只算一个总数。
+	// 名额按切片顺序分配：第一项拿满自己的 quantity 份，再轮到下一项。切片顺序在过去就是
+	// sort_order，现在只剩一个奖品、它恒排第一。名额与奖池对不上时以参与集合为准（见上），
+	// 所以这里只算一个总数。
 	slots := 0
 	for _, prize := range prizes {
 		if prize.Quantity <= 0 {

@@ -61,7 +61,8 @@ type CoffeeBeanServiceClient interface {
 	// 「服务坏了」——调用方应当把它翻成一次发起即失败的支付结果（客户端可以换方式重试），
 	// 而不是当成故障去重试或告警。
 	DeductCoffeeBeans(ctx context.Context, in *DeductCoffeeBeansRequest, opts ...grpc.CallOption) (*DeductCoffeeBeansResponse, error)
-	// 把一单扣掉的豆还回去（退款冲正，售后审核通过时由本服务自己发起）。
+	// 把一单扣掉的豆还回去（退款冲正；今天由本服务的售后事件消费者在**退款成功**那一刻发起，
+	// 审核通过时不还——钱还没出去）。
 	//
 	// 入参给订单与金额，不给流水 ID：调用方（事件消费者）手里只有订单，让账户域自己去反查
 	// 那笔扣减，比让订单域把账变 ID 塞进事件载荷少一层耦合。
@@ -148,7 +149,8 @@ type CoffeeBeanServiceServer interface {
 	// 「服务坏了」——调用方应当把它翻成一次发起即失败的支付结果（客户端可以换方式重试），
 	// 而不是当成故障去重试或告警。
 	DeductCoffeeBeans(context.Context, *DeductCoffeeBeansRequest) (*DeductCoffeeBeansResponse, error)
-	// 把一单扣掉的豆还回去（退款冲正，售后审核通过时由本服务自己发起）。
+	// 把一单扣掉的豆还回去（退款冲正；今天由本服务的售后事件消费者在**退款成功**那一刻发起，
+	// 审核通过时不还——钱还没出去）。
 	//
 	// 入参给订单与金额，不给流水 ID：调用方（事件消费者）手里只有订单，让账户域自己去反查
 	// 那笔扣减，比让订单域把账变 ID 塞进事件载荷少一层耦合。

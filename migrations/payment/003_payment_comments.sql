@@ -6,7 +6,7 @@
 COMMENT ON TABLE payment_channels IS '支付渠道对接配置：一个渠道一套配置，沙箱与生产是两行；密钥不在本表';
 COMMENT ON COLUMN payment_channels.legacy_id IS '老库支付方式 ID（ObjectID 十六进制），仅迁移过来的行有值';
 COMMENT ON COLUMN payment_channels.code IS '渠道代码，如 wechat_miniapp、unionpay、fengxuan_wanlian、youlian，业务唯一';
-COMMENT ON COLUMN payment_channels.provider IS '渠道适配器标识（wechat/unionpay/fengxuan/youlian/manual）；接新渠道是插一行，不改表约束';
+COMMENT ON COLUMN payment_channels.provider IS '渠道适配器标识，取值是协议族（manual/form_md5/hmac_body/ums/wechat_v3）而不是渠道名：丰选万联、优联、首创饭卡、北方工业饭卡四家同为 form_md5，差别只在 config；族内加渠道是插一行，族外加才要改代码';
 COMMENT ON COLUMN payment_channels.mode IS '运行模式：sandbox=沙箱，live=生产';
 COMMENT ON COLUMN payment_channels.status IS '渠道状态：enabled=启用，disabled=停用，legacy_readonly=存量只读（不再发起新支付，但仍可退款与对账）';
 COMMENT ON COLUMN payment_channels.config IS '渠道级非敏感对接参数（商户号、appid、回调地址、证书序列号等），不放任何密钥；方式级参数在 payment_methods.params，返回客户端时两层合并';

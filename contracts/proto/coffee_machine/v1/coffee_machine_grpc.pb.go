@@ -19,15 +19,19 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	CoffeeMachineService_GetDevice_FullMethodName          = "/panda.coffee_machine.v1.CoffeeMachineService/GetDevice"
-	CoffeeMachineService_ListManufacturers_FullMethodName  = "/panda.coffee_machine.v1.CoffeeMachineService/ListManufacturers"
-	CoffeeMachineService_ListDevices_FullMethodName        = "/panda.coffee_machine.v1.CoffeeMachineService/ListDevices"
-	CoffeeMachineService_ListDrinks_FullMethodName         = "/panda.coffee_machine.v1.CoffeeMachineService/ListDrinks"
-	CoffeeMachineService_UpsertDeviceDrink_FullMethodName  = "/panda.coffee_machine.v1.CoffeeMachineService/UpsertDeviceDrink"
-	CoffeeMachineService_ListDeviceDrinks_FullMethodName   = "/panda.coffee_machine.v1.CoffeeMachineService/ListDeviceDrinks"
-	CoffeeMachineService_DeleteManufacturer_FullMethodName = "/panda.coffee_machine.v1.CoffeeMachineService/DeleteManufacturer"
-	CoffeeMachineService_DeleteDevice_FullMethodName       = "/panda.coffee_machine.v1.CoffeeMachineService/DeleteDevice"
-	CoffeeMachineService_DeleteDrink_FullMethodName        = "/panda.coffee_machine.v1.CoffeeMachineService/DeleteDrink"
+	CoffeeMachineService_GetDevice_FullMethodName           = "/panda.coffee_machine.v1.CoffeeMachineService/GetDevice"
+	CoffeeMachineService_GetDeviceBySerial_FullMethodName   = "/panda.coffee_machine.v1.CoffeeMachineService/GetDeviceBySerial"
+	CoffeeMachineService_GetDeviceDrink_FullMethodName      = "/panda.coffee_machine.v1.CoffeeMachineService/GetDeviceDrink"
+	CoffeeMachineService_GetDrink_FullMethodName            = "/panda.coffee_machine.v1.CoffeeMachineService/GetDrink"
+	CoffeeMachineService_DeductDeviceBalance_FullMethodName = "/panda.coffee_machine.v1.CoffeeMachineService/DeductDeviceBalance"
+	CoffeeMachineService_ListManufacturers_FullMethodName   = "/panda.coffee_machine.v1.CoffeeMachineService/ListManufacturers"
+	CoffeeMachineService_ListDevices_FullMethodName         = "/panda.coffee_machine.v1.CoffeeMachineService/ListDevices"
+	CoffeeMachineService_ListDrinks_FullMethodName          = "/panda.coffee_machine.v1.CoffeeMachineService/ListDrinks"
+	CoffeeMachineService_UpsertDeviceDrink_FullMethodName   = "/panda.coffee_machine.v1.CoffeeMachineService/UpsertDeviceDrink"
+	CoffeeMachineService_ListDeviceDrinks_FullMethodName    = "/panda.coffee_machine.v1.CoffeeMachineService/ListDeviceDrinks"
+	CoffeeMachineService_DeleteManufacturer_FullMethodName  = "/panda.coffee_machine.v1.CoffeeMachineService/DeleteManufacturer"
+	CoffeeMachineService_DeleteDevice_FullMethodName        = "/panda.coffee_machine.v1.CoffeeMachineService/DeleteDevice"
+	CoffeeMachineService_DeleteDrink_FullMethodName         = "/panda.coffee_machine.v1.CoffeeMachineService/DeleteDrink"
 )
 
 // CoffeeMachineServiceClient is the client API for CoffeeMachineService service.
@@ -35,8 +39,75 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type CoffeeMachineServiceClient interface {
 	// GetDevice 是本服务对出杯链路的唯一义务：下单时校验设备状态（方案 5.8）。
-	// 调用方是 order-service 与 inventory，两者都只要读。
+	// 调用方是 order-service（下单时校验设备状态），它只要读。
 	GetDevice(ctx context.Context, in *DeviceID, opts ...grpc.CallOption) (*Device, error)
+	// GetDeviceBySerial 是同一件事的另一把钥匙：GetDevice 按我们的 uuid 取，这一条按**机器
+	// 报上来的序列号**取。设备回调（线下刷卡机，方案 §四）只有序列号，没有我们的 uuid——
+	// 那台机器不会知道我们的主键，所以这条不是「GetDevice 的便利版」，是那条路上唯一的入口。
+	//
+	// 调用方是 order-service：拿到设备才能定门店（门店来自设备，不来自请求，见它的
+	// resolveDevice），而订单要落 store_id。
+	//
+	// 取不到时回 NotFound；serial_unique 为空回 InvalidArgument——它不是「没查到」，是没给。
+	GetDeviceBySerial(ctx context.Context, in *GetDeviceBySerialRequest, opts ...grpc.CallOption) (*Device, error)
+	// GetDeviceDrink 是设备回调找饮品的那一条：机器只知道「我这杯是几号」，既不知道我们的
+	// uuid，也不知道那个编号落在哪一列。
+	//
+	// 它是**查一条，不是列一份菜单**。走 ListDrinks 再自己翻页去找看起来更省事，但有两个
+	// 问题：一是把「编号落在 product_num 还是 origin_id」这条饮品库的布局知识搬给了调用方，
+	// 二是列表是分页的——机器上饮品一多，匹配会在某一页之后静默失败，而那时钱已经收过了。
+	//
+	// 取不到时回 NotFound；device_id 或 drink_code 为空回 InvalidArgument。
+	GetDeviceDrink(ctx context.Context, in *GetDeviceDrinkRequest, opts ...grpc.CallOption) (*Drink, error)
+	// GetDrink 按**我们的 uuid** 取一杯饮品，是 order-service 下单时给饮品行定价的那一条。
+	//
+	// 它存在的理由与 GetMembershipPlan 一模一样：**订单行上那份快照不能由调用方给**。
+	// 订单行的 product_name / product_img / price / vip_price 同时决定三件事——用户看到的名字和
+	// 图、他付多少钱、会员省了多少——这三件全是本域的事实。让调用方自己填那一份，就等于让
+	// 调用方定价：一条 originalUnitPrice=1 的请求能一分钱买走一杯美式。
+	//
+	// 所以这条路的形状是：客户端只给 drink_id，order-service 拿它来问这里，把这一份冻进订单行。
+	//
+	// 它与 GetDeviceDrink 是**两把不同的钥匙**，不要合并：那一条收的是机器报上来的编号、答案在
+	// 特定一台设备上（`device_id + product_num|origin_id`）；这一条收的是我们的主键，答案是库里
+	// 那一行。下单的调用方手里只有后一种。
+	//
+	// **不按 status 过滤，原样把 status 回给调用方。** 这与 GetDeviceDrink 有意不拦 status 是同
+	// 一个理由的两面：同一条饮品在两条路上该不该卖，分歧点不在 status 那一列，而在**钱收没收到**
+	// ——设备回调那条路钱已经在机器上收过了，拦了就是丢单；下单这条路还没有。那是订单域的事实，
+	// 所以判断留在 order-service。本服务只回答「这一行是什么」。
+	//
+	// FailedPrecondition 在本条上**没有含义**，不要照 GetMembershipPlan 给它补一个：下架是一列
+	// 事实，不是一次拒绝。
+	//
+	// 取不到回 NotFound；id 不是 uuid 回 InvalidArgument——它不是「没查到」，是没给。
+	GetDrink(ctx context.Context, in *DrinkID, opts ...grpc.CallOption) (*Drink, error)
+	// DeductDeviceBalance 是**本服务唯一对外开的写口**（其余 rpc 都是读）。调用方是
+	// order-service：取货码那条路上，钱从设备余额里出（见方案 §四）。
+	//
+	// 为什么不是 payment-service：那笔钱不在任何渠道里，渠道分账也没有可动的资金
+	// （与账户出资同一条理由）。钱的所在地是这台设备，所以扣它的接口就在持有设备余额的
+	// 这个服务上。
+	//
+	// 三件事在**同一个事务**里：行锁设备、改余额、追加一条 amount 为负的流水。
+	// 只改余额不写流水，这台机器的钱怎么没的就查不到（老系统就是只 $inc 不记账，
+	// 这里是有意不照抄）。
+	//
+	// 幂等靠 device_balance_ledger_one_per_request：同一个 request_id 第二次进来
+	// 扣不进去，回 applied=false 而不是错误——重投是常态，不是故障。
+	//
+	// 重投**在验证码校验之前**就被认出来（按 request_id 取回当初那一行流水），原因是这条路
+	// 真正的用途是「订单没建出来时重放」：那笔钱已经动过了，此时验证码对不对不该再决定这一单
+	// 能不能补出来（码可能在两次之间被后台改过）。扣减本身一次都不会发生第二次。
+	//
+	// 取不到设备回 NotFound；amount <= 0 或 request_id 为空回 InvalidArgument；
+	// 验证码不对（或这台设备根本没配过）回 PermissionDenied；余额不够回
+	// FailedPrecondition（这一单真的做不成，且**一个字段都没写**）。
+	//
+	// 验证码放在了这一次调用里（见 DeductDeviceBalanceRequest.pickup_password 的说明），
+	// 所以这条路对外的形状是「凭这台设备上的验证码，从它的余额里扣这笔钱」：校验与扣减
+	// 都在同一个事务里定，调用方拿不到一个「校验通过但没扣成」的中间态。
+	DeductDeviceBalance(ctx context.Context, in *DeductDeviceBalanceRequest, opts ...grpc.CallOption) (*DeductDeviceBalanceResponse, error)
 	ListManufacturers(ctx context.Context, in *ListManufacturersRequest, opts ...grpc.CallOption) (*ListManufacturersResponse, error)
 	ListDevices(ctx context.Context, in *ListDevicesRequest, opts ...grpc.CallOption) (*ListDevicesResponse, error)
 	ListDrinks(ctx context.Context, in *ListDrinksRequest, opts ...grpc.CallOption) (*ListDrinksResponse, error)
@@ -59,6 +130,46 @@ func (c *coffeeMachineServiceClient) GetDevice(ctx context.Context, in *DeviceID
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Device)
 	err := c.cc.Invoke(ctx, CoffeeMachineService_GetDevice_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *coffeeMachineServiceClient) GetDeviceBySerial(ctx context.Context, in *GetDeviceBySerialRequest, opts ...grpc.CallOption) (*Device, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Device)
+	err := c.cc.Invoke(ctx, CoffeeMachineService_GetDeviceBySerial_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *coffeeMachineServiceClient) GetDeviceDrink(ctx context.Context, in *GetDeviceDrinkRequest, opts ...grpc.CallOption) (*Drink, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Drink)
+	err := c.cc.Invoke(ctx, CoffeeMachineService_GetDeviceDrink_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *coffeeMachineServiceClient) GetDrink(ctx context.Context, in *DrinkID, opts ...grpc.CallOption) (*Drink, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Drink)
+	err := c.cc.Invoke(ctx, CoffeeMachineService_GetDrink_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *coffeeMachineServiceClient) DeductDeviceBalance(ctx context.Context, in *DeductDeviceBalanceRequest, opts ...grpc.CallOption) (*DeductDeviceBalanceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeductDeviceBalanceResponse)
+	err := c.cc.Invoke(ctx, CoffeeMachineService_DeductDeviceBalance_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +261,75 @@ func (c *coffeeMachineServiceClient) DeleteDrink(ctx context.Context, in *DrinkI
 // for forward compatibility.
 type CoffeeMachineServiceServer interface {
 	// GetDevice 是本服务对出杯链路的唯一义务：下单时校验设备状态（方案 5.8）。
-	// 调用方是 order-service 与 inventory，两者都只要读。
+	// 调用方是 order-service（下单时校验设备状态），它只要读。
 	GetDevice(context.Context, *DeviceID) (*Device, error)
+	// GetDeviceBySerial 是同一件事的另一把钥匙：GetDevice 按我们的 uuid 取，这一条按**机器
+	// 报上来的序列号**取。设备回调（线下刷卡机，方案 §四）只有序列号，没有我们的 uuid——
+	// 那台机器不会知道我们的主键，所以这条不是「GetDevice 的便利版」，是那条路上唯一的入口。
+	//
+	// 调用方是 order-service：拿到设备才能定门店（门店来自设备，不来自请求，见它的
+	// resolveDevice），而订单要落 store_id。
+	//
+	// 取不到时回 NotFound；serial_unique 为空回 InvalidArgument——它不是「没查到」，是没给。
+	GetDeviceBySerial(context.Context, *GetDeviceBySerialRequest) (*Device, error)
+	// GetDeviceDrink 是设备回调找饮品的那一条：机器只知道「我这杯是几号」，既不知道我们的
+	// uuid，也不知道那个编号落在哪一列。
+	//
+	// 它是**查一条，不是列一份菜单**。走 ListDrinks 再自己翻页去找看起来更省事，但有两个
+	// 问题：一是把「编号落在 product_num 还是 origin_id」这条饮品库的布局知识搬给了调用方，
+	// 二是列表是分页的——机器上饮品一多，匹配会在某一页之后静默失败，而那时钱已经收过了。
+	//
+	// 取不到时回 NotFound；device_id 或 drink_code 为空回 InvalidArgument。
+	GetDeviceDrink(context.Context, *GetDeviceDrinkRequest) (*Drink, error)
+	// GetDrink 按**我们的 uuid** 取一杯饮品，是 order-service 下单时给饮品行定价的那一条。
+	//
+	// 它存在的理由与 GetMembershipPlan 一模一样：**订单行上那份快照不能由调用方给**。
+	// 订单行的 product_name / product_img / price / vip_price 同时决定三件事——用户看到的名字和
+	// 图、他付多少钱、会员省了多少——这三件全是本域的事实。让调用方自己填那一份，就等于让
+	// 调用方定价：一条 originalUnitPrice=1 的请求能一分钱买走一杯美式。
+	//
+	// 所以这条路的形状是：客户端只给 drink_id，order-service 拿它来问这里，把这一份冻进订单行。
+	//
+	// 它与 GetDeviceDrink 是**两把不同的钥匙**，不要合并：那一条收的是机器报上来的编号、答案在
+	// 特定一台设备上（`device_id + product_num|origin_id`）；这一条收的是我们的主键，答案是库里
+	// 那一行。下单的调用方手里只有后一种。
+	//
+	// **不按 status 过滤，原样把 status 回给调用方。** 这与 GetDeviceDrink 有意不拦 status 是同
+	// 一个理由的两面：同一条饮品在两条路上该不该卖，分歧点不在 status 那一列，而在**钱收没收到**
+	// ——设备回调那条路钱已经在机器上收过了，拦了就是丢单；下单这条路还没有。那是订单域的事实，
+	// 所以判断留在 order-service。本服务只回答「这一行是什么」。
+	//
+	// FailedPrecondition 在本条上**没有含义**，不要照 GetMembershipPlan 给它补一个：下架是一列
+	// 事实，不是一次拒绝。
+	//
+	// 取不到回 NotFound；id 不是 uuid 回 InvalidArgument——它不是「没查到」，是没给。
+	GetDrink(context.Context, *DrinkID) (*Drink, error)
+	// DeductDeviceBalance 是**本服务唯一对外开的写口**（其余 rpc 都是读）。调用方是
+	// order-service：取货码那条路上，钱从设备余额里出（见方案 §四）。
+	//
+	// 为什么不是 payment-service：那笔钱不在任何渠道里，渠道分账也没有可动的资金
+	// （与账户出资同一条理由）。钱的所在地是这台设备，所以扣它的接口就在持有设备余额的
+	// 这个服务上。
+	//
+	// 三件事在**同一个事务**里：行锁设备、改余额、追加一条 amount 为负的流水。
+	// 只改余额不写流水，这台机器的钱怎么没的就查不到（老系统就是只 $inc 不记账，
+	// 这里是有意不照抄）。
+	//
+	// 幂等靠 device_balance_ledger_one_per_request：同一个 request_id 第二次进来
+	// 扣不进去，回 applied=false 而不是错误——重投是常态，不是故障。
+	//
+	// 重投**在验证码校验之前**就被认出来（按 request_id 取回当初那一行流水），原因是这条路
+	// 真正的用途是「订单没建出来时重放」：那笔钱已经动过了，此时验证码对不对不该再决定这一单
+	// 能不能补出来（码可能在两次之间被后台改过）。扣减本身一次都不会发生第二次。
+	//
+	// 取不到设备回 NotFound；amount <= 0 或 request_id 为空回 InvalidArgument；
+	// 验证码不对（或这台设备根本没配过）回 PermissionDenied；余额不够回
+	// FailedPrecondition（这一单真的做不成，且**一个字段都没写**）。
+	//
+	// 验证码放在了这一次调用里（见 DeductDeviceBalanceRequest.pickup_password 的说明），
+	// 所以这条路对外的形状是「凭这台设备上的验证码，从它的余额里扣这笔钱」：校验与扣减
+	// 都在同一个事务里定，调用方拿不到一个「校验通过但没扣成」的中间态。
+	DeductDeviceBalance(context.Context, *DeductDeviceBalanceRequest) (*DeductDeviceBalanceResponse, error)
 	ListManufacturers(context.Context, *ListManufacturersRequest) (*ListManufacturersResponse, error)
 	ListDevices(context.Context, *ListDevicesRequest) (*ListDevicesResponse, error)
 	ListDrinks(context.Context, *ListDrinksRequest) (*ListDrinksResponse, error)
@@ -172,6 +350,18 @@ type UnimplementedCoffeeMachineServiceServer struct{}
 
 func (UnimplementedCoffeeMachineServiceServer) GetDevice(context.Context, *DeviceID) (*Device, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDevice not implemented")
+}
+func (UnimplementedCoffeeMachineServiceServer) GetDeviceBySerial(context.Context, *GetDeviceBySerialRequest) (*Device, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDeviceBySerial not implemented")
+}
+func (UnimplementedCoffeeMachineServiceServer) GetDeviceDrink(context.Context, *GetDeviceDrinkRequest) (*Drink, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDeviceDrink not implemented")
+}
+func (UnimplementedCoffeeMachineServiceServer) GetDrink(context.Context, *DrinkID) (*Drink, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDrink not implemented")
+}
+func (UnimplementedCoffeeMachineServiceServer) DeductDeviceBalance(context.Context, *DeductDeviceBalanceRequest) (*DeductDeviceBalanceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeductDeviceBalance not implemented")
 }
 func (UnimplementedCoffeeMachineServiceServer) ListManufacturers(context.Context, *ListManufacturersRequest) (*ListManufacturersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListManufacturers not implemented")
@@ -232,6 +422,78 @@ func _CoffeeMachineService_GetDevice_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CoffeeMachineServiceServer).GetDevice(ctx, req.(*DeviceID))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CoffeeMachineService_GetDeviceBySerial_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDeviceBySerialRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CoffeeMachineServiceServer).GetDeviceBySerial(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CoffeeMachineService_GetDeviceBySerial_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CoffeeMachineServiceServer).GetDeviceBySerial(ctx, req.(*GetDeviceBySerialRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CoffeeMachineService_GetDeviceDrink_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDeviceDrinkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CoffeeMachineServiceServer).GetDeviceDrink(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CoffeeMachineService_GetDeviceDrink_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CoffeeMachineServiceServer).GetDeviceDrink(ctx, req.(*GetDeviceDrinkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CoffeeMachineService_GetDrink_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DrinkID)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CoffeeMachineServiceServer).GetDrink(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CoffeeMachineService_GetDrink_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CoffeeMachineServiceServer).GetDrink(ctx, req.(*DrinkID))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CoffeeMachineService_DeductDeviceBalance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeductDeviceBalanceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CoffeeMachineServiceServer).DeductDeviceBalance(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CoffeeMachineService_DeductDeviceBalance_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CoffeeMachineServiceServer).DeductDeviceBalance(ctx, req.(*DeductDeviceBalanceRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -390,6 +652,22 @@ var CoffeeMachineService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetDevice",
 			Handler:    _CoffeeMachineService_GetDevice_Handler,
+		},
+		{
+			MethodName: "GetDeviceBySerial",
+			Handler:    _CoffeeMachineService_GetDeviceBySerial_Handler,
+		},
+		{
+			MethodName: "GetDeviceDrink",
+			Handler:    _CoffeeMachineService_GetDeviceDrink_Handler,
+		},
+		{
+			MethodName: "GetDrink",
+			Handler:    _CoffeeMachineService_GetDrink_Handler,
+		},
+		{
+			MethodName: "DeductDeviceBalance",
+			Handler:    _CoffeeMachineService_DeductDeviceBalance_Handler,
 		},
 		{
 			MethodName: "ListManufacturers",

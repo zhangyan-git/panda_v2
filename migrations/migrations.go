@@ -1,7 +1,7 @@
 // Package migrations embeds the SQL migration sets this repository ships.
 //
 // The SQL lives outside every Go module tree, so it is embedded here and handed
-// to platform/database/migrate as an fs.FS. Nine sets exist:
+// to platform/database/migrate as an fs.FS. Twelve sets exist:
 //
 //   - Legacy: the pre-split single-database chain (001…009). It is kept
 //     byte-for-byte as it was applied, so a database that predates the split can
@@ -14,10 +14,20 @@
 //   - Payment: payment-service's database.
 //   - Account: account-service's database.
 //   - Lottery: lottery-service's database.
+//   - Membership: membership-service's database. The DDL is applied ahead of the
+//     service: 会员价权益、套餐、有效期与续费期次 first, so the
+//     shape can be reviewed before any Go code depends on it. It owns the
+//     entitlement only — a 会员订单 is order-service's row, and 会员价 is a price
+//     on coffee_machine's drinks.
+//   - Partner: partner-service's database — the 开放平台 domain. It owns three
+//     things and nothing else: who may call the open API (合作方账号), which keys
+//     they hold (密钥、密文签名密钥、启停、过期、IP 白名单、限流) and what they called
+//     (调用日志). The 合作方 is **not** a merchant: the users, orders, coupons and
+//     memberships its keys reach are other services' rows, reached over gRPC.
 //
-// Identity, Merchant, Coupon, CoffeeMachine, Order, Payment, Account, and Lottery
-// each encode the state their service owns. No migration set creates a foreign
-// key into another service's database.
+// Identity, Merchant, Coupon, CoffeeMachine, Order, Payment, Account, Lottery,
+// Membership, and Partner each encode the state their service owns. No migration set creates a
+// foreign key into another service's database.
 //
 // Identity and Merchant each encode the state the legacy chain converges to for
 // their own domain — no cross-database foreign key, no table that moved to the
@@ -66,6 +76,12 @@ var accountFiles embed.FS
 //go:embed lottery/*.sql
 var lotteryFiles embed.FS
 
+//go:embed membership/*.sql
+var membershipFiles embed.FS
+
+//go:embed partner/*.sql
+var partnerFiles embed.FS
+
 // Legacy is the pre-split single-database migration chain.
 var Legacy fs.FS = sub(legacyFiles, ".")
 
@@ -92,6 +108,12 @@ var Account fs.FS = sub(accountFiles, "account")
 
 // Lottery is lottery-service's migration set.
 var Lottery fs.FS = sub(lotteryFiles, "lottery")
+
+// Membership is membership-service's migration set.
+var Membership fs.FS = sub(membershipFiles, "membership")
+
+// Partner is partner-service's migration set.
+var Partner fs.FS = sub(partnerFiles, "partner")
 
 // Versions lists a set's migration file names in the order the runner applies
 // them: top-level *.sql, sorted by name. It mirrors platform/database/migrate's

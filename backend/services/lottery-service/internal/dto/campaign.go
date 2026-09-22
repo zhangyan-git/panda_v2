@@ -2,21 +2,21 @@ package dto
 
 import "time"
 
-// PrizeRequest 是奖池里的一行，创建 / 修改活动时随活动一起提交。
+// PrizeRequest 是那个唯一的奖品，创建 / 修改活动时随活动一起提交。
 //
-// 奖池整体替换而不是逐行增删：后台那个表单就是「一张奖品表」，运营加一行删一行之后点保存，
-// 提交的是那份完整清单。逐行接口会让前端自己算差集，而差集算错的后果是名额总数对不上，
-// 那正是开奖时要用的数。
+// 一个活动一个奖品，所以它是一个对象而不是数组。ID 在修改时**必须原样带回来**：奖品行被
+// 中奖记录引用着（lottery_wins.prize_id 是 ON DELETE RESTRICT），不带 id 会让服务端把旧行
+// 删掉重插，而那次删除会被外键拒绝。带上 id 就是原地 UPDATE，中奖记录里那两列名字快照
+// （original_ / current_prize_name）本来就等着这一刻。
+//
+// 这里原先还有 sortOrder / prizeKind / couponTemplateId / quantity 四个字段，
+// 2026-09-15 随 migrations/lottery/005 一起删了。
 type PrizeRequest struct {
-	// SortOrder 由前端的行序决定（0 起）。服务端不再排一遍——「哪个奖排前面」是运营的
-	// 意思，不是我们能猜的。
-	SortOrder         int32  `json:"sortOrder"`
-	PrizeKind         string `json:"prizeKind"`
+	ID                string `json:"id"`
 	Name              string `json:"name"`
-	CouponTemplateID  string `json:"couponTemplateId"`
-	ImageURL          string `json:"imageUrl"`
+	CoverImage        string `json:"coverImage"`
+	PosterImage       string `json:"posterImage"`
 	ClaimInstructions string `json:"claimInstructions"`
-	Quantity          int32  `json:"quantity"`
 }
 
 // CampaignRequest 是新建 / 修改活动的请求体。
@@ -28,13 +28,15 @@ type CampaignRequest struct {
 	MachineID *string `json:"machineId"`
 	Code      string  `json:"code"`
 	Name      string  `json:"name"`
-	// 见 MaxPageSize 上面的说明：新期次的默认门槛，开期时冻结到期次上。
-	ParticipantTarget int32          `json:"participantTarget"`
-	Description       string         `json:"description"`
-	StartAt           time.Time      `json:"startAt"`
-	EndAt             time.Time      `json:"endAt"`
-	Status            string         `json:"status"`
-	Prizes            []PrizeRequest `json:"prizes"`
+	// 见 MaxPageSize 上面的说明：新期次的默认门槛，开期时冻结到期次上。**数的是参与次数**。
+	//
+	// 这里原先还有 startAt / endAt 一对活动窗口，2026-09-15 整块删了：活动没有截止时间，
+	// 只会被人为结束。
+	ParticipantTarget int32  `json:"participantTarget"`
+	Description       string `json:"description"`
+	Status            string `json:"status"`
+	// 这个活动的奖品，必填。
+	Prize PrizeRequest `json:"prize"`
 }
 
 // CampaignResponse 是一个活动（含奖池）。
@@ -48,18 +50,16 @@ type CampaignResponse struct {
 	Code      string  `json:"code"`
 	Name      string  `json:"name"`
 	// 见 dto.CampaignRequest.ParticipantTarget。
-	ParticipantTarget int32     `json:"participantTarget"`
-	Description       string    `json:"description"`
-	IsDefault         bool      `json:"isDefault"`
-	StartAt           time.Time `json:"startAt"`
-	EndAt             time.Time `json:"endAt"`
-	Status            string    `json:"status"`
-	// 奖池。列表接口不带它（一次 20 个活动、每个带 5 个奖品，列表就成了奖池查询），
-	// 详情接口带。
-	Prizes []CampaignPrizeResponse `json:"prizes"`
-	// 奖池总名额 = SUM(prizes.quantity)，也就是下一期的 winner_count。
-	// 存成响应字段而不是让前端自己加：运营看的就是这个数对不对。
-	PrizeTotalQuantity int32 `json:"prizeTotalQuantity"`
+	ParticipantTarget int32  `json:"participantTarget"`
+	Description       string `json:"description"`
+	IsDefault         bool   `json:"isDefault"`
+	Status            string `json:"status"`
+	// 奖品。列表接口不带它（一次 20 个活动、每个带一张图，列表响应会白胖一圈），详情接口带。
+	Prize *CampaignPrizeResponse `json:"prize"`
+	// 这里原先还有一个 prizeTotalQuantity = SUM(prizes.quantity)，即「下一期的 winner_count」。
+	// 名额恒为 1 之后它变成了第二份事实，而期次上那个冻结的 winnerCount 才是真的（同一个
+	// 理由删掉了 draw 的 campaignEnded）。2026-09-15 删掉。
+	//
 	// 在跑的那一期（open / closed），没有则为空。
 	LiveRoundID   string `json:"liveRoundId"`
 	LiveRoundNo   string `json:"liveRoundNo"`
@@ -71,16 +71,15 @@ type CampaignResponse struct {
 	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
-// CampaignPrizeResponse 是奖池里的一行。
+// CampaignPrizeResponse 是那个唯一的奖品。
+//
+// 不回 quantity：名额恒为 1，看它的地方（期次上的 winnerCount）已经有一份冻结过的真值。
 type CampaignPrizeResponse struct {
 	ID                string `json:"id"`
-	SortOrder         int32  `json:"sortOrder"`
-	PrizeKind         string `json:"prizeKind"`
 	Name              string `json:"name"`
-	CouponTemplateID  string `json:"couponTemplateId"`
-	ImageURL          string `json:"imageUrl"`
+	CoverImage        string `json:"coverImage"`
+	PosterImage       string `json:"posterImage"`
 	ClaimInstructions string `json:"claimInstructions"`
-	Quantity          int32  `json:"quantity"`
 }
 
 // RoundResponse 是一期。
@@ -94,12 +93,13 @@ type RoundResponse struct {
 	Seq          int32  `json:"seq"`
 	RoundNo      string `json:"roundNo"`
 	Status       string `json:"status"`
-	// 门槛与已达标人数。列表页的进度条按这两个数画。
+	// 门槛与已达标的参与次数。列表页的进度条按这两个数画。
+	//
+	// 这里原先还有 startsAt / endsAt 一对期次窗口，2026-09-15 随活动窗口一起删了。期次没有
+	// 起止时间：它只有三条出路——收满门槛转 closed 并开奖、人工开奖、作废。
 	ParticipantTarget int32      `json:"participantTarget"`
 	ParticipantCount  int32      `json:"participantCount"`
 	WinnerCount       int32      `json:"winnerCount"`
-	StartsAt          time.Time  `json:"startsAt"`
-	EndsAt            time.Time  `json:"endsAt"`
 	DrawnAt           *time.Time `json:"drawnAt"`
 	CancelledAt       *time.Time `json:"cancelledAt"`
 	CancelReason      string     `json:"cancelReason"`
@@ -142,13 +142,14 @@ type DrawResponse struct {
 	CreatedAt        time.Time `json:"createdAt"`
 	// 本次开出的中奖记录（可能被参与数截断，所以它与 WinnerCount 一样长）。
 	Winners []WinResponse `json:"winners"`
-	// 同一次事务里开出来的下一期。为空表示这一期开完之后没有下一期了，此时
-	// CampaignEnded 必然是 true——两句是同一个事实的两面，分开回是为了让后台不必
-	// 靠「nextRoundId 是空的」去猜活动是不是结束了。
+	// 同一次事务里开出来的下一期。为空表示这一期开完之后没有下一期了——活动不在 enabled
+	// （被暂停、被结束、还是草稿），或者零人参与那一条路。
+	//
+	// 这里原先还有一个 campaignEnded：它表达的「开完之后没有下一期」与 nextRoundId 为空
+	// 是同一件事，是一份会走偏的第二事实，而且窗口删掉之后它的名字（活动被时间结束了）
+	// 直接是错的。2026-09-15 删掉，看 nextRoundId 就够。
 	NextRoundID string `json:"nextRoundId"`
 	NextRoundNo string `json:"nextRoundNo"`
-	// 这次开奖是否把活动置成了 ended（窗口已过或活动被人停用）。
-	CampaignEnded bool `json:"campaignEnded"`
 }
 
 // CancelRoundRequest 是期次作废的请求体。

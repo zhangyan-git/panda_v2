@@ -32,24 +32,18 @@ export type FulfillmentStatus =
   | 'failed'
   | 'cancelled';
 
-export type OrderSource = 'miniapp' | 'screen_qr';
+/**
+ * orders.source：这张单从哪儿来的。
+ *
+ * 四个取值与 order/005 + order/009 放宽后的 orders_source_check 逐字对应，也就是与
+ * orderLabels 的 ORDER_SOURCE 表一一对应——改一处要同批改两处，否则筛选下拉里能选、
+ * 类型上却传不出去（或者反过来：取值合法但列表上退回显示原始码）。
+ */
+export type OrderSource = 'miniapp' | 'screen_qr' | 'device' | 'renewal';
 export type OrderLineType = 'drink' | 'addon' | 'membership';
 
 /** order_payment_lines.status：一次出资分摊走到哪一步了 */
 export type PaymentLineStatus = 'reserved' | 'succeeded' | 'failed' | 'released' | 'reversed';
-
-/**
- * order_payment_lines.line_type：这块钱是谁出的。
- *
- * **没有 fortune_card**：福卡是抽奖凭证不是出资渠道，order/003 与 payment/004 已收窄两侧
- * CHECK，SDK 词表随之。见 orderLabels.PAYMENT_LINE_TYPE 的注释。
- */
-export type FundingType =
-  | 'wechat'
-  | 'unionpay'
-  | 'coffee_bean'
-  | 'wallet'
-  | 'other';
 
 export type ActorType = 'user' | 'merchant' | 'admin' | 'system';
 export type AggregateType = 'order' | 'order_line' | 'after_sale' | 'payment_line';
@@ -156,11 +150,15 @@ export type OrderLine = {
  *
  * 没有渠道流水号：`provider_transaction_id` 后端有意不映射（对账凭据，要看去
  * payment-service 查），所以这里既没有这个字段，页面也不该去找。
+ *
+ * `lineType` 是**支付方式的 code**，与这张订单上的 `paymentMethod` 是同一个值——出资渠道
+ * 那套词表已经退场（migrations/order/008），所以它不再是一个能穷举的联合类型，中文名走
+ * services/paymentMethodLabels。
  */
 export type OrderPaymentLine = {
   id: string;
   lineNo: number;
-  lineType: FundingType;
+  lineType: string;
   amount: number;
   status: PaymentLineStatus;
   paymentNo: string;
@@ -228,8 +226,12 @@ export type AfterSale = {
   /** 用户上传的凭证图片 URL 列表，可能是 null。 */
   images: string[] | null;
   refundAmount: number;
+  /** 支付域那张退款单的号；退款还没发起时是空串。 */
   refundNo: string;
+  /** 退款失败码（渠道给的，如 ACQ.TRADE_NOT_EXIST）。只在 status='failed' 时有值。 */
   failureCode: string;
+  /** 退款失败原因：渠道回的**原文**。码给机器认，这句话才是给人读的。与 failureCode 成对。 */
+  failureMessage: string;
   reviewedBy: string | null;
   reviewedAt: string | null;
   reviewRemark: string;
@@ -351,8 +353,10 @@ export async function listAfterSales(params?: AfterSaleQuery) {
  * 审核一张售后申请。动作写在路径上（approve / reject），不放进请求体：这样「审了什么」
  * 在访问日志里就看得见。
  *
- * 注意 approve 只是把售后单标成 approved——**钱不由本服务退**，真正的退款在
- * payment-service（还没建）。所以界面上的文案是「通过申请」而不是「确认退款」。
+ * approve 是**两步**：先把售后单记成「已通过」，紧接着向支付域发起退款。所以它能返回两种
+ * 失败——审核本身没成（原样报错，单还是待审核），以及审核成了、发起退款没成（错误码
+ * REFUND_NOT_STARTED，单停在「已通过」）。后者不该被当成「审核失败」处理：重试的入口是
+ * 下面那个 startRefund，不是再点一次通过（那样只会拿到 409）。
  */
 export async function reviewAfterSale(
   afterSaleNo: string,
@@ -362,5 +366,20 @@ export async function reviewAfterSale(
   return request<AfterSale>(`/api/v1/admin/after-sales/${afterSaleNo}/${action}`, {
     method: 'POST',
     data,
+  });
+}
+
+/**
+ * 把一张已通过、但退款没发起的售后单再推一次（重试出口）。
+ *
+ * 为什么不是「再点一次通过」：审核是一次决定，只该发生一次；发起退款是那次决定的执行，
+ * 可以重试任意多次。后端两个动作也是两条路径、两个语义（见 routes/admin.go 那段注释）。
+ *
+ * 不带请求体：退多少、退哪一张支付单，全都记在售后单上了。重发是安全的——建退款单的幂等
+ * 键就是售后单号，退过一次的单再推只会把同一张退款单拿回来。
+ */
+export async function startAfterSaleRefund(afterSaleNo: string) {
+  return request<AfterSale>(`/api/v1/admin/after-sales/${afterSaleNo}/refund`, {
+    method: 'POST',
   });
 }

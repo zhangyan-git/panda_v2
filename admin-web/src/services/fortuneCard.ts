@@ -54,8 +54,13 @@ export type FortuneCardEntry = {
   createdAt: string;
 };
 
-/** 冻结状态。取值来自 account-service 的 model 常量，与 migrations/account/003 的 CHECK 一致。 */
-export type FortuneCardFreezeStatus = 'frozen' | 'released';
+/**
+ * 冻结状态。取值来自 account-service 的 model 常量，与 migrations/account/007 的 CHECK 一致。
+ *
+ * released 与 recovered 是钱没出去与钱出去了的两种结局，别合并：前者余额一分不动，
+ * 后者那几笔发放已经被冲正注销掉了。
+ */
+export type FortuneCardFreezeStatus = 'frozen' | 'released' | 'recovered';
 
 /**
  * 一条退款冻结：一张售后单冻住的那几笔发放。
@@ -79,11 +84,13 @@ export type FortuneCardFreeze = {
   /** 实际冻住的张数。可能是 0（申请早于发放，或卡已经被抽掉了）。 */
   amount: number;
   status: FortuneCardFreezeStatus;
-  /** 后端生成的一句话：退款申请中 / 被驳回 / 用户撤销。 */
+  /** 后端生成的一句话：退款申请中 / 被驳回 / 用户撤销 / 退款失败 / 退款成功，福卡已追回。 */
   reason: string;
   occurredAt: string;
   /** 只有 status=released 时有值。 */
   releasedAt: string | null;
+  /** 只有 status=recovered 时有值（退款成功 ←→ 卡被注销）。与 releasedAt 互斥。 */
+  recoveredAt: string | null;
   createdAt: string;
   updatedAt: string;
 };

@@ -6,7 +6,8 @@
 -- coffee_machine:balance 能直接动设备的咖啡余额。合成一个码之后，想让运营维护饮品
 -- 目录，就顺手把加钱的能力也给了。
 --
--- 仍然不发菜单：后台的 /coffee-machines 页面还没写（理由同 013）。
+-- 仍然不发菜单：菜单由 015_coffee_machine_menus.sql 单独补（理由同 013——写这个文件时
+-- 后台的 /coffee-machines 页面还没落地）。
 
 BEGIN;
 

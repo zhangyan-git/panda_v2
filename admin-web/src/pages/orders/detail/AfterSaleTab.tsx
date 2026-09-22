@@ -1,10 +1,11 @@
 import { useAccess } from '@umijs/max';
-import { Button, Image, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { Button, Image, message, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useState } from 'react';
 import { formatDateTime } from '../../../services/datetime';
 import { formatYuan } from '../../../services/money';
-import type { AfterSale, OrderDetail } from '../../../services/order';
+import { startAfterSaleRefund, type AfterSale, type OrderDetail } from '../../../services/order';
+import { requestErrorMessage } from '../../../services/requestError';
 import { AFTER_SALE_SCOPE, AFTER_SALE_STATUS } from '../../../services/orderLabels';
 import ReviewModal from '../../after-sales/ReviewModal';
 
@@ -32,6 +33,23 @@ export default function AfterSaleTab({
 }) {
   const access = useAccess();
   const [reviewing, setReviewing] = useState<{ sale: AfterSale; action: 'approve' | 'reject' }>();
+  // 正在发起退款的那一张（售后单号）：转圈转在被点的那一行上。
+  const [refunding, setRefunding] = useState<string>();
+
+  // 与退款申请列表里那个按钮是同一次调用、同一段说明。这里重取的是**订单**（这一屏的数据
+  // 来源是订单详情的 afterSales），所以刷新的回调是外面给的 onReviewed。
+  const onStartRefund = async (row: AfterSale) => {
+    setRefunding(row.afterSaleNo);
+    try {
+      await startAfterSaleRefund(row.afterSaleNo);
+      message.success('已发起退款，结果稍后回写到这一行');
+      onReviewed();
+    } catch (error) {
+      message.error(requestErrorMessage(error, '发起退款失败，请稍后重试'));
+    } finally {
+      setRefunding(undefined);
+    }
+  };
 
   const columns: ColumnsType<AfterSale> = [
     {
@@ -119,13 +137,44 @@ export default function AfterSaleTab({
     },
     { title: '退款时间', dataIndex: 'refundedAt', width: 170, render: (_, row) => time(row.refundedAt) },
     {
+      // 退款失败时渠道回的原文（「原交易不存在」这种），码放在 tooltip 里。客服拿着单号进来
+      // 问的就是这句；光给一个 ACQ.* 的码，读的人还得再找人翻译一遍。
+      title: '失败原因',
+      dataIndex: 'failureMessage',
+      width: 220,
+      ellipsis: true,
+      render: (_, row) => {
+        if (row.status !== 'failed') return '—';
+        const text = row.failureMessage || row.failureCode;
+        if (!text) return '—';
+        return (
+          <Tooltip title={row.failureCode ? `失败码：${row.failureCode}` : undefined}>
+            <span>{text}</span>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: '操作',
       key: 'action',
       width: 160,
       fixed: 'right',
       render: (_, row) => {
-        // 两档判断：有审核权限，且这一张还等着人来审（其余状态再点就是 409）。
-        if (!access.canReviewAfterSales || row.status !== 'pending') return '—';
+        // 没有审核权限就什么都不能点——审与「发起退款」在同一枚权限码下（重试是同一次审核
+        // 决定的执行，不是一次新的审批，见 routes/admin.go）。
+        if (!access.canReviewAfterSales) return '—';
+        // 已通过：审核落了库、但那次发起退款没成。这一行是把它推下去的唯一入口（在退款申请
+        // 列表里也有同一个按钮，两处共用同一次调用）。
+        if (row.status === 'approved') {
+          return (
+            <Button type="link" size="small" loading={refunding === row.afterSaleNo} onClick={() => onStartRefund(row)}>
+              发起退款
+            </Button>
+          );
+        }
+        // 待审核：审它。其余状态（退款中/已退款/已驳回/退款失败/已撤销）没有任何可点的动作
+        // ——尤其是「退款失败」，要再退是用户重新申请，不是在原单上重来。
+        if (row.status !== 'pending') return '—';
         return (
           <Space size={0}>
             <Button
@@ -167,8 +216,8 @@ export default function AfterSaleTab({
         dataSource={order.afterSales}
         pagination={false}
         // 钉了右列（操作），所以这里的 x 必须覆盖各列宽度之和，否则固定列会算错位置。
-        // 2220 = 190+100+200+100+90+200+100+170+180+170+200+190+170+160。
-        scroll={{ x: 2220 }}
+        // 2440 = 190+100+200+100+90+200+100+170+180+170+200+190+170+220+160。
+        scroll={{ x: 2440 }}
       />
       <ReviewModal
         open={!!reviewing}

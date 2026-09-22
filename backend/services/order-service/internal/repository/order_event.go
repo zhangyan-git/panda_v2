@@ -130,18 +130,37 @@ func fortuneCardSplit(orderID string, expected int, raw []byte) (grants []dto.Or
 //
 // 空的返回值是常态（这一单没承诺福卡），调用方据此不发冻结，不是异常。
 func fortuneCardFreezeKeys(orderID string, expected int, raw []byte, scope string) []string {
+	return fortuneCardFreezePlan(orderID, expected, raw, scope).EntryKeys
+}
+
+// FortuneCardFreezePlan 是一次退款申请要冻住的那几笔发放，以及它们一共承诺了几张。
+//
+// 两个值必须一起算出来：受理退款申请时要拿 Cards 去比「账户此刻还冻得上这么多吗」，而
+// Cards 与 EntryKeys 出自同一次拆分——分两处算，退加购行时就会拿整单的张数去比一张卡。
+type FortuneCardFreezePlan struct {
+	EntryKeys []string
+	Cards     int64
+}
+
+// fortuneCardFreezePlan 是上面那两件事的唯一来源（fortuneCardFreezeKeys 是它的薄壳，保给
+// 「只要键」的调用点：下单事件那条路不关心张数）。
+//
+// degraded 时整单全冻，所以 Cards 也就是整单承诺的张数，与 EntryKeys 覆盖的范围一致——
+// 这正是两个值必须一起返回的原因。
+func fortuneCardFreezePlan(orderID string, expected int, raw []byte, scope string) FortuneCardFreezePlan {
 	grants, degraded := fortuneCardSplit(orderID, expected, raw)
 	if len(grants) == 0 {
-		return nil
+		return FortuneCardFreezePlan{}
 	}
-	keys := make([]string, 0, len(grants))
+	plan := FortuneCardFreezePlan{EntryKeys: make([]string, 0, len(grants))}
 	for _, grant := range grants {
 		if !degraded && !grantKindInScope(grant.Kind, scope) {
 			continue
 		}
-		keys = append(keys, grant.EntryKey)
+		plan.EntryKeys = append(plan.EntryKeys, grant.EntryKey)
+		plan.Cards += grant.Amount
 	}
-	return keys
+	return plan
 }
 
 // grantKindInScope 说一笔发放属不属于这次退款范围。

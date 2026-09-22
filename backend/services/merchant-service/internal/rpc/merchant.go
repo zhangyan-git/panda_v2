@@ -26,6 +26,7 @@ type ownershipReader interface {
 	FindStoreMerchantID(ctx context.Context, id string) (string, error)
 	FindStore(ctx context.Context, id string) (*model.Store, error)
 	ScopeNames(ctx context.Context, brandIDs, storeIDs []string) (map[string]string, map[string]string, error)
+	StoreIDsByScope(ctx context.Context, merchantID, scopeType, scopeID string) ([]string, error)
 }
 
 // MerchantService serves the internal calls user-service makes: the merchant
@@ -115,6 +116,57 @@ func (s *MerchantService) ResolveScopeNames(ctx context.Context, req *merchantv1
 		return nil, status.Error(codes.Internal, "merchant service error")
 	}
 	return &merchantv1.ResolveScopeNamesResponse{BrandNames: brandNames, StoreNames: storeNames}, nil
+}
+
+// ListStoreIDs expands a merchant account's data scope into the set of stores it
+// authorizes. user-service calls it while resolving GetMerchantAccess, and the
+// answer becomes the boundary every downstream service filters on.
+//
+// The request is validated rather than trusted: an unknown scope type or a
+// brand/store level without a scope id is InvalidArgument, not a widened or
+// empty answer. Both mistakes would otherwise surface downstream as "this
+// account can see nothing", which is indistinguishable from a legitimate empty
+// scope and would be debugged in the wrong service.
+func (s *MerchantService) ListStoreIDs(ctx context.Context, req *merchantv1.ListStoreIDsRequest) (*merchantv1.ListStoreIDsResponse, error) {
+	if err := auth.RequireService(ctx); err != nil {
+		return nil, err
+	}
+	merchantID := req.GetMerchantId()
+	if merchantID == "" {
+		return nil, status.Error(codes.InvalidArgument, "merchant_id is required")
+	}
+	scopeType := req.GetScopeType()
+	scopeID := req.GetScopeId()
+	switch scopeType {
+	case auth.ScopeTypeMerchant:
+		// 商户档的 scope_id 应当为空。带上一个却没被用上，说明调用方对范围的
+		// 理解和这里不一致，宁可报错也不要静默按商户全量返回。
+		if scopeID != "" {
+			return nil, status.Error(codes.InvalidArgument, "scope_id must be empty for merchant scope")
+		}
+	case auth.ScopeTypeBrand, auth.ScopeTypeStore:
+		if scopeID == "" {
+			return nil, status.Error(codes.InvalidArgument, "scope_id is required for brand and store scope")
+		}
+	default:
+		return nil, status.Error(codes.InvalidArgument, "unknown scope_type")
+	}
+	ids, err := s.access.StoreIDsByScope(ctx, merchantID, scopeType, scopeID)
+	if err != nil {
+		// 认不出的档位在上面已经挡掉，走到这里的只可能是存储故障。
+		return nil, status.Error(codes.Internal, "merchant service error")
+	}
+	if ids == nil {
+		// 空集是一个正常答案（这个品牌名下确实没有点位），这里把它写成明确的空切片，
+		// 让进程内调用方拿到的是一个良构的答案。
+		//
+		// 但这道归一化**不构成**下游的安全边界：proto3 的 repeated 字段零元素不
+		// 上线，走到 gRPC 对端又会被解码回 nil。真正承担 nil→空切片的是
+		// auth.WithStoreScope（见 platform/auth/store_scope.go），它在中间件里
+		// 把范围放上 context 时收口，任何消费者读到的 StoreIDs 都非 nil。
+		ids = []string{}
+	}
+	return &merchantv1.ListStoreIDsResponse{StoreIds: ids}, nil
 }
 
 // resourceError maps a missing target to NotFound: user-service's client keys

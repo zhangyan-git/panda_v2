@@ -23,6 +23,7 @@ const (
 	UserService_UpdateProfile_FullMethodName     = "/panda.user.v1.UserService/UpdateProfile"
 	UserService_HasUsers_FullMethodName          = "/panda.user.v1.UserService/HasUsers"
 	UserService_ResetAccountScope_FullMethodName = "/panda.user.v1.UserService/ResetAccountScope"
+	UserService_GetWechatIdentity_FullMethodName = "/panda.user.v1.UserService/GetWechatIdentity"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -35,6 +36,10 @@ type UserServiceClient interface {
 	// than an end-user access token.
 	HasUsers(ctx context.Context, in *HasUsersRequest, opts ...grpc.CallOption) (*HasUsersResponse, error)
 	ResetAccountScope(ctx context.Context, in *ResetAccountScopeRequest, opts ...grpc.CallOption) (*ResetAccountScopeResponse, error)
+	// GetWechatIdentity 把用户的微信 openid 交给内部调用方。order-service 发起微信小程序
+	// 支付时需要它填 payer.openid（渠道必填），而 openid 是用户身份，只能服务间取，
+	// 不能由客户端自称（见 order-service 的 dto.PayOrderRequest）。
+	GetWechatIdentity(ctx context.Context, in *GetWechatIdentityRequest, opts ...grpc.CallOption) (*GetWechatIdentityResponse, error)
 }
 
 type userServiceClient struct {
@@ -85,6 +90,16 @@ func (c *userServiceClient) ResetAccountScope(ctx context.Context, in *ResetAcco
 	return out, nil
 }
 
+func (c *userServiceClient) GetWechatIdentity(ctx context.Context, in *GetWechatIdentityRequest, opts ...grpc.CallOption) (*GetWechatIdentityResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetWechatIdentityResponse)
+	err := c.cc.Invoke(ctx, UserService_GetWechatIdentity_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
@@ -95,6 +110,10 @@ type UserServiceServer interface {
 	// than an end-user access token.
 	HasUsers(context.Context, *HasUsersRequest) (*HasUsersResponse, error)
 	ResetAccountScope(context.Context, *ResetAccountScopeRequest) (*ResetAccountScopeResponse, error)
+	// GetWechatIdentity 把用户的微信 openid 交给内部调用方。order-service 发起微信小程序
+	// 支付时需要它填 payer.openid（渠道必填），而 openid 是用户身份，只能服务间取，
+	// 不能由客户端自称（见 order-service 的 dto.PayOrderRequest）。
+	GetWechatIdentity(context.Context, *GetWechatIdentityRequest) (*GetWechatIdentityResponse, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -116,6 +135,9 @@ func (UnimplementedUserServiceServer) HasUsers(context.Context, *HasUsersRequest
 }
 func (UnimplementedUserServiceServer) ResetAccountScope(context.Context, *ResetAccountScopeRequest) (*ResetAccountScopeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResetAccountScope not implemented")
+}
+func (UnimplementedUserServiceServer) GetWechatIdentity(context.Context, *GetWechatIdentityRequest) (*GetWechatIdentityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetWechatIdentity not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -210,6 +232,24 @@ func _UserService_ResetAccountScope_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_GetWechatIdentity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetWechatIdentityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetWechatIdentity(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetWechatIdentity_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetWechatIdentity(ctx, req.(*GetWechatIdentityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -232,6 +272,10 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResetAccountScope",
 			Handler:    _UserService_ResetAccountScope_Handler,
+		},
+		{
+			MethodName: "GetWechatIdentity",
+			Handler:    _UserService_GetWechatIdentity_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
@@ -340,6 +384,114 @@ var AdminAccessService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetAdminAccess",
 			Handler:    _AdminAccessService_GetAdminAccess_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "user/v1/user.proto",
+}
+
+const (
+	MerchantAccessService_GetMerchantAccess_FullMethodName = "/panda.user.v1.MerchantAccessService/GetMerchantAccess"
+)
+
+// MerchantAccessServiceClient is the client API for MerchantAccessService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// MerchantAccessService answers only for the identity presented in metadata, so
+// it is authenticated by an end-user access token instead of the service token.
+type MerchantAccessServiceClient interface {
+	GetMerchantAccess(ctx context.Context, in *GetMerchantAccessRequest, opts ...grpc.CallOption) (*GetMerchantAccessResponse, error)
+}
+
+type merchantAccessServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewMerchantAccessServiceClient(cc grpc.ClientConnInterface) MerchantAccessServiceClient {
+	return &merchantAccessServiceClient{cc}
+}
+
+func (c *merchantAccessServiceClient) GetMerchantAccess(ctx context.Context, in *GetMerchantAccessRequest, opts ...grpc.CallOption) (*GetMerchantAccessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMerchantAccessResponse)
+	err := c.cc.Invoke(ctx, MerchantAccessService_GetMerchantAccess_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// MerchantAccessServiceServer is the server API for MerchantAccessService service.
+// All implementations must embed UnimplementedMerchantAccessServiceServer
+// for forward compatibility.
+//
+// MerchantAccessService answers only for the identity presented in metadata, so
+// it is authenticated by an end-user access token instead of the service token.
+type MerchantAccessServiceServer interface {
+	GetMerchantAccess(context.Context, *GetMerchantAccessRequest) (*GetMerchantAccessResponse, error)
+	mustEmbedUnimplementedMerchantAccessServiceServer()
+}
+
+// UnimplementedMerchantAccessServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedMerchantAccessServiceServer struct{}
+
+func (UnimplementedMerchantAccessServiceServer) GetMerchantAccess(context.Context, *GetMerchantAccessRequest) (*GetMerchantAccessResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMerchantAccess not implemented")
+}
+func (UnimplementedMerchantAccessServiceServer) mustEmbedUnimplementedMerchantAccessServiceServer() {}
+func (UnimplementedMerchantAccessServiceServer) testEmbeddedByValue()                               {}
+
+// UnsafeMerchantAccessServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to MerchantAccessServiceServer will
+// result in compilation errors.
+type UnsafeMerchantAccessServiceServer interface {
+	mustEmbedUnimplementedMerchantAccessServiceServer()
+}
+
+func RegisterMerchantAccessServiceServer(s grpc.ServiceRegistrar, srv MerchantAccessServiceServer) {
+	// If the following call panics, it indicates UnimplementedMerchantAccessServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&MerchantAccessService_ServiceDesc, srv)
+}
+
+func _MerchantAccessService_GetMerchantAccess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMerchantAccessRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MerchantAccessServiceServer).GetMerchantAccess(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MerchantAccessService_GetMerchantAccess_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MerchantAccessServiceServer).GetMerchantAccess(ctx, req.(*GetMerchantAccessRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// MerchantAccessService_ServiceDesc is the grpc.ServiceDesc for MerchantAccessService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var MerchantAccessService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "panda.user.v1.MerchantAccessService",
+	HandlerType: (*MerchantAccessServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetMerchantAccess",
+			Handler:    _MerchantAccessService_GetMerchantAccess_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

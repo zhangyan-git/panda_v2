@@ -129,7 +129,13 @@ func main() {
 	}
 	var merchantAccess service.MerchantAccessPort = remote
 	var merchantResources service.MerchantResourceAccess = remote
-	adminAuthSvc := service.NewAdminAuthService(adminRepo, bindingRepo, jwtSvc)
+	// 会话表由 C 端登录和后台登录共用：它承载的是「这枚 refresh token 还在不在」，
+	// 后台的登出与停用同样要落到这里才撤销得掉，所以这一处构造、两处注入。
+	userSessionRepo := repository.NewUserSessionRepository(pgxPool)
+	// 后台管理员走自己的会话表：admin_sessions 与 user_sessions 同形但外键指向
+	// admin_users，两套账号体系不共用一行（见 migrations/identity/031）。
+	adminSessionRepo := repository.NewAdminSessionRepository(pgxPool)
+	adminAuthSvc := service.NewAdminAuthService(adminRepo, bindingRepo, adminSessionRepo, jwtSvc)
 	merchantAuthSvc := service.NewMerchantAuthService(merchantRepo, merchantAccess, jwtSvc)
 	adminUserSvc := service.NewAdminUserService(adminRepo)
 	roleSvc := service.NewAdminRoleService(roleRepo, policy)
@@ -137,11 +143,13 @@ func main() {
 	bindingSvc := service.NewAdminBindingService(bindingRepo, policy)
 	menuSvc := service.NewAdminMenuService(menuRepo, roleRepo, bindingRepo)
 	merchantAccountSvc := service.NewMerchantAccountService(merchantAccess, merchantRepo, merchantResources)
+	// 数据边界的解析复用了 merchantAuthSvc：账号与商户的状态判定在登录路径上
+	// 已经有一份，已登录的账号必须得到同一个答案。
+	merchantAccessSvc := service.NewMerchantAccessService(merchantRepo, merchantAuthSvc, merchantResources)
 
 	// 小程序（C 端）链路。C 端用户与 B 端账号同库但完全独立：前者在 users，
 	// 后者在 admin_users / merchant_users，互相不认识，也都不外键到对方。
 	userRepo := repository.NewUserRepository(pgxPool)
-	userSessionRepo := repository.NewUserSessionRepository(pgxPool)
 	userSMSCodeRepo := repository.NewSMSCodeRepository(pgxPool)
 
 	// 微信凭据缺失时仍然构造客户端：登不进去的只应该是微信这两条登录路径，
@@ -179,7 +187,7 @@ func main() {
 		userRepo, userSessionRepo, repository.NewAdminMiniappUserRepository(pgxPool, recorder))
 
 	adminAuthH := handler.NewAdminAuthHandler(adminAuthSvc)
-	merchantAuthH := handler.NewMerchantAuthHandler(merchantAuthSvc)
+	merchantAuthH := handler.NewMerchantAuthHandler(merchantAuthSvc, merchantAccessSvc)
 	adminUserH := handler.NewAdminUserHandler(adminUserSvc)
 	roleH := handler.NewAdminRoleHandler(roleSvc)
 	permH := handler.NewAdminPermissionHandler(permSvc)
@@ -223,9 +231,12 @@ func main() {
 		},
 		GRPCRoutes: func(s *kgrpc.Server) {
 			// 两个服务共用 MERCHANT_INTERNAL_TOKEN：merchant-service 用服务 token 调
-			// HasUsers/ResetAccountScope，网关转发管理员 access token 调 GetAdminAccess
-			userv1.RegisterUserServiceServer(s, rpc.NewUserServiceServer(merchantRepo))
+			// HasUsers/ResetAccountScope，order-service 用它调 GetWechatIdentity（发起微信
+			// 支付时要 openid），网关转发管理员 access token 调 GetAdminAccess
+			userv1.RegisterUserServiceServer(s, rpc.NewUserServiceServer(merchantRepo, userRepo))
 			userv1.RegisterAdminAccessServiceServer(s, rpc.NewAdminAccessServiceServer(adminAuthSvc))
+			// 商户域的实时取权由各业务服务在网关转发过来的 access token 上调。
+			userv1.RegisterMerchantAccessServiceServer(s, rpc.NewMerchantAccessServiceServer(merchantAccessSvc))
 		},
 		GRPCServerOptions: []kgrpc.ServerOption{auth.GRPCServerOption(jwtSvc, cfg.MerchantInternalToken)},
 		HTTPRoutes: func(s *runtime.HTTPRouter) {

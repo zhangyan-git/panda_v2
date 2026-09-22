@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/panda-dev/panda-v2/backend/platform/audit"
 )
 
 // These tests intentionally use only a database URL supplied by the caller.
@@ -59,7 +60,24 @@ func couponFixture(t *testing.T, pool *pgxpool.Pool, status string) (couponID, t
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, _ = pool.Exec(ctx, `DELETE FROM coupon_state_transitions WHERE aggregate_id=$1`, couponID)
+		// coupon_state_transitions 从 migrations/coupon/006 起带了只增触发器，直接
+		// DELETE 会被那条 BEFORE UPDATE OR DELETE 当场拒掉。摘下来删完再装回去，
+		// 与 membership-service 测试里对 membership_changes 的做法同一个意图：
+		// 删的只是这个用例自己刚写进去的 fixture，不是把账本防线拆了。
+		//
+		// 这里比那边多一步——摘、删、装回放在**同一个事务**里。ALTER TABLE 的
+		// DISABLE TRIGGER 是可回滚的，于是 DELETE 失败时事务一撤，触发器自动恢复，
+		// 不会留下一个「触发器关着」的测试库。
+		if tx, err := pool.Begin(ctx); err == nil {
+			_, _ = tx.Exec(ctx, `ALTER TABLE coupon_state_transitions DISABLE TRIGGER coupon_state_transitions_append_only`)
+			_, _ = tx.Exec(ctx, `DELETE FROM coupon_state_transitions WHERE aggregate_id=$1`, couponID)
+			_, _ = tx.Exec(ctx, `ALTER TABLE coupon_state_transitions ENABLE TRIGGER coupon_state_transitions_append_only`)
+			if err := tx.Commit(ctx); err != nil {
+				t.Errorf("cleanup coupon_state_transitions: %v", err)
+			}
+		} else {
+			t.Errorf("cleanup coupon_state_transitions: begin: %v", err)
+		}
 		_, _ = pool.Exec(ctx, `DELETE FROM coupon_redemptions WHERE user_coupon_id=$1`, couponID)
 		_, _ = pool.Exec(ctx, `DELETE FROM coupon_idempotency_keys WHERE resource_id=$1 OR idempotency_key LIKE $2`, couponID, "integration-%")
 		_, _ = pool.Exec(ctx, `DELETE FROM user_coupons WHERE id=$1`, couponID)
@@ -73,11 +91,15 @@ func couponFixture(t *testing.T, pool *pgxpool.Pool, status string) (couponID, t
 func TestPostgresRedeemPersistsStateAndReplaysIdempotently(t *testing.T) {
 	pool := integrationPool(t)
 	couponID, _, _, _ := couponFixture(t, pool, "claimed")
-	repo := &postgresRepository{pool: pool}
+	// recorder 必须显式给：NewPostgresRepository 会把 nil 换成 audit.Noop，而这里
+	// 直接构造结构体绕过了构造函数，nil 会在 Redeem/Revoke 记审计那一行空指针崩溃。
+	// 用 Noop 而不是真的 Recorder：本用例验的是券的状态与流水，审计出口是身份库的事。
+	repo := &postgresRepository{pool: pool, recorder: audit.Noop{}}
 	ctx := context.Background()
 
 	requestID := "integration-redeem-replay-" + uuid.NewString()
-	first, err := repo.Redeem(ctx, couponID, requestID)
+	actorID := uuid.NewString()
+	first, err := repo.Redeem(ctx, couponID, requestID, actorID)
 	if err != nil {
 		t.Fatalf("first redeem: %v", err)
 	}
@@ -91,8 +113,20 @@ func TestPostgresRedeemPersistsStateAndReplaysIdempotently(t *testing.T) {
 	if redemptionCount != 1 {
 		t.Fatalf("successful redemption rows = %d, want 1", redemptionCount)
 	}
+	// 核销这条流水必须留下操作人，与 Revoke 那条一样。这里之前是空的：controller
+	// 把身份传给 service，service 校验完就丢了，后台翻这张券的时间线时只看得到
+	// 「状态变了」，看不到是谁点的。
+	var transitionActor *string
+	if err := pool.QueryRow(ctx, `SELECT actor_id::text FROM coupon_state_transitions WHERE aggregate_id=$1 AND to_status='redeemed' AND request_id=$2`, couponID, requestID).Scan(&transitionActor); err != nil {
+		t.Fatal(err)
+	}
+	if transitionActor == nil || *transitionActor != actorID {
+		t.Fatalf("redeem transition actor = %v, want %q", transitionActor, actorID)
+	}
 
-	second, err := repo.Redeem(ctx, couponID, requestID)
+	// 重放传一个**不同的** actor：走的是同一条幂等键，第一次已经写过了，重放不该再写
+	// 一条流水，所以下面复查时 actor 必须还是第一次那个。
+	second, err := repo.Redeem(ctx, couponID, requestID, uuid.NewString())
 	if err != nil {
 		t.Fatalf("replay redeem: %v", err)
 	}
@@ -105,12 +139,28 @@ func TestPostgresRedeemPersistsStateAndReplaysIdempotently(t *testing.T) {
 	if redemptionCount != 1 {
 		t.Fatalf("replayed redemption rows = %d, want 1", redemptionCount)
 	}
+	var transitionCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM coupon_state_transitions WHERE aggregate_id=$1 AND to_status='redeemed' AND request_id=$2`, couponID, requestID).Scan(&transitionCount); err != nil {
+		t.Fatal(err)
+	}
+	if transitionCount != 1 {
+		t.Fatalf("replayed redeem transitions = %d, want 1", transitionCount)
+	}
+	if err := pool.QueryRow(ctx, `SELECT actor_id::text FROM coupon_state_transitions WHERE aggregate_id=$1 AND to_status='redeemed' AND request_id=$2`, couponID, requestID).Scan(&transitionActor); err != nil {
+		t.Fatal(err)
+	}
+	if transitionActor == nil || *transitionActor != actorID {
+		t.Fatalf("replayed redeem transition actor = %v, want 第一次的 %q", transitionActor, actorID)
+	}
 }
 
 func TestPostgresRevokePersistsInvalidatedAtAndReplaysIdempotently(t *testing.T) {
 	pool := integrationPool(t)
 	couponID, _, _, _ := couponFixture(t, pool, "claimed")
-	repo := &postgresRepository{pool: pool}
+	// recorder 必须显式给：NewPostgresRepository 会把 nil 换成 audit.Noop，而这里
+	// 直接构造结构体绕过了构造函数，nil 会在 Redeem/Revoke 记审计那一行空指针崩溃。
+	// 用 Noop 而不是真的 Recorder：本用例验的是券的状态与流水，审计出口是身份库的事。
+	repo := &postgresRepository{pool: pool, recorder: audit.Noop{}}
 	ctx := context.Background()
 	requestID := "integration-revoke-" + uuid.NewString()
 

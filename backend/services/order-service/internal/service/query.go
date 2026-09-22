@@ -25,7 +25,7 @@ func (s *OrderService) GetOrderDetail(ctx context.Context, orderID, userID strin
 	if err != nil {
 		return nil, mapWriteError(err)
 	}
-	if userID != "" && detail.Order.UserID != userID {
+	if userID != "" && !userMatches(detail.Order.UserID, userID) {
 		// 同 CancelOrder：别人的单回「不存在」。
 		return nil, ErrOrderNotFound
 	}

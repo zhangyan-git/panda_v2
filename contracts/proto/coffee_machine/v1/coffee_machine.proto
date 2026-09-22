@@ -65,6 +65,15 @@ message Drink {
   int64 pickup_code_price = 11;
   // on_shelf=上架，off_shelf=下架。
   string status = 12;
+  // device_id 是这一杯挂在哪台设备上（drinks 一行即「某台设备上的一杯」）。空串表示这一行
+  // 还没挂到设备上——库里真有这种历史行，写接口今天也不强制（编辑时才必填）。
+  //
+  // 编号排在最后是因为它加得晚：上面 1-12 是这份契约第一版就有的，改动字段号会让已经发出去
+  // 的那份编码含义错位。proto 里字段号比顺序重要，这一条不要为了好看去重排。
+  //
+  // 调用方拿它与自己手里的设备比一次：目录里的这一杯属于**某一台机器**，用 A 店的饮品配
+  // B 店的设备下单，价格与设备对不上而订单看起来是合法的。
+  string device_id = 13;
 }
 
 message DeviceDrink {
@@ -81,6 +90,78 @@ message DeviceDrink {
 
 message ManufacturerID { string id = 1; }
 message DeviceID { string id = 1; }
+
+// DeductDeviceBalanceRequest 从**某台设备的咖啡余额**里扣一笔钱：取货码那条路
+// （方案 §四）的收款动作。钱在这台机器上，不在任何渠道里，所以它是一次余额扣减，
+// 不是一笔支付单。
+message DeductDeviceBalanceRequest {
+  // 设备 uuid。
+  string device_id = 1;
+  // 扣减金额（分），**只收正数**。符号由本服务补（流水记 -amount，见
+  // device_balance_ledger 的有符号口径）：让调用方自己带负号，等于把
+  // 「负数成了充值」这种错留给下一次改动。
+  int64 amount = 2;
+  // 幂等键：厂商报文里那个唯一值。**不接受空串**——没有它，重投就是扣第二次，
+  // 而对方的报文本来就会被重投（网络重放、厂商自己重试）。
+  string request_id = 3;
+  // 流水上的摘要，只给人看（哪一单、哪台机器）。不参与任何判据。
+  string remark = 4;
+  // pickup_password：设备上那个静态验证码（devices.pickup_password），由顾客在机器上
+  // 敲、厂商原样转报过来。对不上回 PermissionDenied。
+  //
+  // **为什么这个校验在本服务做，而不是让 order-service 取回码自己比**：那个码是这台
+  // 设备自己的东西，它只该待在持有它的库里。让 order-service 把它读出来意味着这个码
+  // 每取一次货就跨一次服务边界、进另一个进程的内存与日志，而校验方还是拿着副本比——
+  // 比完了我们再被调用一次，两次之间那个码还可以被改（TOCTOU）。
+  //
+  // 放在这里还顺手把两件事合成了一次原子判断：同一个事务、同一把设备行锁之下，
+  // 「码对不对」与「钱够不够」一起定，不存在「校验通过之后余额被另一笔扣走」的窗口。
+  //
+  // 设备**没有配过**验证码（列是空串）时一律拒绝，而不是「空对空就放行」：那等于
+  // 谁都能把这台机器上的钱扣走，而运营看不出任何异常。
+  string pickup_password = 5;
+}
+
+// DeductDeviceBalanceResponse 是一次扣减的结果。
+message DeductDeviceBalanceResponse {
+  // 扣完之后的余额（分）。命中幂等时是**当初那一次**记下的余额，不是现在的。
+  int64 balance_after = 1;
+  // false = 这个 request_id 已经扣过了，本次一个字段都没写。
+  //
+  // 调用方（order-service）要拿它区分两种「扣失败」：余额不足是这一单真的做不成，
+  // 而 already applied 是**上一次已经成功了**，重投必须当成成功继续往下走，
+  // 否则一次成功的取货会因为对方重投而回一个错误。
+  bool applied = 2;
+  // 这一次**实际扣掉**的金额（正数，分）。
+  //
+  // 命中幂等时它是**当初那一次**从流水上取回的金额，与本次请求里带过来的 amount 可以
+  // 不等——重投与首次之间这一杯可能被改过价。调用方必须用**这一格**去记账，不能用自己
+  // 算出来的那个价：钱只动过一次，订单上的金额与流水上的必须对得上，否则一次「扣了 1400、
+  // 单记 2000」的差额没有任何一处能解释。
+  //
+  // 版本错配时（对面是还不知道这一格的旧版本）它是 0，调用方要按 0 处理成「拿不到当初的
+  // 金额」，退回到自己算的价——那是这一格出现之前的老行为，不是一次新的失败。
+  int64 amount = 3;
+}
+
+// GetDeviceBySerialRequest 按**机器序列号**取设备。
+message GetDeviceBySerialRequest {
+  // devices.serial_unique，设备自己认识的那个编号。
+  string serial_unique = 1;
+}
+
+// GetDeviceDrinkRequest 按**机器上那杯饮品的编号**取饮品：设备回调（方案 §四）找饮品的入口。
+message GetDeviceDrinkRequest {
+  // 设备 uuid，来自 GetDeviceBySerial。drinks 一行即「某台设备上的一杯饮品」
+  // （003_drinks_own_device），所以饮品是按设备定位的。
+  string device_id = 1;
+  // 设备报上来的饮品编号。**它不是我们的 uuid**——机器不可能知道我们的主键。
+  //
+  // 这个编号落在 drinks 的哪一列，取决于这家厂商当初的同步来源，所以**两列都要匹配**
+  // （product_num 或 origin_id）。老系统就是这么兜的（sync_order_handler.go:270-275 的
+  // $or），保留它是因为两种来源今天都还在库里。
+  string drink_code = 2;
+}
 message DrinkID { string id = 1; }
 message ListManufacturersRequest {}
 message ListManufacturersResponse { repeated Manufacturer manufacturers = 1; }
@@ -94,6 +175,11 @@ message ListDevicesResponse { repeated Device devices = 1; }
 message ListDrinksRequest {
   string manufacturer_id = 1;
   string status = 2;
+  // 按设备过滤。drinks 一行即「某台设备上的一杯饮品」（003_drinks_own_device），所以这是
+  // 按机器看菜单时唯一有意义的过滤方式。走 drinks_device_idx。
+  //
+  // 设备回调建单**不走这一条**（它找的是特定那一杯，不是一份菜单，见 GetDeviceDrink）。
+  string device_id = 3;
 }
 message ListDrinksResponse { repeated Drink drinks = 1; }
 message UpsertDeviceDrinkRequest { DeviceDrink relation = 1; }
@@ -103,8 +189,75 @@ message DeleteResponse { bool deleted = 1; }
 
 service CoffeeMachineService {
   // GetDevice 是本服务对出杯链路的唯一义务：下单时校验设备状态（方案 5.8）。
-  // 调用方是 order-service 与 inventory，两者都只要读。
+  // 调用方是 order-service（下单时校验设备状态），它只要读。
   rpc GetDevice(DeviceID) returns (Device);
+  // GetDeviceBySerial 是同一件事的另一把钥匙：GetDevice 按我们的 uuid 取，这一条按**机器
+  // 报上来的序列号**取。设备回调（线下刷卡机，方案 §四）只有序列号，没有我们的 uuid——
+  // 那台机器不会知道我们的主键，所以这条不是「GetDevice 的便利版」，是那条路上唯一的入口。
+  //
+  // 调用方是 order-service：拿到设备才能定门店（门店来自设备，不来自请求，见它的
+  // resolveDevice），而订单要落 store_id。
+  //
+  // 取不到时回 NotFound；serial_unique 为空回 InvalidArgument——它不是「没查到」，是没给。
+  rpc GetDeviceBySerial(GetDeviceBySerialRequest) returns (Device);
+  // GetDeviceDrink 是设备回调找饮品的那一条：机器只知道「我这杯是几号」，既不知道我们的
+  // uuid，也不知道那个编号落在哪一列。
+  //
+  // 它是**查一条，不是列一份菜单**。走 ListDrinks 再自己翻页去找看起来更省事，但有两个
+  // 问题：一是把「编号落在 product_num 还是 origin_id」这条饮品库的布局知识搬给了调用方，
+  // 二是列表是分页的——机器上饮品一多，匹配会在某一页之后静默失败，而那时钱已经收过了。
+  //
+  // 取不到时回 NotFound；device_id 或 drink_code 为空回 InvalidArgument。
+  rpc GetDeviceDrink(GetDeviceDrinkRequest) returns (Drink);
+  // GetDrink 按**我们的 uuid** 取一杯饮品，是 order-service 下单时给饮品行定价的那一条。
+  //
+  // 它存在的理由与 GetMembershipPlan 一模一样：**订单行上那份快照不能由调用方给**。
+  // 订单行的 product_name / product_img / price / vip_price 同时决定三件事——用户看到的名字和
+  // 图、他付多少钱、会员省了多少——这三件全是本域的事实。让调用方自己填那一份，就等于让
+  // 调用方定价：一条 originalUnitPrice=1 的请求能一分钱买走一杯美式。
+  //
+  // 所以这条路的形状是：客户端只给 drink_id，order-service 拿它来问这里，把这一份冻进订单行。
+  //
+  // 它与 GetDeviceDrink 是**两把不同的钥匙**，不要合并：那一条收的是机器报上来的编号、答案在
+  // 特定一台设备上（`device_id + product_num|origin_id`）；这一条收的是我们的主键，答案是库里
+  // 那一行。下单的调用方手里只有后一种。
+  //
+  // **不按 status 过滤，原样把 status 回给调用方。** 这与 GetDeviceDrink 有意不拦 status 是同
+  // 一个理由的两面：同一条饮品在两条路上该不该卖，分歧点不在 status 那一列，而在**钱收没收到**
+  // ——设备回调那条路钱已经在机器上收过了，拦了就是丢单；下单这条路还没有。那是订单域的事实，
+  // 所以判断留在 order-service。本服务只回答「这一行是什么」。
+  //
+  // FailedPrecondition 在本条上**没有含义**，不要照 GetMembershipPlan 给它补一个：下架是一列
+  // 事实，不是一次拒绝。
+  //
+  // 取不到回 NotFound；id 不是 uuid 回 InvalidArgument——它不是「没查到」，是没给。
+  rpc GetDrink(DrinkID) returns (Drink);
+  // DeductDeviceBalance 是**本服务唯一对外开的写口**（其余 rpc 都是读）。调用方是
+  // order-service：取货码那条路上，钱从设备余额里出（见方案 §四）。
+  //
+  // 为什么不是 payment-service：那笔钱不在任何渠道里，渠道分账也没有可动的资金
+  // （与账户出资同一条理由）。钱的所在地是这台设备，所以扣它的接口就在持有设备余额的
+  // 这个服务上。
+  //
+  // 三件事在**同一个事务**里：行锁设备、改余额、追加一条 amount 为负的流水。
+  // 只改余额不写流水，这台机器的钱怎么没的就查不到（老系统就是只 $inc 不记账，
+  // 这里是有意不照抄）。
+  //
+  // 幂等靠 device_balance_ledger_one_per_request：同一个 request_id 第二次进来
+  // 扣不进去，回 applied=false 而不是错误——重投是常态，不是故障。
+  //
+  // 重投**在验证码校验之前**就被认出来（按 request_id 取回当初那一行流水），原因是这条路
+  // 真正的用途是「订单没建出来时重放」：那笔钱已经动过了，此时验证码对不对不该再决定这一单
+  // 能不能补出来（码可能在两次之间被后台改过）。扣减本身一次都不会发生第二次。
+  //
+  // 取不到设备回 NotFound；amount <= 0 或 request_id 为空回 InvalidArgument；
+  // 验证码不对（或这台设备根本没配过）回 PermissionDenied；余额不够回
+  // FailedPrecondition（这一单真的做不成，且**一个字段都没写**）。
+  //
+  // 验证码放在了这一次调用里（见 DeductDeviceBalanceRequest.pickup_password 的说明），
+  // 所以这条路对外的形状是「凭这台设备上的验证码，从它的余额里扣这笔钱」：校验与扣减
+  // 都在同一个事务里定，调用方拿不到一个「校验通过但没扣成」的中间态。
+  rpc DeductDeviceBalance(DeductDeviceBalanceRequest) returns (DeductDeviceBalanceResponse);
   rpc ListManufacturers(ListManufacturersRequest) returns (ListManufacturersResponse);
   rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
   rpc ListDrinks(ListDrinksRequest) returns (ListDrinksResponse);

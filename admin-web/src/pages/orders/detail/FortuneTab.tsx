@@ -181,7 +181,15 @@ export default function FortuneTab({ order }: { order: OrderDetail }) {
     },
     { title: '原因', dataIndex: 'reason', width: 200, ellipsis: true, render: (_, row) => dash(row.reason) },
     { title: '申请时间', dataIndex: 'occurredAt', width: 170, render: (_, row) => time(row.occurredAt) },
-    { title: '解冻时间', dataIndex: 'releasedAt', width: 170, render: (_, row) => time(row.releasedAt) },
+    {
+      // 这一行**结束**的时刻。两种情况互斥（后端保证了只有一个非空），所以读哪一列由
+      // 状态决定，而不是「先看 releasedAt 再看 recoveredAt」——后者会在两列都空时
+      // 悄悄显示成「冻结中」，而冻结中本来就是空，那就分不清「还冻着」和「数据没到」了。
+      title: '冻结结束时间',
+      dataIndex: 'releasedAt',
+      width: 170,
+      render: (_, row) => time(row.status === 'recovered' ? row.recoveredAt : row.releasedAt),
+    },
   ];
 
   // 只在「空着且本该有」时渲染，但先算出来——条件写在 JSX 里再算会让那一行长到读不懂。
@@ -231,7 +239,7 @@ export default function FortuneTab({ order }: { order: OrderDetail }) {
           title="退款冻结"
           extra={
             <Typography.Text type="secondary">
-              申请退款即冻结，驳回或用户撤销后解冻；冻结不改余额与流水
+              申请退款即冻结；驳回、用户撤销、退款失败后解冻，退款成功后追回（注销那几笔发放）
             </Typography.Text>
           }
         >

@@ -83,8 +83,8 @@ func TestDeleteFailsClosedOnScopeReset(t *testing.T) {
 			t.Run(kind+"/"+tt.name, func(t *testing.T) {
 				var events []string
 				var scope repository.MerchantUserRepository = &deletionScopeRepo{events: &events, err: tt.resetErr}
-				b := NewAdminBrandHandler(service.NewAdminBrandService(&deletionBrandRepo{events: &events}, nil, nil, scope))
-				st := NewAdminStoreHandler(service.NewAdminStoreService(&deletionStoreRepo{events: &events}, nil, nil, nil, scope))
+				b := NewAdminBrandHandler(service.NewAdminBrandService(&deletionBrandRepo{events: &events}, nil, nil, scope, nil))
+				st := NewAdminStoreHandler(service.NewAdminStoreService(&deletionStoreRepo{events: &events}, nil, nil, nil, scope, nil))
 				svc := testJWT(t)
 				a, _ := liveAccess(t, []string{}, []string{"admin:" + kind + "s:delete"})
 				s := runtime.NewHTTPRouter(khttp.NewServer())
@@ -128,7 +128,7 @@ func TestDeletePrerequisitesAndDeleteError(t *testing.T) {
 	} {
 		t.Run("brand/"+tt.name, func(t *testing.T) {
 			var events []string
-			svc := service.NewAdminBrandService(&deletionBrandRepo{events: &events, findErr: tt.findErr, hasErr: tt.hasErr, deleteErr: tt.deleteErr, hasStores: tt.hasStores}, nil, nil, &deletionScopeRepo{events: &events})
+			svc := service.NewAdminBrandService(&deletionBrandRepo{events: &events, findErr: tt.findErr, hasErr: tt.hasErr, deleteErr: tt.deleteErr, hasStores: tt.hasStores}, nil, nil, &deletionScopeRepo{events: &events}, nil)
 			if err := svc.Delete(context.Background(), "target"); !errors.Is(err, tt.want) {
 				t.Fatalf("err=%v want %v", err, tt.want)
 			}
@@ -147,7 +147,7 @@ func TestDeletePrerequisitesAndDeleteError(t *testing.T) {
 		} else {
 			repo.deleteErr = failure
 		}
-		svc := service.NewAdminStoreService(repo, nil, nil, nil, &deletionScopeRepo{events: &events})
+		svc := service.NewAdminStoreService(repo, nil, nil, nil, &deletionScopeRepo{events: &events}, nil)
 		if err := svc.Delete(context.Background(), "target"); !errors.Is(err, failure) {
 			t.Fatalf("err=%v", err)
 		}

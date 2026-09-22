@@ -251,7 +251,16 @@ type Drink struct {
 	VipPrice        int64 `protobuf:"varint,10,opt,name=vip_price,json=vipPrice,proto3" json:"vip_price,omitempty"`
 	PickupCodePrice int64 `protobuf:"varint,11,opt,name=pickup_code_price,json=pickupCodePrice,proto3" json:"pickup_code_price,omitempty"`
 	// on_shelf=上架，off_shelf=下架。
-	Status        string `protobuf:"bytes,12,opt,name=status,proto3" json:"status,omitempty"`
+	Status string `protobuf:"bytes,12,opt,name=status,proto3" json:"status,omitempty"`
+	// device_id 是这一杯挂在哪台设备上（drinks 一行即「某台设备上的一杯」）。空串表示这一行
+	// 还没挂到设备上——库里真有这种历史行，写接口今天也不强制（编辑时才必填）。
+	//
+	// 编号排在最后是因为它加得晚：上面 1-12 是这份契约第一版就有的，改动字段号会让已经发出去
+	// 的那份编码含义错位。proto 里字段号比顺序重要，这一条不要为了好看去重排。
+	//
+	// 调用方拿它与自己手里的设备比一次：目录里的这一杯属于**某一台机器**，用 A 店的饮品配
+	// B 店的设备下单，价格与设备对不上而订单看起来是合法的。
+	DeviceId      string `protobuf:"bytes,13,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -366,6 +375,13 @@ func (x *Drink) GetPickupCodePrice() int64 {
 func (x *Drink) GetStatus() string {
 	if x != nil {
 		return x.Status
+	}
+	return ""
+}
+
+func (x *Drink) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
 	}
 	return ""
 }
@@ -552,6 +568,287 @@ func (x *DeviceID) GetId() string {
 	return ""
 }
 
+// DeductDeviceBalanceRequest 从**某台设备的咖啡余额**里扣一笔钱：取货码那条路
+// （方案 §四）的收款动作。钱在这台机器上，不在任何渠道里，所以它是一次余额扣减，
+// 不是一笔支付单。
+type DeductDeviceBalanceRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 设备 uuid。
+	DeviceId string `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	// 扣减金额（分），**只收正数**。符号由本服务补（流水记 -amount，见
+	// device_balance_ledger 的有符号口径）：让调用方自己带负号，等于把
+	// 「负数成了充值」这种错留给下一次改动。
+	Amount int64 `protobuf:"varint,2,opt,name=amount,proto3" json:"amount,omitempty"`
+	// 幂等键：厂商报文里那个唯一值。**不接受空串**——没有它，重投就是扣第二次，
+	// 而对方的报文本来就会被重投（网络重放、厂商自己重试）。
+	RequestId string `protobuf:"bytes,3,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// 流水上的摘要，只给人看（哪一单、哪台机器）。不参与任何判据。
+	Remark string `protobuf:"bytes,4,opt,name=remark,proto3" json:"remark,omitempty"`
+	// pickup_password：设备上那个静态验证码（devices.pickup_password），由顾客在机器上
+	// 敲、厂商原样转报过来。对不上回 PermissionDenied。
+	//
+	// **为什么这个校验在本服务做，而不是让 order-service 取回码自己比**：那个码是这台
+	// 设备自己的东西，它只该待在持有它的库里。让 order-service 把它读出来意味着这个码
+	// 每取一次货就跨一次服务边界、进另一个进程的内存与日志，而校验方还是拿着副本比——
+	// 比完了我们再被调用一次，两次之间那个码还可以被改（TOCTOU）。
+	//
+	// 放在这里还顺手把两件事合成了一次原子判断：同一个事务、同一把设备行锁之下，
+	// 「码对不对」与「钱够不够」一起定，不存在「校验通过之后余额被另一笔扣走」的窗口。
+	//
+	// 设备**没有配过**验证码（列是空串）时一律拒绝，而不是「空对空就放行」：那等于
+	// 谁都能把这台机器上的钱扣走，而运营看不出任何异常。
+	PickupPassword string `protobuf:"bytes,5,opt,name=pickup_password,json=pickupPassword,proto3" json:"pickup_password,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DeductDeviceBalanceRequest) Reset() {
+	*x = DeductDeviceBalanceRequest{}
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeductDeviceBalanceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeductDeviceBalanceRequest) ProtoMessage() {}
+
+func (x *DeductDeviceBalanceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeductDeviceBalanceRequest.ProtoReflect.Descriptor instead.
+func (*DeductDeviceBalanceRequest) Descriptor() ([]byte, []int) {
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *DeductDeviceBalanceRequest) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+func (x *DeductDeviceBalanceRequest) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *DeductDeviceBalanceRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *DeductDeviceBalanceRequest) GetRemark() string {
+	if x != nil {
+		return x.Remark
+	}
+	return ""
+}
+
+func (x *DeductDeviceBalanceRequest) GetPickupPassword() string {
+	if x != nil {
+		return x.PickupPassword
+	}
+	return ""
+}
+
+// DeductDeviceBalanceResponse 是一次扣减的结果。
+type DeductDeviceBalanceResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 扣完之后的余额（分）。命中幂等时是**当初那一次**记下的余额，不是现在的。
+	BalanceAfter int64 `protobuf:"varint,1,opt,name=balance_after,json=balanceAfter,proto3" json:"balance_after,omitempty"`
+	// false = 这个 request_id 已经扣过了，本次一个字段都没写。
+	//
+	// 调用方（order-service）要拿它区分两种「扣失败」：余额不足是这一单真的做不成，
+	// 而 already applied 是**上一次已经成功了**，重投必须当成成功继续往下走，
+	// 否则一次成功的取货会因为对方重投而回一个错误。
+	Applied bool `protobuf:"varint,2,opt,name=applied,proto3" json:"applied,omitempty"`
+	// 这一次**实际扣掉**的金额（正数，分）。
+	//
+	// 命中幂等时它是**当初那一次**从流水上取回的金额，与本次请求里带过来的 amount 可以
+	// 不等——重投与首次之间这一杯可能被改过价。调用方必须用**这一格**去记账，不能用自己
+	// 算出来的那个价：钱只动过一次，订单上的金额与流水上的必须对得上，否则一次「扣了 1400、
+	// 单记 2000」的差额没有任何一处能解释。
+	//
+	// 版本错配时（对面是还不知道这一格的旧版本）它是 0，调用方要按 0 处理成「拿不到当初的
+	// 金额」，退回到自己算的价——那是这一格出现之前的老行为，不是一次新的失败。
+	Amount        int64 `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeductDeviceBalanceResponse) Reset() {
+	*x = DeductDeviceBalanceResponse{}
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeductDeviceBalanceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeductDeviceBalanceResponse) ProtoMessage() {}
+
+func (x *DeductDeviceBalanceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeductDeviceBalanceResponse.ProtoReflect.Descriptor instead.
+func (*DeductDeviceBalanceResponse) Descriptor() ([]byte, []int) {
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *DeductDeviceBalanceResponse) GetBalanceAfter() int64 {
+	if x != nil {
+		return x.BalanceAfter
+	}
+	return 0
+}
+
+func (x *DeductDeviceBalanceResponse) GetApplied() bool {
+	if x != nil {
+		return x.Applied
+	}
+	return false
+}
+
+func (x *DeductDeviceBalanceResponse) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+// GetDeviceBySerialRequest 按**机器序列号**取设备。
+type GetDeviceBySerialRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// devices.serial_unique，设备自己认识的那个编号。
+	SerialUnique  string `protobuf:"bytes,1,opt,name=serial_unique,json=serialUnique,proto3" json:"serial_unique,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDeviceBySerialRequest) Reset() {
+	*x = GetDeviceBySerialRequest{}
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDeviceBySerialRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDeviceBySerialRequest) ProtoMessage() {}
+
+func (x *GetDeviceBySerialRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDeviceBySerialRequest.ProtoReflect.Descriptor instead.
+func (*GetDeviceBySerialRequest) Descriptor() ([]byte, []int) {
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GetDeviceBySerialRequest) GetSerialUnique() string {
+	if x != nil {
+		return x.SerialUnique
+	}
+	return ""
+}
+
+// GetDeviceDrinkRequest 按**机器上那杯饮品的编号**取饮品：设备回调（方案 §四）找饮品的入口。
+type GetDeviceDrinkRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 设备 uuid，来自 GetDeviceBySerial。drinks 一行即「某台设备上的一杯饮品」
+	// （003_drinks_own_device），所以饮品是按设备定位的。
+	DeviceId string `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	// 设备报上来的饮品编号。**它不是我们的 uuid**——机器不可能知道我们的主键。
+	//
+	// 这个编号落在 drinks 的哪一列，取决于这家厂商当初的同步来源，所以**两列都要匹配**
+	// （product_num 或 origin_id）。老系统就是这么兜的（sync_order_handler.go:270-275 的
+	// $or），保留它是因为两种来源今天都还在库里。
+	DrinkCode     string `protobuf:"bytes,2,opt,name=drink_code,json=drinkCode,proto3" json:"drink_code,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDeviceDrinkRequest) Reset() {
+	*x = GetDeviceDrinkRequest{}
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDeviceDrinkRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDeviceDrinkRequest) ProtoMessage() {}
+
+func (x *GetDeviceDrinkRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDeviceDrinkRequest.ProtoReflect.Descriptor instead.
+func (*GetDeviceDrinkRequest) Descriptor() ([]byte, []int) {
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *GetDeviceDrinkRequest) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+func (x *GetDeviceDrinkRequest) GetDrinkCode() string {
+	if x != nil {
+		return x.DrinkCode
+	}
+	return ""
+}
+
 type DrinkID struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -561,7 +858,7 @@ type DrinkID struct {
 
 func (x *DrinkID) Reset() {
 	*x = DrinkID{}
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[6]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -573,7 +870,7 @@ func (x *DrinkID) String() string {
 func (*DrinkID) ProtoMessage() {}
 
 func (x *DrinkID) ProtoReflect() protoreflect.Message {
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[6]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -586,7 +883,7 @@ func (x *DrinkID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DrinkID.ProtoReflect.Descriptor instead.
 func (*DrinkID) Descriptor() ([]byte, []int) {
-	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{6}
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DrinkID) GetId() string {
@@ -604,7 +901,7 @@ type ListManufacturersRequest struct {
 
 func (x *ListManufacturersRequest) Reset() {
 	*x = ListManufacturersRequest{}
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[7]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -616,7 +913,7 @@ func (x *ListManufacturersRequest) String() string {
 func (*ListManufacturersRequest) ProtoMessage() {}
 
 func (x *ListManufacturersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[7]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -629,7 +926,7 @@ func (x *ListManufacturersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListManufacturersRequest.ProtoReflect.Descriptor instead.
 func (*ListManufacturersRequest) Descriptor() ([]byte, []int) {
-	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{7}
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{11}
 }
 
 type ListManufacturersResponse struct {
@@ -641,7 +938,7 @@ type ListManufacturersResponse struct {
 
 func (x *ListManufacturersResponse) Reset() {
 	*x = ListManufacturersResponse{}
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[8]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -653,7 +950,7 @@ func (x *ListManufacturersResponse) String() string {
 func (*ListManufacturersResponse) ProtoMessage() {}
 
 func (x *ListManufacturersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[8]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -666,7 +963,7 @@ func (x *ListManufacturersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListManufacturersResponse.ProtoReflect.Descriptor instead.
 func (*ListManufacturersResponse) Descriptor() ([]byte, []int) {
-	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{8}
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ListManufacturersResponse) GetManufacturers() []*Manufacturer {
@@ -688,7 +985,7 @@ type ListDevicesRequest struct {
 
 func (x *ListDevicesRequest) Reset() {
 	*x = ListDevicesRequest{}
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[9]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -700,7 +997,7 @@ func (x *ListDevicesRequest) String() string {
 func (*ListDevicesRequest) ProtoMessage() {}
 
 func (x *ListDevicesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[9]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -713,7 +1010,7 @@ func (x *ListDevicesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDevicesRequest.ProtoReflect.Descriptor instead.
 func (*ListDevicesRequest) Descriptor() ([]byte, []int) {
-	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{9}
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListDevicesRequest) GetManufacturerId() string {
@@ -746,7 +1043,7 @@ type ListDevicesResponse struct {
 
 func (x *ListDevicesResponse) Reset() {
 	*x = ListDevicesResponse{}
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[10]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -758,7 +1055,7 @@ func (x *ListDevicesResponse) String() string {
 func (*ListDevicesResponse) ProtoMessage() {}
 
 func (x *ListDevicesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[10]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -771,7 +1068,7 @@ func (x *ListDevicesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDevicesResponse.ProtoReflect.Descriptor instead.
 func (*ListDevicesResponse) Descriptor() ([]byte, []int) {
-	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{10}
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ListDevicesResponse) GetDevices() []*Device {
@@ -785,13 +1082,18 @@ type ListDrinksRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	ManufacturerId string                 `protobuf:"bytes,1,opt,name=manufacturer_id,json=manufacturerId,proto3" json:"manufacturer_id,omitempty"`
 	Status         string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// 按设备过滤。drinks 一行即「某台设备上的一杯饮品」（003_drinks_own_device），所以这是
+	// 按机器看菜单时唯一有意义的过滤方式。走 drinks_device_idx。
+	//
+	// 设备回调建单**不走这一条**（它找的是特定那一杯，不是一份菜单，见 GetDeviceDrink）。
+	DeviceId      string `protobuf:"bytes,3,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListDrinksRequest) Reset() {
 	*x = ListDrinksRequest{}
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[11]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -803,7 +1105,7 @@ func (x *ListDrinksRequest) String() string {
 func (*ListDrinksRequest) ProtoMessage() {}
 
 func (x *ListDrinksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[11]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -816,7 +1118,7 @@ func (x *ListDrinksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDrinksRequest.ProtoReflect.Descriptor instead.
 func (*ListDrinksRequest) Descriptor() ([]byte, []int) {
-	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{11}
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ListDrinksRequest) GetManufacturerId() string {
@@ -833,6 +1135,13 @@ func (x *ListDrinksRequest) GetStatus() string {
 	return ""
 }
 
+func (x *ListDrinksRequest) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
 type ListDrinksResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Drinks        []*Drink               `protobuf:"bytes,1,rep,name=drinks,proto3" json:"drinks,omitempty"`
@@ -842,7 +1151,7 @@ type ListDrinksResponse struct {
 
 func (x *ListDrinksResponse) Reset() {
 	*x = ListDrinksResponse{}
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[12]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -854,7 +1163,7 @@ func (x *ListDrinksResponse) String() string {
 func (*ListDrinksResponse) ProtoMessage() {}
 
 func (x *ListDrinksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[12]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -867,7 +1176,7 @@ func (x *ListDrinksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDrinksResponse.ProtoReflect.Descriptor instead.
 func (*ListDrinksResponse) Descriptor() ([]byte, []int) {
-	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{12}
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ListDrinksResponse) GetDrinks() []*Drink {
@@ -886,7 +1195,7 @@ type UpsertDeviceDrinkRequest struct {
 
 func (x *UpsertDeviceDrinkRequest) Reset() {
 	*x = UpsertDeviceDrinkRequest{}
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[13]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -898,7 +1207,7 @@ func (x *UpsertDeviceDrinkRequest) String() string {
 func (*UpsertDeviceDrinkRequest) ProtoMessage() {}
 
 func (x *UpsertDeviceDrinkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[13]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -911,7 +1220,7 @@ func (x *UpsertDeviceDrinkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertDeviceDrinkRequest.ProtoReflect.Descriptor instead.
 func (*UpsertDeviceDrinkRequest) Descriptor() ([]byte, []int) {
-	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{13}
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *UpsertDeviceDrinkRequest) GetRelation() *DeviceDrink {
@@ -930,7 +1239,7 @@ type ListDeviceDrinksRequest struct {
 
 func (x *ListDeviceDrinksRequest) Reset() {
 	*x = ListDeviceDrinksRequest{}
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[14]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -942,7 +1251,7 @@ func (x *ListDeviceDrinksRequest) String() string {
 func (*ListDeviceDrinksRequest) ProtoMessage() {}
 
 func (x *ListDeviceDrinksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[14]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -955,7 +1264,7 @@ func (x *ListDeviceDrinksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDeviceDrinksRequest.ProtoReflect.Descriptor instead.
 func (*ListDeviceDrinksRequest) Descriptor() ([]byte, []int) {
-	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{14}
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListDeviceDrinksRequest) GetDeviceId() string {
@@ -974,7 +1283,7 @@ type ListDeviceDrinksResponse struct {
 
 func (x *ListDeviceDrinksResponse) Reset() {
 	*x = ListDeviceDrinksResponse{}
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[15]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -986,7 +1295,7 @@ func (x *ListDeviceDrinksResponse) String() string {
 func (*ListDeviceDrinksResponse) ProtoMessage() {}
 
 func (x *ListDeviceDrinksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[15]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -999,7 +1308,7 @@ func (x *ListDeviceDrinksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDeviceDrinksResponse.ProtoReflect.Descriptor instead.
 func (*ListDeviceDrinksResponse) Descriptor() ([]byte, []int) {
-	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{15}
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ListDeviceDrinksResponse) GetRelations() []*DeviceDrink {
@@ -1018,7 +1327,7 @@ type DeleteResponse struct {
 
 func (x *DeleteResponse) Reset() {
 	*x = DeleteResponse{}
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[16]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1030,7 +1339,7 @@ func (x *DeleteResponse) String() string {
 func (*DeleteResponse) ProtoMessage() {}
 
 func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[16]
+	mi := &file_coffee_machine_v1_coffee_machine_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1043,7 +1352,7 @@ func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteResponse.ProtoReflect.Descriptor instead.
 func (*DeleteResponse) Descriptor() ([]byte, []int) {
-	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{16}
+	return file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *DeleteResponse) GetDeleted() bool {
@@ -1079,7 +1388,7 @@ const file_coffee_machine_v1_coffee_machine_proto_rawDesc = "" +
 	"\x12last_fault_message\x18\n" +
 	" \x01(\tR\x10lastFaultMessageB\x10\n" +
 	"\x0e_vendor_onlineB\x16\n" +
-	"\x14_last_synced_at_unix\"\xfb\x02\n" +
+	"\x14_last_synced_at_unix\"\x98\x03\n" +
 	"\x05Drink\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fmanufacturer_id\x18\x02 \x01(\tR\x0emanufacturerId\x12\x1b\n" +
@@ -1096,7 +1405,8 @@ const file_coffee_machine_v1_coffee_machine_proto_rawDesc = "" +
 	"\tvip_price\x18\n" +
 	" \x01(\x03R\bvipPrice\x12*\n" +
 	"\x11pickup_code_price\x18\v \x01(\x03R\x0fpickupCodePrice\x12\x16\n" +
-	"\x06status\x18\f \x01(\tR\x06status\"\x9a\x02\n" +
+	"\x06status\x18\f \x01(\tR\x06status\x12\x1b\n" +
+	"\tdevice_id\x18\r \x01(\tR\bdeviceId\"\x9a\x02\n" +
 	"\vDeviceDrink\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x19\n" +
 	"\bdrink_id\x18\x02 \x01(\tR\adrinkId\x12\x18\n" +
@@ -1113,7 +1423,24 @@ const file_coffee_machine_v1_coffee_machine_proto_rawDesc = "" +
 	"\x0eManufacturerID\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x1a\n" +
 	"\bDeviceID\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\x19\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xb1\x01\n" +
+	"\x1aDeductDeviceBalanceRequest\x12\x1b\n" +
+	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x16\n" +
+	"\x06amount\x18\x02 \x01(\x03R\x06amount\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x03 \x01(\tR\trequestId\x12\x16\n" +
+	"\x06remark\x18\x04 \x01(\tR\x06remark\x12'\n" +
+	"\x0fpickup_password\x18\x05 \x01(\tR\x0epickupPassword\"t\n" +
+	"\x1bDeductDeviceBalanceResponse\x12#\n" +
+	"\rbalance_after\x18\x01 \x01(\x03R\fbalanceAfter\x12\x18\n" +
+	"\aapplied\x18\x02 \x01(\bR\aapplied\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\x03R\x06amount\"?\n" +
+	"\x18GetDeviceBySerialRequest\x12#\n" +
+	"\rserial_unique\x18\x01 \x01(\tR\fserialUnique\"S\n" +
+	"\x15GetDeviceDrinkRequest\x12\x1b\n" +
+	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
+	"\n" +
+	"drink_code\x18\x02 \x01(\tR\tdrinkCode\"\x19\n" +
 	"\aDrinkID\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x1a\n" +
 	"\x18ListManufacturersRequest\"h\n" +
@@ -1124,10 +1451,11 @@ const file_coffee_machine_v1_coffee_machine_proto_rawDesc = "" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x19\n" +
 	"\bstore_id\x18\x03 \x01(\tR\astoreId\"P\n" +
 	"\x13ListDevicesResponse\x129\n" +
-	"\adevices\x18\x01 \x03(\v2\x1f.panda.coffee_machine.v1.DeviceR\adevices\"T\n" +
+	"\adevices\x18\x01 \x03(\v2\x1f.panda.coffee_machine.v1.DeviceR\adevices\"q\n" +
 	"\x11ListDrinksRequest\x12'\n" +
 	"\x0fmanufacturer_id\x18\x01 \x01(\tR\x0emanufacturerId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"L\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1b\n" +
+	"\tdevice_id\x18\x03 \x01(\tR\bdeviceId\"L\n" +
 	"\x12ListDrinksResponse\x126\n" +
 	"\x06drinks\x18\x01 \x03(\v2\x1e.panda.coffee_machine.v1.DrinkR\x06drinks\"\\\n" +
 	"\x18UpsertDeviceDrinkRequest\x12@\n" +
@@ -1137,9 +1465,14 @@ const file_coffee_machine_v1_coffee_machine_proto_rawDesc = "" +
 	"\x18ListDeviceDrinksResponse\x12B\n" +
 	"\trelations\x18\x01 \x03(\v2$.panda.coffee_machine.v1.DeviceDrinkR\trelations\"*\n" +
 	"\x0eDeleteResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\bR\adeleted2\xb9\a\n" +
+	"\adeleted\x18\x01 \x01(\bR\adeleted2\xd5\n" +
+	"\n" +
 	"\x14CoffeeMachineService\x12O\n" +
-	"\tGetDevice\x12!.panda.coffee_machine.v1.DeviceID\x1a\x1f.panda.coffee_machine.v1.Device\x12z\n" +
+	"\tGetDevice\x12!.panda.coffee_machine.v1.DeviceID\x1a\x1f.panda.coffee_machine.v1.Device\x12g\n" +
+	"\x11GetDeviceBySerial\x121.panda.coffee_machine.v1.GetDeviceBySerialRequest\x1a\x1f.panda.coffee_machine.v1.Device\x12`\n" +
+	"\x0eGetDeviceDrink\x12..panda.coffee_machine.v1.GetDeviceDrinkRequest\x1a\x1e.panda.coffee_machine.v1.Drink\x12L\n" +
+	"\bGetDrink\x12 .panda.coffee_machine.v1.DrinkID\x1a\x1e.panda.coffee_machine.v1.Drink\x12\x80\x01\n" +
+	"\x13DeductDeviceBalance\x123.panda.coffee_machine.v1.DeductDeviceBalanceRequest\x1a4.panda.coffee_machine.v1.DeductDeviceBalanceResponse\x12z\n" +
 	"\x11ListManufacturers\x121.panda.coffee_machine.v1.ListManufacturersRequest\x1a2.panda.coffee_machine.v1.ListManufacturersResponse\x12h\n" +
 	"\vListDevices\x12+.panda.coffee_machine.v1.ListDevicesRequest\x1a,.panda.coffee_machine.v1.ListDevicesResponse\x12e\n" +
 	"\n" +
@@ -1162,25 +1495,29 @@ func file_coffee_machine_v1_coffee_machine_proto_rawDescGZIP() []byte {
 	return file_coffee_machine_v1_coffee_machine_proto_rawDescData
 }
 
-var file_coffee_machine_v1_coffee_machine_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_coffee_machine_v1_coffee_machine_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_coffee_machine_v1_coffee_machine_proto_goTypes = []any{
-	(*Manufacturer)(nil),              // 0: panda.coffee_machine.v1.Manufacturer
-	(*Device)(nil),                    // 1: panda.coffee_machine.v1.Device
-	(*Drink)(nil),                     // 2: panda.coffee_machine.v1.Drink
-	(*DeviceDrink)(nil),               // 3: panda.coffee_machine.v1.DeviceDrink
-	(*ManufacturerID)(nil),            // 4: panda.coffee_machine.v1.ManufacturerID
-	(*DeviceID)(nil),                  // 5: panda.coffee_machine.v1.DeviceID
-	(*DrinkID)(nil),                   // 6: panda.coffee_machine.v1.DrinkID
-	(*ListManufacturersRequest)(nil),  // 7: panda.coffee_machine.v1.ListManufacturersRequest
-	(*ListManufacturersResponse)(nil), // 8: panda.coffee_machine.v1.ListManufacturersResponse
-	(*ListDevicesRequest)(nil),        // 9: panda.coffee_machine.v1.ListDevicesRequest
-	(*ListDevicesResponse)(nil),       // 10: panda.coffee_machine.v1.ListDevicesResponse
-	(*ListDrinksRequest)(nil),         // 11: panda.coffee_machine.v1.ListDrinksRequest
-	(*ListDrinksResponse)(nil),        // 12: panda.coffee_machine.v1.ListDrinksResponse
-	(*UpsertDeviceDrinkRequest)(nil),  // 13: panda.coffee_machine.v1.UpsertDeviceDrinkRequest
-	(*ListDeviceDrinksRequest)(nil),   // 14: panda.coffee_machine.v1.ListDeviceDrinksRequest
-	(*ListDeviceDrinksResponse)(nil),  // 15: panda.coffee_machine.v1.ListDeviceDrinksResponse
-	(*DeleteResponse)(nil),            // 16: panda.coffee_machine.v1.DeleteResponse
+	(*Manufacturer)(nil),                // 0: panda.coffee_machine.v1.Manufacturer
+	(*Device)(nil),                      // 1: panda.coffee_machine.v1.Device
+	(*Drink)(nil),                       // 2: panda.coffee_machine.v1.Drink
+	(*DeviceDrink)(nil),                 // 3: panda.coffee_machine.v1.DeviceDrink
+	(*ManufacturerID)(nil),              // 4: panda.coffee_machine.v1.ManufacturerID
+	(*DeviceID)(nil),                    // 5: panda.coffee_machine.v1.DeviceID
+	(*DeductDeviceBalanceRequest)(nil),  // 6: panda.coffee_machine.v1.DeductDeviceBalanceRequest
+	(*DeductDeviceBalanceResponse)(nil), // 7: panda.coffee_machine.v1.DeductDeviceBalanceResponse
+	(*GetDeviceBySerialRequest)(nil),    // 8: panda.coffee_machine.v1.GetDeviceBySerialRequest
+	(*GetDeviceDrinkRequest)(nil),       // 9: panda.coffee_machine.v1.GetDeviceDrinkRequest
+	(*DrinkID)(nil),                     // 10: panda.coffee_machine.v1.DrinkID
+	(*ListManufacturersRequest)(nil),    // 11: panda.coffee_machine.v1.ListManufacturersRequest
+	(*ListManufacturersResponse)(nil),   // 12: panda.coffee_machine.v1.ListManufacturersResponse
+	(*ListDevicesRequest)(nil),          // 13: panda.coffee_machine.v1.ListDevicesRequest
+	(*ListDevicesResponse)(nil),         // 14: panda.coffee_machine.v1.ListDevicesResponse
+	(*ListDrinksRequest)(nil),           // 15: panda.coffee_machine.v1.ListDrinksRequest
+	(*ListDrinksResponse)(nil),          // 16: panda.coffee_machine.v1.ListDrinksResponse
+	(*UpsertDeviceDrinkRequest)(nil),    // 17: panda.coffee_machine.v1.UpsertDeviceDrinkRequest
+	(*ListDeviceDrinksRequest)(nil),     // 18: panda.coffee_machine.v1.ListDeviceDrinksRequest
+	(*ListDeviceDrinksResponse)(nil),    // 19: panda.coffee_machine.v1.ListDeviceDrinksResponse
+	(*DeleteResponse)(nil),              // 20: panda.coffee_machine.v1.DeleteResponse
 }
 var file_coffee_machine_v1_coffee_machine_proto_depIdxs = []int32{
 	0,  // 0: panda.coffee_machine.v1.ListManufacturersResponse.manufacturers:type_name -> panda.coffee_machine.v1.Manufacturer
@@ -1189,25 +1526,33 @@ var file_coffee_machine_v1_coffee_machine_proto_depIdxs = []int32{
 	3,  // 3: panda.coffee_machine.v1.UpsertDeviceDrinkRequest.relation:type_name -> panda.coffee_machine.v1.DeviceDrink
 	3,  // 4: panda.coffee_machine.v1.ListDeviceDrinksResponse.relations:type_name -> panda.coffee_machine.v1.DeviceDrink
 	5,  // 5: panda.coffee_machine.v1.CoffeeMachineService.GetDevice:input_type -> panda.coffee_machine.v1.DeviceID
-	7,  // 6: panda.coffee_machine.v1.CoffeeMachineService.ListManufacturers:input_type -> panda.coffee_machine.v1.ListManufacturersRequest
-	9,  // 7: panda.coffee_machine.v1.CoffeeMachineService.ListDevices:input_type -> panda.coffee_machine.v1.ListDevicesRequest
-	11, // 8: panda.coffee_machine.v1.CoffeeMachineService.ListDrinks:input_type -> panda.coffee_machine.v1.ListDrinksRequest
-	13, // 9: panda.coffee_machine.v1.CoffeeMachineService.UpsertDeviceDrink:input_type -> panda.coffee_machine.v1.UpsertDeviceDrinkRequest
-	14, // 10: panda.coffee_machine.v1.CoffeeMachineService.ListDeviceDrinks:input_type -> panda.coffee_machine.v1.ListDeviceDrinksRequest
-	4,  // 11: panda.coffee_machine.v1.CoffeeMachineService.DeleteManufacturer:input_type -> panda.coffee_machine.v1.ManufacturerID
-	5,  // 12: panda.coffee_machine.v1.CoffeeMachineService.DeleteDevice:input_type -> panda.coffee_machine.v1.DeviceID
-	6,  // 13: panda.coffee_machine.v1.CoffeeMachineService.DeleteDrink:input_type -> panda.coffee_machine.v1.DrinkID
-	1,  // 14: panda.coffee_machine.v1.CoffeeMachineService.GetDevice:output_type -> panda.coffee_machine.v1.Device
-	8,  // 15: panda.coffee_machine.v1.CoffeeMachineService.ListManufacturers:output_type -> panda.coffee_machine.v1.ListManufacturersResponse
-	10, // 16: panda.coffee_machine.v1.CoffeeMachineService.ListDevices:output_type -> panda.coffee_machine.v1.ListDevicesResponse
-	12, // 17: panda.coffee_machine.v1.CoffeeMachineService.ListDrinks:output_type -> panda.coffee_machine.v1.ListDrinksResponse
-	3,  // 18: panda.coffee_machine.v1.CoffeeMachineService.UpsertDeviceDrink:output_type -> panda.coffee_machine.v1.DeviceDrink
-	15, // 19: panda.coffee_machine.v1.CoffeeMachineService.ListDeviceDrinks:output_type -> panda.coffee_machine.v1.ListDeviceDrinksResponse
-	16, // 20: panda.coffee_machine.v1.CoffeeMachineService.DeleteManufacturer:output_type -> panda.coffee_machine.v1.DeleteResponse
-	16, // 21: panda.coffee_machine.v1.CoffeeMachineService.DeleteDevice:output_type -> panda.coffee_machine.v1.DeleteResponse
-	16, // 22: panda.coffee_machine.v1.CoffeeMachineService.DeleteDrink:output_type -> panda.coffee_machine.v1.DeleteResponse
-	14, // [14:23] is the sub-list for method output_type
-	5,  // [5:14] is the sub-list for method input_type
+	8,  // 6: panda.coffee_machine.v1.CoffeeMachineService.GetDeviceBySerial:input_type -> panda.coffee_machine.v1.GetDeviceBySerialRequest
+	9,  // 7: panda.coffee_machine.v1.CoffeeMachineService.GetDeviceDrink:input_type -> panda.coffee_machine.v1.GetDeviceDrinkRequest
+	10, // 8: panda.coffee_machine.v1.CoffeeMachineService.GetDrink:input_type -> panda.coffee_machine.v1.DrinkID
+	6,  // 9: panda.coffee_machine.v1.CoffeeMachineService.DeductDeviceBalance:input_type -> panda.coffee_machine.v1.DeductDeviceBalanceRequest
+	11, // 10: panda.coffee_machine.v1.CoffeeMachineService.ListManufacturers:input_type -> panda.coffee_machine.v1.ListManufacturersRequest
+	13, // 11: panda.coffee_machine.v1.CoffeeMachineService.ListDevices:input_type -> panda.coffee_machine.v1.ListDevicesRequest
+	15, // 12: panda.coffee_machine.v1.CoffeeMachineService.ListDrinks:input_type -> panda.coffee_machine.v1.ListDrinksRequest
+	17, // 13: panda.coffee_machine.v1.CoffeeMachineService.UpsertDeviceDrink:input_type -> panda.coffee_machine.v1.UpsertDeviceDrinkRequest
+	18, // 14: panda.coffee_machine.v1.CoffeeMachineService.ListDeviceDrinks:input_type -> panda.coffee_machine.v1.ListDeviceDrinksRequest
+	4,  // 15: panda.coffee_machine.v1.CoffeeMachineService.DeleteManufacturer:input_type -> panda.coffee_machine.v1.ManufacturerID
+	5,  // 16: panda.coffee_machine.v1.CoffeeMachineService.DeleteDevice:input_type -> panda.coffee_machine.v1.DeviceID
+	10, // 17: panda.coffee_machine.v1.CoffeeMachineService.DeleteDrink:input_type -> panda.coffee_machine.v1.DrinkID
+	1,  // 18: panda.coffee_machine.v1.CoffeeMachineService.GetDevice:output_type -> panda.coffee_machine.v1.Device
+	1,  // 19: panda.coffee_machine.v1.CoffeeMachineService.GetDeviceBySerial:output_type -> panda.coffee_machine.v1.Device
+	2,  // 20: panda.coffee_machine.v1.CoffeeMachineService.GetDeviceDrink:output_type -> panda.coffee_machine.v1.Drink
+	2,  // 21: panda.coffee_machine.v1.CoffeeMachineService.GetDrink:output_type -> panda.coffee_machine.v1.Drink
+	7,  // 22: panda.coffee_machine.v1.CoffeeMachineService.DeductDeviceBalance:output_type -> panda.coffee_machine.v1.DeductDeviceBalanceResponse
+	12, // 23: panda.coffee_machine.v1.CoffeeMachineService.ListManufacturers:output_type -> panda.coffee_machine.v1.ListManufacturersResponse
+	14, // 24: panda.coffee_machine.v1.CoffeeMachineService.ListDevices:output_type -> panda.coffee_machine.v1.ListDevicesResponse
+	16, // 25: panda.coffee_machine.v1.CoffeeMachineService.ListDrinks:output_type -> panda.coffee_machine.v1.ListDrinksResponse
+	3,  // 26: panda.coffee_machine.v1.CoffeeMachineService.UpsertDeviceDrink:output_type -> panda.coffee_machine.v1.DeviceDrink
+	19, // 27: panda.coffee_machine.v1.CoffeeMachineService.ListDeviceDrinks:output_type -> panda.coffee_machine.v1.ListDeviceDrinksResponse
+	20, // 28: panda.coffee_machine.v1.CoffeeMachineService.DeleteManufacturer:output_type -> panda.coffee_machine.v1.DeleteResponse
+	20, // 29: panda.coffee_machine.v1.CoffeeMachineService.DeleteDevice:output_type -> panda.coffee_machine.v1.DeleteResponse
+	20, // 30: panda.coffee_machine.v1.CoffeeMachineService.DeleteDrink:output_type -> panda.coffee_machine.v1.DeleteResponse
+	18, // [18:31] is the sub-list for method output_type
+	5,  // [5:18] is the sub-list for method input_type
 	5,  // [5:5] is the sub-list for extension type_name
 	5,  // [5:5] is the sub-list for extension extendee
 	0,  // [0:5] is the sub-list for field type_name
@@ -1226,7 +1571,7 @@ func file_coffee_machine_v1_coffee_machine_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_coffee_machine_v1_coffee_machine_proto_rawDesc), len(file_coffee_machine_v1_coffee_machine_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

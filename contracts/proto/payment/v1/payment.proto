@@ -4,7 +4,7 @@ package panda.payment.v1;
 option go_package = "github.com/panda-dev/panda-v2/contracts/proto/payment/v1";
 
 // 支付服务的内部契约。调用方只有 order-service：发起支付这条链路不能走 MQ
-// （客户端要立刻拿到支付参数，方案 7.2），所以它是一次同步 RPC。
+// （客户端要立刻拿到支付参数，方案 7.2），退款那条同理，所以两者都是同步 RPC。
 //
 // 金额单位是分，用 int64。方案 13.1 要求的「金额在 JSON 传输里必须是字符串」是为了
 // 绕开 JS 的数字精度，protobuf 二进制里 int64 是精确的；真正回到客户端的那份是
@@ -16,6 +16,84 @@ service PaymentService {
   // 不去读订单库——订单事实的归属方是订单服务，支付这边只拿一个值引用。反过来，
   // 本服务建单成功后把渠道返回的支付参数原样交回，由调用方转给客户端。
   rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
+
+  // 为一张已收妥的支付发起退款。
+  //
+  // 调用方是 order-service，在售后单**审核通过**那一刻调它。这条链路不能走 MQ 的理由
+  // 与发起支付不同，但同样硬：渠道对退款是**同步应答**（规范里没有退款回调），
+  // 「审核通过」这个动作在用户那边是立刻要有反馈的。
+  //
+  // 幂等键是 after_sale_no 而不是请求号：一次退款只该发生一次，而售后单是它唯一的出处。
+  // 同号重发拿回同一张退款单，不新建——调用方在某一步失败之后重试是常态（见下面 status）。
+  rpc CreateRefund(CreateRefundRequest) returns (CreateRefundResponse);
+
+  // 为一位用户发起一次委托代扣签约：让他在渠道那边授权我们以后按期扣钱。
+  //
+  // # 它为什么不在支付聚合那条路上
+  //
+  // 签约不发钱、没有订单，也就没有能挂的支付单（payments.order_no 是 NOT NULL 的订单号）。
+  // 这一条的全部产出是**一份协议**加一组给客户端的跳转参数，钱的事在后面的代扣里。
+  //
+  // # 它签的是什么
+  //
+  // 调用方给的是**业务侧**的计划（plan_code，如会员套餐代码）；渠道侧的签约模板
+  // （provider_plan_id，如微信的 plan_id）也由调用方给——模板内容在渠道后台维护，本服务
+  // 只引用它的编号。渠道与支付方式由 payment_method 决定，本服务按它的 action 决定怎么签。
+  //
+  // # 幂等
+  //
+  // 键是 request_id：同一次提交重试拿回**同一份协议与同一组签约参数**。重算一遍签名会让
+  // 用户在微信那边拿到两个不同的 request_serial（那在渠道看来是两次签约）。同一个键换了
+  // 请求体一律拒绝（AlreadyExists）——重试没用，要改的是调用方。
+  rpc CreateAgreement(CreateAgreementRequest) returns (CreateAgreementResponse);
+
+  // 回渠道核一份协议的状态，并把结论落回本库。
+  //
+  // 它是**写**而不是读：渠道说「这份协议没了」而本库还记着它生效中时，纠正只能发生在这里
+  // （后台那个「同步」按钮、以及签约之后的「确认」走的都是它）。所以它返回的是**纠正之后**
+  // 的本库状态，而渠道的原始状态另有一个字段带出来给人看。
+  rpc QueryAgreement(QueryAgreementRequest) returns (QueryAgreementResponse);
+
+  // 解一份协议：**我们主动去撤**用户在渠道那边的授权。
+  //
+  // 调用方是 membership-service，两条路都走它：用户在小程序里点「关闭自动续费」，运营在
+  // 后台取消订阅。**它必须在改本地状态之前调**——反过来的话，一次失败会留下「本地已解约、
+  // 微信那边还挂着」，而微信下个月照样扣钱，用户看到的是「自动续费：已关闭」。
+  //
+  // 用户在微信里自己解约走的是另一条路（渠道推回来的协议变更通知），不经过这里。
+  rpc TerminateAgreement(TerminateAgreementRequest) returns (TerminateAgreementResponse);
+
+  // 对一份已签约的协议发起一期扣款。
+  //
+  // 调用方是 membership-service 的到期扫描：订阅到点了才调，期次由它从订阅的 next_charge_at
+  // 派生。「一期只扣一次」的幂等键是 (agreement_no, biz_period)，库上那条唯一约束兜底——
+  // 所以调用方超时后重发同一个期次是安全的。
+  //
+  // **返回值不是「扣到钱了没有」**：渠道同步回的受理只说明请求被收下了（status=charging），
+  // 真正的结论在渠道推回来的扣款结果通知里（见 payment.agreement.charge_succeeded）。
+  // 续费的凭据是那条事件，不是这个响应。
+  rpc ChargeAgreement(ChargeAgreementRequest) returns (ChargeAgreementResponse);
+
+  // 列一份协议上**已经发生过与正在发生**的每一期扣款。只读。
+  //
+  // 调用方是 membership-service，它替后台的订阅详情页取这一段（页面权限沿用 membership:read，
+  // 所以不能要求前端去够 payment:read）。老系统那栏「续费明细」读的就是同一件事
+  // （subscription_transactions）。
+  //
+  // 返回的**不只是成功的那几期**：pending / charging / failed 都要给出去——后台要看的是
+  // 「这个用户这一期扣了没、扣了几次、为什么没扣上」，只给成功的话，一张扣款失败的单子在
+  // 页面上根本不存在（而它恰恰是最需要被人看见的那一种）。
+  rpc ListAgreementCharges(ListAgreementChargesRequest) returns (ListAgreementChargesResponse);
+
+  // 按支付单号取一张支付单的摘要。只读。**只给内部服务。**
+  //
+  // 它存在的理由是**渠道流水号的所有权**：provider_transaction_id 是对账凭据，全仓只有本
+  // 服务有对外给它的接口（order-service 的 GetOrder 只给 payment_no）。调用方拿着订单上的
+  // payment_no 来换这里的三格事实（渠道流水号 / 支付方式 / 支付时间）。
+  //
+  // 查不到回 NotFound——与订单那条不同：payment_no 是**值引用**，调用方手里的值对不上任何
+  // 一张支付单时，那是一个确定的事实（不是「还没建好」）。
+  rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse);
 }
 
 message CreatePaymentRequest {
@@ -25,8 +103,13 @@ message CreatePaymentRequest {
   string user_id = 2;
   // 应付总额，单位为分。由 order-service 权威给出，本服务不对着订单库复核。
   int64 amount = 3;
-  // 用户选的支付方式（payment_methods.id）。本服务按它的 action 决定怎么起支付。
-  string payment_method_id = 4;
+  // 用户选的支付方式 **code**（payment-service 的支付方式目录里的常量，如
+  // `ums_miniapp_wechat` / `coffee_bean`）。本服务按它的 action 决定怎么起支付。
+  //
+  // 它从前是 payment_methods.id（一个 uuid）。支付方式收成代码里的常量之后不再是数据，
+  // 于是对外契约从「一个指向某行的 id」变成「一个稳定的 code」——名字跟着值一起改，
+  // 免得调用方拿到的字段叫 id 而里面装的是 code。
+  string payment_method = 4;
   // 渠道收银台与账单上显示的商品描述。
   string subject = 5;
   // 幂等号：同一次提交重试要拿到同一张支付单，不新建。
@@ -43,6 +126,25 @@ message CreatePaymentRequest {
   // 才不会把同一张订单的豆扣两遍。渠道支付用不到它，但一样必填——一个「只在某种支付方式
   // 下才必填」的字段，缺失时被砸到的是选了豆支付的用户，而不是调用方的测试。
   string order_id = 9;
+  // 下单点位，值引用（orders.store_id），可空。
+  //
+  // 分账规则按范围命中（device → store → brand → product → global），而分账任务是在
+  // **发起支付那一刻**就建的——所以这条请求必须在那一刻把范围带过来，不能等支付成功了
+  // 再回头凑。为什么不等：支付成功那条事件的方向是 Payment → Order（支付结果），带不了
+  // 订单维度，而本服务不读订单库。
+  //
+  // 可空是因为订单上本来就可空（纯会员订单没有点位）；空值只会让 store 档的规则命不中。
+  string store_id = 10;
+  // 下单设备，值引用（orders.device_id），可空。设备的规则比门店更具体，先命中它。
+  string device_id = 11;
+  // 这笔支付的业务分类，取 settlement_rules.biz_type 的词表：
+  // coffee / membership / store_consume / addon_product。**必填**。
+  //
+  // 由 order-service 从订单行推（有 drink 就是 coffee，否则 membership，再否则
+  // addon_product）。为什么必须由调用方给：它是规则命中键的第一段
+  // `(biz_type, scope_type, scope_ref)`，而「这一单是什么类型」是订单域的事实——本服务
+  // 猜不出来，猜错的表现是「安静地命不中规则、整单归平台」，没有报错。
+  string biz_type = 12;
 }
 
 message CreatePaymentResponse {
@@ -54,8 +156,8 @@ message CreatePaymentResponse {
   // failed    = 发起即失败（渠道拒绝、余额不足、参数不全），客户端可以换方式重试
   string status = 2;
   // 这条支付方式的行为：jump_miniapp / native_pay / direct_pay / qrcode / h5 /
-  // account。客户端只认它决定怎么调起支付，不认 code——同形态的新渠道是插一行
-  // 数据，客户端零改动。
+  // account。客户端只认它决定怎么调起支付，不认 code——同形态的新渠道是在
+  // payment-service 的 catalog 里加一行常量（要发一次版），客户端零改动。
   string action = 3;
   // 渠道返回的支付参数，扁平字符串键值：native_pay 的 timeStamp/nonceStr/package/
   // signType/paySign，jump_miniapp 的 path 与附加 query，qrcode 与 h5 的 URL。
@@ -64,4 +166,250 @@ message CreatePaymentResponse {
   int64 expires_at_unix = 5;
   string failure_code = 6;
   string failure_message = 7;
+}
+
+// CreateRefundRequest 是发起一次退款要交给支付服务的事实。
+//
+// 比 CreatePaymentRequest 短得多，因为**钱的来路已经记在这边了**：payments 上那张单
+// 带着 order_no 与 user_id，退款单要的那两栏从它取，不需要调用方再声明一遍（声明一遍
+// 就多一个能对不上的地方，而它们没有理由对不上）。
+message CreateRefundRequest {
+  // order-service 的售后单号，值引用。**幂等键**：payment_refunds.after_sale_no 整表
+  // 唯一，一张售后单最多落一张退款单。
+  string after_sale_no = 1;
+  // 要退的那一笔支付，值引用（payments.payment_no）。必须是一张已收妥的单。
+  string payment_no = 2;
+  // 退款金额，单位为分，**由 order-service 权威给出**（售后单上算好的 refund_amount）。
+  // 本服务只校验它不超过这张支付单的可退余额，不对着订单库复核。
+  //
+  // 单位与粒度和 amount 一致：这是单笔退款的总额，不是某一条出资行的那一份——钱从哪几条
+  // 出资里出由本服务按 payment_fundings 自己分（用户付的时候可能一半豆一半渠道）。
+  int64 amount = 3;
+  // 原因，进渠道账单也进退款单的 reason 列。可空。
+  string reason = 4;
+  // 退的是订单的哪一行（order_lines.id），值引用，**整单退为空**——与售后单上
+  // order_line_id 的那条 CHECK 同一条口径（scope=all 才为空）。
+  string order_line_id = 5;
+}
+
+message CreateRefundResponse {
+  // 本服务的退款单号，调用方把它写进 order_after_sales.refund_no。
+  string refund_no = 1;
+  // pending    = 已建单，还没向渠道发起（上一次调用停在这里，重发会续上）
+  // processing = 已向渠道发起，渠道还没给结论，退款查询 worker 在跟
+  // succeeded  = 钱已退回
+  // failed     = 渠道拒绝或余额不足，failure_code 说明为什么
+  //
+  // **与 CreatePaymentResponse.status 的词表刻意不同**：那边多一个 created（还没发起），
+  // 这边没有那个停留态——退款单建出来就是为了立刻发出去，而「建了还没发」只出现在
+  // 崩溃恢复的窗口里，对调用方没有可执行的含义。
+  string status = 2;
+  // 渠道的退款单号，值引用；调用方不用它，留着是为了让一次人工排查有个能拿去问渠道的号。
+  string provider_refund_id = 3;
+  string failure_code = 4;
+  string failure_message = 5;
+}
+
+// CreateAgreementRequest 是发起一次委托代扣签约要交给支付服务的事实。
+message CreateAgreementRequest {
+  // 签约的用户，值引用（同 CreatePaymentRequest.user_id）。
+  //
+  // 它是**选填的**：真正的签约要素是 wallet_open_id（渠道在那个渠道里认的是它），而它由
+  // 另一个域维护。今天调用方两个都给，都填才能把事情说清楚。
+  string user_id = 1;
+  // 用户选的支付方式 **code**（同 CreatePaymentRequest.payment_method）。代扣只能走渠道，
+  // 所以它今天必须是目录里那种能签约的方式（`wechat_papay`）——给一个不能签约的方式
+  // （比如银联 H5）会得到一句 FailedPrecondition，而不是一份签不了的协议。
+  string payment_method = 2;
+  // 业务侧的签约计划标识（如会员套餐代码）。本服务**不解释它的含义**，只落库与它一起带回来
+  // ——「这个计划是干嘛的」是业务方的事实。
+  string plan_code = 3;
+  // 渠道侧的签约模板 id（微信的 plan_id，如连续包月那个 214488）。
+  //
+  // 为什么由调用方给而不是本服务配：模板是**按业务计划**配的（哪个套餐每月扣多少），
+  // 而套餐住在业务库里；同一个渠道下不同套餐用不同的模板。渠道后台改模板编号时，
+  // 要改的是业务那一行，不是支付服务的环境变量。
+  string provider_plan_id = 4;
+  // 用户在渠道里的身份（微信 openid）。**签约要素**：渠道要拿它认「签的是谁」。
+  string wallet_open_id = 5;
+  // 幂等号：同一次提交重试要拿回同一份协议与同一组签约参数，不新建。
+  string request_id = 6;
+  // 签约用途，落在协议的 subject 上，也是渠道账单上的一句话。
+  string subject = 7;
+  // 单次扣款上限，单位为分；0 表示签约未约定上限。
+  //
+  // 它是**签约要素**（渠道要求签约时就写明单次上限），不是我们自己的风控：超过它的扣款
+  // 请求渠道会拒。所以它随签约一起冻结在本库里。
+  int64 max_charge_amount = 8;
+}
+
+// CreateAgreementResponse 是发起签约的结果。
+//
+// **没有 failure_code**：签约这一侧没有「渠道拒了」这个类别。真正的渠道动作（用户在微信里
+// 点同意）发生在客户端跳过去之后，服务端这几步只有「我们自己的问题」（密钥没配、套餐没配），
+// 那些是 error 不是结果；渠道的拒绝会以一条通知回来。
+message CreateAgreementResponse {
+  // 本服务的协议号，调用方把它写进 membership_subscriptions.agreement_id 指的那一行的
+  // agreement_no 上（两条记录靠它互相指认）。**它同时就是签约时交给渠道的 contract_code**
+  // ——这条链路上只有一个协议编号，两份号对不上正是老系统那条「续费回调永远查不到单」
+  // 的病根（见 payment_agreements 的注释）。
+  string agreement_no = 1;
+  // 协议的 uuid，值引用（membership_subscriptions.agreement_id 用这个）。
+  string agreement_id = 2;
+  // pending   = 已发起、等用户在渠道那边确认
+  // active    = 用户已确认，可以扣款
+  // terminated / expired / suspended 见 payment_agreements 的 CHECK
+  //
+  // 返回给调用方的永远是 pending（确认走通知或 QueryAgreement），但字段留着——调用方
+  // 拿到重放的那份响应时，读到的是**当时**的状态。
+  string status = 3;
+  // 这条支付方式的行为（jump_miniapp）。与 CreatePaymentResponse.action 同一个词表，
+  // 客户端只认它决定怎么把用户送到签约页。
+  string action = 4;
+  // 给客户端的跳转参数，扁平字符串键值：签约协议的 8 个字段 + sign，外加跳转目标
+  // （mini_program_appid / mini_program_path）。
+  //
+  // **它含签名，是一次性凭据**：进响应、进日志都要当敏感值对待，不进任何流水。
+  map<string, string> pay_params = 5;
+}
+
+// QueryAgreementRequest 是回渠道核一份协议要给的输入。
+//
+// 只要一个协议号：渠道侧的签约模板（plan_id）与 contract_code 是本服务在建协议时冻结在
+// 自己库里的，调用方拿不到也不需要拿——让它传，就多了一个能传错、且传错了才会在渠道那边
+// 查无此约的地方。
+message QueryAgreementRequest {
+  // 本服务的协议号，值引用（CreateAgreementResponse.agreement_no）。
+  string agreement_no = 1;
+  // 这次核查的发起方标识，只进渠道调用流水（payment_provider_calls.request_id）。
+  string request_id = 2;
+}
+
+message QueryAgreementResponse {
+  string agreement_no = 1;
+  // 纠正之后的本库状态。调用方按它决定业务动作：active 表示这份授权今天能扣款，
+  // terminated 表示不能了（**它同时包括「查无此约」**，见 provider.AgreementState）。
+  string status = 2;
+  // 渠道侧的协议号（微信的 contract_id）。**它是发起扣款与解约的凭据**——签约时给渠道的是
+  // contract_code（就是本服务的协议号），而这两件事认的是渠道发回来的 contract_id，两者不是
+  // 一个值。本服务把它冻在协议行上，所以调用方拿不到也不需要拿。
+  string contract_no = 3;
+  // 渠道给的原始状态词（signed / terminated / pending），脱敏、不做翻译。排查时先看它
+  // ——本库状态是**我们**的判断，这一个才是渠道的原话。
+  string provider_state = 4;
+  // 这次核查是否改了本库状态。后台那个「同步」按钮拿它决定提示「已同步」还是「无需更正」。
+  bool changed = 5;
+}
+
+message TerminateAgreementRequest {
+  string agreement_no = 1;
+  // 解约原因，落库也进渠道的备注。
+  string reason = 2;
+  string request_id = 3;
+}
+
+message TerminateAgreementResponse {
+  string agreement_no = 1;
+  // 解约之后的协议状态（成功即 terminated）。
+  string status = 2;
+  // 渠道明确拒绝了解约时非空。**它是业务结论不是 error**：重试没用，要处理的是渠道给的理由。
+  string failure_code = 3;
+  string failure_message = 4;
+}
+
+message ChargeAgreementRequest {
+  string agreement_no = 1;
+  // 期次，由业务方从**订阅的到期日**派生（今天给的是 Asia/Shanghai 下的 yyyyMMdd，如
+  // 20261001）。**它是这条链路的幂等键**：一个协议一个期次只扣一次，库上
+  // UNIQUE (agreement_id, biz_period) 兜底。
+  //
+  // 为什么必须从到期日派生、而不是从「这次调用发生在哪天」派生：一期扣成之前到期日不推进，
+  // 所以几次重试算出来的是同一个期次、落在同一行上（重试是 attempt_count 加一）。换成一个
+  // 每天都会变的输入，重试就变成了新的一期。
+  string biz_period = 2;
+  // 扣款金额，单位为分。由业务方权威给出（本服务不对着会员套餐复核）。
+  int64 amount = 3;
+  // 账单上的一句话。
+  string subject = 4;
+  string request_id = 5;
+}
+
+message ChargeAgreementResponse {
+  string agreement_no = 1;
+  string biz_period = 2;
+  // pending   = 这一期还没向渠道发起过（建了行就停在这里）
+  // charging  = **已受理**，等渠道推扣款结果回来。受理不等于扣到钱，所以这不是终局
+  // succeeded = 钱已扣到（由通知推进，不会在这个响应里出现）
+  // failed    = 渠道当场拒了，或结果不明之后被判定为失败（尚未耗尽重试次数时本服务会自己再试）
+  // skipped / cancelled 见 payment_agreement_charges 的 CHECK
+  string status = 3;
+  // 渠道侧的这笔扣款的流水号；受理即返回，但**受理不等于扣到钱**（结果是异步推回来的）。
+  string provider_transaction_id = 4;
+  string failure_code = 5;
+  string failure_message = 6;
+}
+
+message ListAgreementChargesRequest {
+  // 商户协议号（payment_agreements.agreement_no）。**非空**，为空回 InvalidArgument。
+  //
+  // 用协议号而不是协议 ID：调用方（membership-service）手里那份副本就是协议号
+  // （membership_subscriptions.contract_code），而 ID 是支付库内部的主键。
+  string agreement_no = 1;
+}
+
+message AgreementCharge {
+  // 期次（业务方派生，见 ChargeAgreementRequest.biz_period）。它是这一期的稳定标识。
+  string biz_period = 1;
+  // 这一期应收的金额（分）。**不是已收金额**——失败的那几期一分钱都没收到。
+  int64 amount = 2;
+  // 这一期的状态：pending / charging / succeeded / failed / skipped / cancelled。
+  // 取值与 payment_agreement_charges 的 CHECK 逐字一致。调用方按它显示中文并决定要不要标红。
+  string status = 3;
+  // 已经向渠道发起过几次。读它比读状态更能说明「这一期在反复重试」。
+  int32 attempt_count = 4;
+  // 下一次重试的时刻（RFC3339，UTC）。空串表示没有排定的重试（已终局，或还没失败过）。
+  string next_retry_at = 5;
+  // 渠道侧的流水号，成功那一期就是它；未受理时为空串。
+  string provider_transaction_id = 6;
+  // 失败的机器可读原因与给人看的那句话。成功与进行中的期次都是空串。
+  string failure_code = 7;
+  string failure_message = 8;
+  // 这一期**扣成的时刻**（RFC3339，UTC）。没扣成就是空串，不是「发起时刻」。
+  string charged_at = 9;
+  // 这一行是什么时候建的（RFC3339，UTC）。**发起扣款是建行，不是扣成**——所以它比
+  // charged_at 早，而在一期反复失败时它是「第一次尝试」的时间，不是最后一次。
+  string created_at = 10;
+}
+
+message ListAgreementChargesResponse {
+  // 按 biz_period 升序（最早的期次在前）。这不只是排版问题：期次是 yyyyMMdd，字典序就是
+  // 时间序，而调用方拿它当时间轴渲染。
+  repeated AgreementCharge charges = 1;
+}
+
+message GetPaymentRequest {
+  // 支付单号（payments.payment_no）。**非空**，为空回 InvalidArgument。
+  //
+  // 空串在这里不是「没有这一单」：设备单与会员续费单的订单上 payment_no 就是空的
+  // （那两条路上没有支付单），而调用方拿着空值过来问，说明它把「这条路没有支付单」
+  // 误当成「来查一下」。回 InvalidArgument 而不是 NotFound，让那个 bug 显形。
+  string payment_no = 1;
+}
+
+message GetPaymentResponse {
+  string payment_no = 1;
+  // 支付单主状态：created / pending / succeeded / failed / closed / expired，
+  // 取值同 payments 的 CHECK（见 payment-service 的 model.PaymentStatus*）。
+  string status = 2;
+  // 支付单金额（分）。
+  int64 amount = 3;
+  // 支付方式 code（catalog 里的常量），与订单上那一列同一个词表。
+  string payment_method = 4;
+  // 渠道流水号。**这就是本 RPC 存在的理由**（见 service 的说明）：对账凭据只从这里出。
+  // 未支付成功时为空串。
+  string provider_transaction_id = 5;
+  // 支付成功时刻（RFC3339，UTC）。未成功时为空串。
+  string paid_at = 6;
+  // 订单号，值引用。
+  string order_no = 7;
 }

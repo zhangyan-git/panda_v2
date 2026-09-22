@@ -271,3 +271,69 @@ func TestReverseFortuneCardEntryOverGRPC(t *testing.T) {
 		t.Fatalf("a refused reversal must carry an explanation, got %v", err)
 	}
 }
+
+// TestPreviewFortuneCardFreezeOverGRPC 走一整条真的：订单域的客户端（client.NewFortuneCardQuoter）
+// 读的就是这两个字段，所以「答的两个数怎么过线」必须在真的 gRPC 面上验一次——字段名写错、
+// 少注册一个方法、响应体是空的，都会让订单域那边退化成 503（它的客户端把空响应判成
+// 「没问到」，见 client.FortuneCardQuoter.FreezeQuote）。这一刀之前没有调用方，正是这类
+// 装配错误最容易活下来的地方。
+//
+// 三档与仓储那一组同构，这里只验「原样过线」与「不认识的人不是错误」。
+func TestPreviewFortuneCardFreezeOverGRPC(t *testing.T) {
+	client := newFortuneCardClient(t)
+	pool := accountIntegrationPool(t)
+	userID := uuid.NewString()
+	orderID := uuid.NewString()
+	baseKey := model.BaseGrantKey(orderID)
+
+	// 从没收到过福卡的人：0/0，不是 NotFound。订单域拿这两个数去判「发放还没落库」，
+	// 收到一个错误就变成一次 503——那会把「先申请退款、再完成订单」这条正常路径堵死。
+	stranger, err := client.PreviewFortuneCardFreeze(serviceCtx(), &accountv1.PreviewFortuneCardFreezeRequest{
+		UserId:    uuid.NewString(),
+		EntryKeys: []string{baseKey},
+	})
+	if err != nil {
+		t.Fatalf("preview for a user without an account: %v", err)
+	}
+	if stranger.GetGranted() != 0 || stranger.GetFreezable() != 0 {
+		t.Fatalf("want 0/0 for a stranger, got %d/%d", stranger.GetGranted(), stranger.GetFreezable())
+	}
+
+	if _, err := repository.NewPostgresRepository(pool).GrantOrderFortune(context.Background(), repository.GrantParams{
+		UserID:     userID,
+		OrderID:    orderID,
+		OrderNo:    "CO-RPC-PREVIEW-" + orderID[:8],
+		OccurredAt: time.Now().UTC(),
+		Lines:      []repository.GrantLine{{Title: "订单完成赠送", Amount: 2, EntryKey: baseKey}},
+	}); err != nil {
+		t.Fatalf("seed grant: %v", err)
+	}
+
+	full, err := client.PreviewFortuneCardFreeze(serviceCtx(), &accountv1.PreviewFortuneCardFreezeRequest{
+		UserId:    userID,
+		EntryKeys: []string{baseKey},
+	})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if full.GetGranted() != 2 || full.GetFreezable() != 2 {
+		t.Fatalf("want 2/2 before any draw, got %d/%d", full.GetGranted(), full.GetFreezable())
+	}
+
+	// 抽掉一张：两个数开始分家。只回一个数的实现会在这里露馅。
+	if _, err := client.DeductFortuneCards(serviceCtx(), &accountv1.DeductFortuneCardsRequest{
+		UserId: userID, Amount: 1, RequestId: "participation-" + uuid.NewString(),
+	}); err != nil {
+		t.Fatalf("deduct: %v", err)
+	}
+	spent, err := client.PreviewFortuneCardFreeze(serviceCtx(), &accountv1.PreviewFortuneCardFreezeRequest{
+		UserId:    userID,
+		EntryKeys: []string{baseKey},
+	})
+	if err != nil {
+		t.Fatalf("preview after a draw: %v", err)
+	}
+	if spent.GetGranted() != 2 || spent.GetFreezable() != 1 {
+		t.Fatalf("want 2/1 after spending one card, got %d/%d", spent.GetGranted(), spent.GetFreezable())
+	}
+}

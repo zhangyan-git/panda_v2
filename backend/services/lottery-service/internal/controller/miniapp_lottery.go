@@ -156,7 +156,6 @@ func (c *MiniAppLotteryController) center(w http.ResponseWriter, r *http.Request
 			Status:               center.Round.Status,
 			ParticipantCount:     center.Round.ParticipantCount,
 			ParticipantTarget:    center.Round.ParticipantTarget,
-			EndsAt:               center.Round.EndsAt,
 			MyParticipationCount: center.MyParticipationCount,
 			MyFortuneCardBalance: center.Balance,
 			BalanceUnavailable:   center.BalanceUnavailable,
@@ -186,7 +185,7 @@ func (c *MiniAppLotteryController) center(w http.ResponseWriter, r *http.Request
 func (c *MiniAppLotteryController) participate(w http.ResponseWriter, r *http.Request, userID, roundID string) {
 	var body dto.ParticipateRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request body")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgInvalidBody)
 		return
 	}
 	result, err := c.lottery.Participate(r.Context(), roundID, userID, body,
@@ -225,7 +224,7 @@ func (c *MiniAppLotteryController) listMyParticipations(w http.ResponseWriter, r
 	}
 	status := strings.TrimSpace(query.Get("status"))
 	if status != "" && !isKnownParticipationStatus(status) {
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "status is invalid")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgStatusInvalid)
 		return
 	}
 	rows, total, err := c.lottery.ListParticipations(r.Context(), dto.ParticipationQuery{
@@ -263,7 +262,7 @@ func (c *MiniAppLotteryController) listMyWins(w http.ResponseWriter, r *http.Req
 	}
 	status := strings.TrimSpace(query.Get("status"))
 	if status != "" && !isKnownWinStatus(status) {
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "status is invalid")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgStatusInvalid)
 		return
 	}
 	wins, total, err := c.lottery.ListWins(r.Context(), dto.WinQuery{

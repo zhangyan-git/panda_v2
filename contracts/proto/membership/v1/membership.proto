@@ -2,5 +2,135 @@ syntax = "proto3";
 package panda.membership.v1;
 option go_package = "github.com/panda-dev/panda-v2/contracts/proto/membership/v1";
 
-// Contract placeholder; domain methods are added only after business scope approval.
-service MembershipService {}
+// 会员域的内部契约。
+//
+// 它只回答**两个问题**，两个都是别的服务非知道不可、又只有本域答得上来的：
+//
+//   * 这个用户此刻算不算会员价（GetMemberPriceEntitlement）。会员价本身不在本库：饮品上有
+//     原价 / 会员价 / 提货码价三列，价格归 coffee-machine-service；本库只有资格（谁、到什么
+//     时候、走哪条路）。所以下游要知道能不能按会员价卖，只能来问这里，没有第二条路。
+//   * 这个套餐现在卖的是什么（GetMembershipPlan）。下单要冻进订单行的那份套餐快照必须由本
+//     服务给出——它同时决定了用户付多少钱、买到多长、会员价怎么来，让调用方自己填就等于让
+//     调用方定价。
+//
+// ⚠️ 调用方是**服务**，不是客户端。小程序与后台读会员状态、套餐列表、变更流水走 HTTP
+// （`/v1/miniapp/membership*`、`/v1/admin/membership-*`），不走这里——那些请求要的是
+// 「我的会员长什么样」，而这里要的是「这个用户能不能便宜」。两件事，两种入口。
+//
+// 时间一律是 Unix 秒（`_at_unix`），与 payment / coffee_machine 两份契约同形；金额不在本契约
+// 里出现（会员套餐的价格走 HTTP，本 RPC 不做任何定价）。
+service MembershipService {
+  // 问「这个用户此刻算不算会员价」。
+  //
+  // 两个调用方，问的是同一件事的两面：
+  //   * order-service 下单时定价：这一单的饮品该不该按会员价算；
+  //   * coffee-machine-service 展示：饮品列表要不要给这个人标出会员价。
+  //
+  // **它不是会员查询**：要「这个人是不是会员、什么时候到期」也顺带答得上来（active /
+  // expire_at），但那两个字段是给上面那两处做提示文案用的，不是给后台列表用的——后台看会员
+  // 走 HTTP，那里的口径（状态、快照、变更流水）比这里宽得多。
+  //
+  // 失败只有一种：user_id 不是 uuid，回 InvalidArgument。**不是会员不是错误**——那是
+  // 绝大多数请求的正常答案，回 active=false，不是 NotFound、更不是 5xx。
+  rpc GetMemberPriceEntitlement(GetMemberPriceEntitlementRequest)
+      returns (GetMemberPriceEntitlementResponse);
+
+  // 问「这个套餐现在卖的是什么」——order-service 下单定价的**唯一**来源。
+  //
+  // 它存在的理由是「订单行上那份快照不能由调用方给」：membership_plan_snapshot 同时决定三件
+  // 事——用户付多少钱（price_cents）、买到的时长（period / period_count）、会员价怎么来
+  // （member_price_mode 决定自动享还是发券）。这三件全是本域的事实，收客户端填的那一份就等于
+  // 让客户端定价：一条 originalUnitPrice=1、快照写 year 的请求能花一分钱开一年会员。
+  //
+  // 所以这条路的形状是：客户端只给 plan_id，order-service 拿它来问这里，把**这一份**答案冻进
+  // 订单行；付款之后 order.paid 再把那一份原样带回来，本服务据此开通。往返一圈，价格与时长
+  // 始终只有一个来源，而且它是本域的。
+  //
+  // **拿到的是一份「此刻」的拷贝，调用方必须存下来**：这就是快照的意义。用户买了之后运营改价、
+  // 改时长、下架，都不影响他这一单——本服务开通时读的也是那份存下来的快照，不回头现查套餐。
+  //
+  // 失败有三种，调用方该做的处理各不相同：
+  //
+  //	InvalidArgument    plan_id 不是 uuid。改了才能成，重试没用。
+  //	NotFound           没有这个套餐（客户端拿着一个过期的 id）。
+  //	FailedPrecondition 套餐存在但**不卖**（draft / disabled）。与 NotFound 分开是给运营留的
+  //	                   线索：这句话在后台就是「这个套餐下架了」，而在客户端是「买不了」。
+  rpc GetMembershipPlan(GetMembershipPlanRequest) returns (GetMembershipPlanResponse);
+}
+
+message GetMemberPriceEntitlementRequest {
+  // 小程序用户 ID，值引用（身份服务的用户）。本服务不持有用户资料。
+  string user_id = 1;
+}
+
+message GetMemberPriceEntitlementResponse {
+  // 此刻是不是有效会员：status=active 且 expire_at 还没到。
+  //
+  // 冻结中的会员这里是 false。冻结是「权益暂停」（争议 / 风控），到期时间不动、解冻后继续，
+  // 但它停着的时候不该享价——否则风控这一刀就没有任何效果。
+  bool active = 1;
+
+  // 此刻这一单能不能**直接**按会员价算。
+  //
+  // 只有年度会员（member_price_mode=auto）为真。连续包月（coupon）为假——**他不是没会员，
+  // 是他的会员价长在券上**：下单时用户自己挑一张会员价体验券，核销才享价。调用方看到
+  // active=true 而这里为 false，正确的做法不是「当作没会员」，而是「按原价算，把券的选择
+  // 交给用户」。
+  bool grants_member_price = 2;
+
+  // 会员价的来路，取值与会员库 membership_plans.member_price_mode 逐字一致：
+  //   auto   会员本人自动享（grants_member_price 必为 true）
+  //   coupon 靠会员价体验券（grants_member_price 必为 false，券的事归 coupon-service）
+  // 不是会员（或已过期）时为空串。
+  //
+  // 它存在的理由是**那句话说不出口**：只给 grants_member_price 的话，调用方没法把
+  // 「你是会员，但要用券」与「你不是会员」分开，而这两句话在收银台上差得很远。
+  string member_price_mode = 3;
+
+  // 当前生效的套餐编码与名字（成交快照，不是现查套餐——后台改过套餐名也不影响这里），
+  // 用于「您的 X 会员有效期至 Y」这类文案。不是会员时为空串。
+  string plan_code = 4;
+  string plan_name = 5;
+
+  // 会员到期时间，Unix 秒。不是会员时为 0。
+  int64 expire_at_unix = 6;
+}
+
+message GetMembershipPlanRequest {
+  // 套餐 ID（membership_plans.id）。**客户端只需要给这一个值**：价格、时长、券配置一概不从
+  // 外面收，收了就要有人去核对，而核对的那一处迟早会被绕过。
+  string plan_id = 1;
+}
+
+message GetMembershipPlanResponse {
+  MembershipPlan plan = 1;
+}
+
+// MembershipPlan 是「下单要用的那一组」列，不是整行。
+//
+// 没给的是 description / benefits / sort_order / status / created_by 这些展示与运维字段：调用方
+// 是订单域，它要把这份答案冻进订单行，而冻进去的每一个字段都得有人读——多给一个就多一处
+// 「两个服务对它的理解迟早不一样」。**签约模板（wechat_plan_id）也不在这里**：签委托代扣是
+// 另一条路（payment-service 拿套餐去签），下单不碰它。
+message MembershipPlan {
+  string plan_id = 1;
+  // code 与 name 是成交快照上的身份：订单行与事件里都存这一份拷贝，套餐改名不影响历史订单。
+  string code = 2;
+  string name = 3;
+  // 套餐价，单位分。**它才是这一单会员行的价格**——order-service 拿它算 original_unit_price 与
+  // payable_amount，不读请求里的任何价格。
+  int64 price_cents = 4;
+  // 每期时长：month / year + 个数（连续包月 = month/1，年度会员 = year/1）。续期是日历加法，
+  // 别换算成天数。
+  string period = 5;
+  int32 period_count = 6;
+  // 这个套餐要不要签微信委托代扣（到期自动续费）。
+  bool auto_renew = 7;
+  // 会员价的来路与 coupon 模式下的发券配置，取值与 membership_plans 上的同名列逐字一致。
+  //
+  // 这三个字段会原样进订单行快照、再随 order.paid 回来：本服务开通与发券用的是**成交快照**，
+  // 不是那时现查的套餐（运营改了配置也不能改写已经卖出去的那一份）。
+  string member_price_mode = 8;
+  string member_price_coupon_template_id = 9;
+  int32 member_price_coupons_per_period = 10;
+}

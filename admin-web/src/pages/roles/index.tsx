@@ -159,9 +159,15 @@ const RolesPage: React.FC = () => {
             <Popconfirm
               title="确认删除该角色？"
               onConfirm={async () => {
-                await deleteRole(row.id);
-                message.success('已删除');
-                actionRef.current?.reload();
+                try {
+                  await deleteRole(row.id);
+                  message.success('已删除');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  // 系统保留角色、还有管理员绑着它时后端会拒（403/409）；不提示的话
+                  // 点「确认删除」之后界面上什么都没变，看起来像没点上。
+                  message.error(requestErrorMessage(error, '删除失败，请稍后重试'));
+                }
               }}
             >
               <Button type="link" size="small" danger icon={<DeleteOutlined />}>

@@ -14,6 +14,17 @@ export type CouponType = {
   updatedAt: string;
 };
 
+/**
+ * 会员价体验券的类型编码。**这是跨域的约定值，不是随手写的字符串**：
+ * migrations/coupon/004_coupon_types_seed.sql 里 coupon_types 的那行种子数据、
+ * membership 库 membership_plans.member_price_coupon_template_id 的列注释都写着它。
+ * 三处（种子 / 会员套餐表单 / 这里）改名必须同批改。
+ *
+ * 有它才能按编码筛模板（见下面的 listCouponTemplates）：会员套餐表单只该列出这一类的券，
+ * 而不是把所有券模板都摆上去让人挑错。
+ */
+export const MEMBERSHIP_PRICE_COUPON_TYPE_CODE = 'MEMBERSHIP_PRICE_EXPERIENCE';
+
 export type CouponTemplate = {
   id: string;
   couponTypeId: string;
@@ -181,6 +192,11 @@ export async function updateCouponType(id: string, data: Partial<Pick<CouponType
   return request<CouponType>(`/api/v1/admin/coupons/types/${id}`, { method: 'PUT', data });
 }
 
+// 支持的筛选：page/pageSize、name（模糊）、status、auditStatus、couponTypeCode。
+// couponTypeCode 由**服务端**筛（GET /v1/admin/coupons/templates?couponTypeCode=…）：
+// 模板表里存的是 couponTypeId，编码→id 的那一步在 SQL 里做。前端不自己过滤，是因为
+// 要拿编码对应的 id 就得查 coupon_types，而那个接口要 coupon:type:manage——只有券读
+// 权限的人会因此看到空下拉，而且 FULL_PAGE_PARAMS 只有 200 行，前端过滤会漏。
 export async function listCouponTemplates(params?: Record<string, unknown>) {
   return request<{ items: CouponTemplate[]; total: number }>('/api/v1/admin/coupons/templates', { params });
 }

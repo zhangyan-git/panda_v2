@@ -76,7 +76,17 @@ func (s *MiniappUserService) Profile(ctx context.Context, userID string) (*model
 //
 // 先读一次当前资料再写：写完之后要回显最新的完整资料，而部分更新的响应里
 // 不该有「没传的字段是空的」这种歧义。多一次往返换来响应不产生歧义。
+//
+// 开头这次读还兼作状态闸：被禁用/已注销的账号不能靠一枚尚未过期的 access token
+// 继续改资料，与 Profile、BindPhone 同口径。
 func (s *MiniappUserService) UpdateProfile(ctx context.Context, userID string, upd ProfileUpdate) (*model.User, error) {
+	user, err := s.users.FindByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureConsumerActive(user); err != nil {
+		return nil, err
+	}
 	repoUpd, err := validateProfileUpdate(upd)
 	if err != nil {
 		return nil, err

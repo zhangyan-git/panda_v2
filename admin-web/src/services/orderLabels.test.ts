@@ -10,8 +10,6 @@ import {
   ORDER_SOURCE,
   ORDER_STATUS,
   PAYMENT_LINE_STATUS,
-  PAYMENT_LINE_TYPE,
-  paymentMethodLabel,
 } from './orderLabels';
 
 /**
@@ -35,20 +33,22 @@ describe('枚举文案表', () => {
     ]);
   });
 
-  it('覆盖 orders.source 的两个取值', () => {
-    expect(Object.keys(ORDER_SOURCE).sort()).toEqual(['miniapp', 'screen_qr']);
+  it('覆盖 orders.source 的四个取值', () => {
+    // device 是 order/005 放宽 CHECK 之后的第三个取值（线下刷卡机设备回调建的单），
+    // renewal 是 order/009 之后的第四个（会员续费代扣建的单）。这里原先钉的是两个值
+    // ——那份清单本身就是**不完整**的，测试把它钉住了，于是漏登记一直没被发现。
+    //
+    // 这条也顺带钉住 order.ts 的 OrderSource：那个联合类型与这张表要一一对应，多一个
+    // 少一个都会让「筛选下拉里能选、类型上传不出去」这种错配活到线上。
+    expect(Object.keys(ORDER_SOURCE).sort()).toEqual(['device', 'miniapp', 'renewal', 'screen_qr']);
   });
 
   it('覆盖 order_lines.line_type 的三个取值', () => {
     expect(Object.keys(ORDER_LINE_TYPE).sort()).toEqual(['addon', 'drink', 'membership']);
   });
 
-  it('覆盖 order_payment_lines.line_type 的五个出资方', () => {
-    expect(Object.keys(PAYMENT_LINE_TYPE).sort()).toEqual([
-      'coffee_bean', 'other', 'unionpay', 'wallet', 'wechat',
-    ]);
-  });
-
+  // order_payment_lines.line_type 不在这里：它存的是支付方式的 code，那套文案与支付域共用
+  // 一份，见 paymentMethodLabels.test.ts。这里的「出资渠道」词表已经退场（order/008）。
   it('覆盖 order_payment_lines.status 的五个取值', () => {
     expect(Object.keys(PAYMENT_LINE_STATUS).sort()).toEqual([
       'failed', 'released', 'reserved', 'reversed', 'succeeded',
@@ -81,7 +81,6 @@ describe('枚举文案表', () => {
       FULFILLMENT_STATUS,
       ORDER_SOURCE,
       ORDER_LINE_TYPE,
-      PAYMENT_LINE_TYPE,
       PAYMENT_LINE_STATUS,
       AFTER_SALE_STATUS,
       AFTER_SALE_SCOPE,
@@ -97,31 +96,10 @@ describe('枚举文案表', () => {
 
 describe('approved 的文案', () => {
   it('「已通过」而不是「已退款」', () => {
-    // 后端 approve 只把售后单标成 approved，钱由 payment-service 退（还没建）。
+    // 审核通过是「同意退」，钱由 payment-service 退，**发起**与**退成**是后面两步。
     // 文案写成「已退款」会让审核人以为钱出去了，从而不去追下一步。
     expect(AFTER_SALE_STATUS.approved.text).toBe('已通过');
     expect(AFTER_SALE_STATUS.refunded.text).toBe('已退款');
-  });
-});
-
-describe('paymentMethodLabel', () => {
-  it('认识的值给中文', () => {
-    expect(paymentMethodLabel('wechat')).toBe('微信支付');
-  });
-
-  it('不认识的值原样回显', () => {
-    // 与枚举表相反的地方：这张表本来就是不全的（后端没有枚举，值是从支付事件里抄的），
-    // 所以「原样回显」是常态而不是兜底——查库也查不到那份名单。
-    expect(paymentMethodLabel('wechat_v3')).toBe('wechat_v3');
-  });
-
-  it.each([undefined, null, '', '   '])('空值给占位符 %j', (value) => {
-    expect(paymentMethodLabel(value)).toBe('—');
-  });
-
-  it('两端空白不参与匹配', () => {
-    // 自由字符串是别人写进来的，前后带空格是常态。
-    expect(paymentMethodLabel('  wechat  ')).toBe('微信支付');
   });
 });
 

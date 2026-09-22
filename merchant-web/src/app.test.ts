@@ -8,6 +8,8 @@ vi.mock('./services/user', () => ({ fetchCurrentUser: vi.fn() }));
 
 import { history } from '@umijs/max';
 import { fetchCurrentUser } from './services/user';
+// 只从 app 里取它真正导出的那三样。scopeText 住在 services 里（它是纯文案函数，
+// 而 app.tsx 的每一个具名导出都会被 umi 当成插件键——多一个就白屏）。
 import { getInitialState, request } from './app';
 import { readTokens, saveTokens } from './services/session';
 
@@ -51,7 +53,17 @@ describe('merchant initial identity validation', () => {
   });
 
   it('restores a validated user without redirecting', async () => {
-    const user = { id: 'user', username: 'operator', name: '', email: '', merchantId: 'merchant', merchantName: 'Test merchant' };
+    const user = {
+      id: 'user',
+      username: 'operator',
+      name: '',
+      email: '',
+      merchantId: 'merchant',
+      merchantName: 'Test merchant',
+      scopeType: 'merchant',
+      scopeId: '',
+      scopeName: '',
+    };
     vi.mocked(fetchCurrentUser).mockResolvedValueOnce(user);
     expect(await getInitialState()).toEqual({ currentUser: user });
     expect(history.replace).not.toHaveBeenCalled();

@@ -9,11 +9,11 @@ relative `replace` directives (`../../` for backend, `../../../contracts` and
 from `packages/*`. A smaller context cannot resolve either.
 
 ```bash
-# Go services. CMD differs: gateway keeps its main package in cmd/gateway.
+# Go services. CMD defaults to ./cmd, which is where every service keeps its main
+# package; pass --build-arg CMD=./cmd/<tool> only for a module's second binary.
 docker build -f deploy/docker/Dockerfile.backend --build-arg SERVICE=user-service     -t panda/user-service     .
 docker build -f deploy/docker/Dockerfile.backend --build-arg SERVICE=merchant-service -t panda/merchant-service .
-docker build -f deploy/docker/Dockerfile.backend --build-arg SERVICE=gateway-service \
-  --build-arg CMD=./cmd/gateway -t panda/gateway-service .
+docker build -f deploy/docker/Dockerfile.backend --build-arg SERVICE=gateway-service  -t panda/gateway-service .
 
 # Web apps.
 docker build -f deploy/docker/Dockerfile.web --build-arg APP=admin-web    -t panda/admin-web    .

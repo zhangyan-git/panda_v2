@@ -23,8 +23,12 @@ describe('福卡枚举文案表', () => {
     expect(Object.keys(FORTUNE_CARD_REFERENCE_TYPE).sort()).toEqual(['', 'draw', 'entry', 'order']);
   });
 
-  it('覆盖 fortune_card_freezes.status 的两个取值', () => {
-    expect(Object.keys(FORTUNE_CARD_FREEZE_STATUS).sort()).toEqual(['frozen', 'released']);
+  it('覆盖 fortune_card_freezes.status 的三个取值', () => {
+    expect(Object.keys(FORTUNE_CARD_FREEZE_STATUS).sort()).toEqual([
+      'frozen',
+      'recovered',
+      'released',
+    ]);
   });
 });
 

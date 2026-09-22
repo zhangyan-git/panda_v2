@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/dto"
 	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/repository"
@@ -50,8 +52,10 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (*d
 	}
 
 	lines := make([]*repository.OrderLineInsert, 0, len(req.Lines))
-	var originalAmount, discountAmount int64
 	drinkLines, membershipLines := 0, 0
+	// 会员行至多一行（下面紧接着就判），所以套餐 ID 存一个标量就够了，不必让它挂在
+	// OrderLineInsert 上——仓储不读这个字段，它只读价格与那份拼好的快照。
+	membershipPlanID := ""
 	for i, raw := range req.Lines {
 		line, err := buildLine(i+1, raw)
 		if err != nil {
@@ -62,9 +66,8 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (*d
 			drinkLines++
 		case model.LineTypeMembership:
 			membershipLines++
+			membershipPlanID = strings.TrimSpace(derefString(raw.MembershipPlanID))
 		}
-		originalAmount += line.OriginalUnitPrice * int64(line.Quantity)
-		discountAmount += line.DiscountAmount
 		lines = append(lines, line)
 	}
 	// 一杯一单、一单一个会员：数据库那边有 order_lines_one_drink_per_order 与
@@ -76,7 +79,14 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (*d
 	if membershipLines > 1 {
 		return nil, false, ErrTooManyMembershipLines
 	}
-
+	// 会员行的价格与快照在这一步才定下来：**由服务端向会员域取**，请求里给的价格一概不作数。
+	// 所以金额加总必须排在它后面——先加总会把客户端填的那个价格算进 payable_amount，而
+	// 那正是这条路要堵掉的东西。
+	if membershipLines > 0 {
+		if err := s.applyMembershipPlan(ctx, lines, membershipPlanID); err != nil {
+			return nil, false, err
+		}
+	}
 	storeID, deviceID, deviceNo, err := s.resolveDevice(ctx, req, drinkLines > 0)
 	if err != nil {
 		return nil, false, err
@@ -88,12 +98,34 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (*d
 			line.DeviceID = deviceID
 		}
 	}
-	if membershipLines > 0 && strings.TrimSpace(derefString(req.MembershipID)) == "" {
-		return nil, false, ErrMembershipIDRequired
+	// 饮品行的价格、名称与图片在这一步定下来：**由服务端按 itemId 现查**，请求里给的那几格
+	// 一概不作数。它排在设备之后，是因为「这一杯是不是这台设备上的」要拿解析出来的设备去比；
+	// 排在任何 DB 事务之前，是因为它是一次跨服务调用（事务开在仓储内部）。
+	//
+	// 金额加总必须排在它后面——先加总会把客户端填的那个价格算进 payable_amount，而那正是
+	// 这条路要堵掉的东西。
+	if drinkLines > 0 {
+		if err := s.applyDrinkPricing(ctx, lines, in.UserID); err != nil {
+			return nil, false, err
+		}
 	}
-	if membershipLines == 0 && strings.TrimSpace(derefString(req.MembershipID)) != "" {
-		return nil, false, ErrMembershipIDNotAllowed
+
+	var originalAmount, discountAmount int64
+	for _, line := range lines {
+		originalAmount += line.OriginalUnitPrice * int64(line.Quantity)
+		discountAmount += line.DiscountAmount
 	}
+	// membershipId / membershipSnapshot 是**下单这一单时用的会员资格**（按会员价卖饮品时
+	// 那份「他当时是不是会员、什么等级」的快照），与「这一单是不是在买会员」无关，所以
+	// 这里不再检查它们的配对关系：
+	//
+	//   * 买会员的人**还没有会员**——这一单正是去给他开会员的，要求他先给一个会员 ID
+	//     等于让首次购买永远下不了单；
+	//   * 按会员价买咖啡的人有会员、但没有会员行。
+	//
+	// 曾经这两条都在（会员行必须要 membershipId、非会员行不许带），两条都是把「定价依据」
+	// 读成了「本单买了什么」。真要用它定价时，它该由服务端从会员域取（那条路是
+	// GetMemberPriceEntitlement），而不是收客户端填的。
 
 	payableAmount := originalAmount - discountAmount
 	if payableAmount < 0 {
@@ -244,18 +276,71 @@ func buildLine(lineNo int, raw dto.CreateOrderLine) (*repository.OrderLineInsert
 	if campaignID != nil && raw.LineType != model.LineTypeAddon {
 		return nil, ErrCampaignOnlyOnAddon
 	}
-	if len(raw.MembershipPlanSnapshot) > 0 && raw.LineType != model.LineTypeMembership {
-		return nil, ErrMembershipPlanOnlyOnPlan
+	// 会员行只认一个套餐 ID：价格、时长、快照都由服务端拿它去会员域取（见 applyMembershipPlan）。
+	// 请求里如果还带着价格（originalUnitPrice 这些是各类型行共用的字段），一律**忽略**——
+	// 不是「校验它对不对」，而是它压根不参与计算：这样客户端算错了也不会把用户带到一个
+	// 与我们实际收的钱不一样的价钱上。
+	if raw.LineType != model.LineTypeMembership && raw.MembershipPlanID != nil {
+		return nil, ErrMembershipPlanIDNotAllowed
 	}
-	if raw.LineType == model.LineTypeMembership && len(jsonObject(raw.MembershipPlanSnapshot)) == 2 {
-		// len("{}") == 2：会员行必须带套餐快照，否则「他当时买的是哪个套餐」就无从还原，
-		// 续费时也算不出这次买的是升级还是平级。
-		return nil, ErrMembershipPlanRequired
+	// 饮品行只收一个 itemId：名称、图片与价格都由服务端拿它去目录里查（见 applyDrinkPricing）。
+	// 与会员行那一段同一条规矩，只是形状不同——这里有 uuid 可判，所以格式错的当场挡掉，
+	// 不必去咖啡机域换一个 InvalidArgument 回来。
+	if raw.LineType == model.LineTypeDrink {
+		itemID := strings.TrimSpace(derefString(raw.ItemID))
+		if itemID == "" {
+			return nil, ErrDrinkItemIDRequired
+		}
+		if _, err := uuid.Parse(itemID); err != nil {
+			return nil, ErrDrinkItemIDInvalid
+		}
+	}
+	if raw.LineType == model.LineTypeMembership {
+		planID := strings.TrimSpace(derefString(raw.MembershipPlanID))
+		if planID == "" {
+			return nil, ErrMembershipPlanIDRequired
+		}
+		if _, err := uuid.Parse(planID); err != nil {
+			// 不合法就不必去问会员域了：那一次往返只会拿回一个 InvalidArgument，
+			// 而客户端要处理的是同一件事。
+			return nil, ErrMembershipPlanIDInvalid
+		}
+		if raw.Quantity != 1 {
+			// 会员行的金额是「套餐价 × 数量」，但买到的时长只看套餐（period × period_count）：
+			// 放过 quantity=3 就是收三份钱、开一期会员。
+			return nil, ErrMembershipQuantityInvalid
+		}
 	}
 
-	originalAmount := raw.OriginalUnitPrice * int64(raw.Quantity)
-	discountAmount := raw.PriceDiscountAmount + raw.CouponDiscountAmount
-	if discountAmount > originalAmount {
+	// 会员行与饮品行的价格、名称都由服务端填（见 applyMembershipPlan / applyDrinkPricing），
+	// 所以这里把它们清掉：请求里那几个共用字段对这两种行没有任何意义，留着只会让下面那几条
+	// 恒等式、以及后面的金额加总读到一个客户端说了算的数。
+	//
+	// 加购行不在其中：加购品今天没有商品目录（见 CreateOrderLine 上那段说明），它的价格
+	// 只能是调用方给的，所以那几个共用字段在它身上是有效的。
+	originalUnitPrice, unitPrice := raw.OriginalUnitPrice, raw.UnitPrice
+	priceDiscount, couponDiscount := raw.PriceDiscountAmount, raw.CouponDiscountAmount
+	itemID, itemCode, itemName, itemImage := normalizedID(raw.ItemID),
+		strings.TrimSpace(raw.ItemCode), strings.TrimSpace(raw.ItemName), strings.TrimSpace(raw.ItemImage)
+	membershipSnapshot := []byte("{}")
+	switch raw.LineType {
+	case model.LineTypeMembership:
+		originalUnitPrice, unitPrice, priceDiscount, couponDiscount = 0, 0, 0, 0
+		itemID, itemCode, itemName, itemImage = nil, "", "", ""
+	case model.LineTypeDrink:
+		// **itemId 留着**：它是去目录里查这一杯的那把钥匙，其余三格作废。
+		//
+		// couponDiscountAmount 也不清：券抵多少是券域的事，这一版仍由调用方给（见
+		// CreateOrderLine 的 couponDiscountAmount）。
+		originalUnitPrice, unitPrice, priceDiscount = 0, 0, 0
+		itemCode, itemName, itemImage = "", "", ""
+	}
+
+	originalAmount := originalUnitPrice * int64(raw.Quantity)
+	discountAmount := priceDiscount + couponDiscount
+	// 饮品行的原价这一刻还不知道（要去目录里查），这条恒等式它一上来就过不了——原价是 0、
+	// 而券可能抵了钱。等 applyDrinkPricing 把价格填好，它会在那边重判一次。
+	if raw.LineType != model.LineTypeDrink && discountAmount > originalAmount {
 		return nil, ErrDiscountExceedsLine
 	}
 	payableAmount := originalAmount - discountAmount
@@ -264,25 +349,214 @@ func buildLine(lineNo int, raw dto.CreateOrderLine) (*repository.OrderLineInsert
 	return &repository.OrderLineInsert{
 		LineNo:                 lineNo,
 		LineType:               raw.LineType,
-		ItemID:                 normalizedID(raw.ItemID),
-		ItemCode:               strings.TrimSpace(raw.ItemCode),
-		ItemName:               strings.TrimSpace(raw.ItemName),
-		ItemImage:              strings.TrimSpace(raw.ItemImage),
+		ItemID:                 itemID,
+		ItemCode:               itemCode,
+		ItemName:               itemName,
+		ItemImage:              itemImage,
 		Quantity:               raw.Quantity,
-		OriginalUnitPrice:      raw.OriginalUnitPrice,
-		UnitPrice:              raw.UnitPrice,
-		PriceDiscountAmount:    raw.PriceDiscountAmount,
+		OriginalUnitPrice:      originalUnitPrice,
+		UnitPrice:              unitPrice,
+		PriceDiscountAmount:    priceDiscount,
 		DiscountAmount:         discountAmount,
 		PayableAmount:          payableAmount,
 		CouponID:               couponID,
-		CouponDiscountAmount:   raw.CouponDiscountAmount,
+		CouponDiscountAmount:   couponDiscount,
 		Specs:                  jsonObject(raw.Specs),
 		SelectionSnapshot:      jsonObject(raw.SelectionSnapshot),
 		CampaignID:             campaignID,
 		CampaignSnapshot:       jsonObject(raw.CampaignSnapshot),
-		MembershipPlanSnapshot: jsonObject(raw.MembershipPlanSnapshot),
+		MembershipPlanSnapshot: membershipSnapshot,
 		Remark:                 strings.TrimSpace(raw.Remark),
 	}, nil
+}
+
+// drinkStatusOnShelf 是咖啡机域 drinks.status 里「在售」那一档，与那份契约上的取值逐字一致。
+//
+// 本服务只认这一个值：**除它以外的一切都按不卖处理**。今天只有 on_shelf 与 off_shelf 两档，
+// 而将来多出来的那一档（比如「仅设备可见」）在这里默认是拒——一个没见过的状态按「卖」处理，
+// 是让一次词表变更变成一次无声的放行。
+const drinkStatusOnShelf = "on_shelf"
+
+// applyDrinkPricing 把饮品行的名称、图片、价格与优惠填上——**一样都不来自请求**。
+//
+// 这是「小程序下单买一杯饮品」这条路上唯一一处跨服务的读，和 applyMembershipPlan 一样放在
+// buildLine 之外：buildLine 是个纯函数（不碰网络、不碰时钟），而它承担的校验与算钱正是最
+// 需要能单独测的部分。
+//
+// # 为什么非要问两次
+//
+// 价格在饮品目录里（coffee-machine-service 的 drinks：原价 / 会员价 / 提货码价），而**谁有
+// 资格按会员价买**在会员域——两个事实，两个域，本服务一个都没有。收客户端填的那一份，就等于
+// 让客户端定价：一条 originalUnitPrice=1 的请求能一分钱买走一杯美式，而这在库上看起来完全正常。
+//
+// # 价格怎么定
+//
+//	original_unit_price = 目录价（always）
+//	unit_price          = 会员价（这个人此刻直接享会员价，且目录真给这一杯配了会员价）
+//	                      否则目录价
+//	price_discount      = original − unit
+//
+// 三个例外都按原价卖，且都不是「便宜一点」而是「不敢便宜」：
+//
+//   - vip_price 为 0：目录没给这一杯配会员价。0 不是「会员价 0 元」，按它卖就是白送。
+//   - vip_price 不小于原价：一行坏数据（后台的写接口不拦这个）。照它算会得出一个负的优惠额，
+//     而 order_lines 上 price_discount_amount 非负。
+//   - 会员域没答上来：整条路停在 ErrMemberPriceUnavailable（503），**不退回原价继续下单**——
+//     那会把一次下游抖动变成「悄悄按原价卖给了会员」，用户不会知道，我们也不会。
+//
+// 多收的那一次是可退的，0 元卖出去的那一次不是，所以三条例外都往严的方向倒。
+//
+// # 拿回来的是「此刻」的一份拷贝
+//
+// 与套餐快照同一条道理：它落进订单行就不再变。运营改价、下架饮品都不影响已经卖出去的那一单，
+// 而订单行上的 item_id 仍然指着目录里那一行，事后要对账拿得到。
+func (s *OrderService) applyDrinkPricing(ctx context.Context, lines []*repository.OrderLineInsert, userID string) error {
+	if s.devices == nil {
+		// 没配读端就不下单：退化成「那就用请求里那份」正是这条路要堵的东西（见 resolveDevice）。
+		return fmt.Errorf("%w: device reader is not configured", ErrDrinkLookupUnavailable)
+	}
+	if s.plans == nil {
+		return fmt.Errorf("%w: membership plan reader is not configured", ErrMemberPriceUnavailable)
+	}
+	// 资格一单问一次，不是一行问一次：会员资格长在人身上，与有几杯饮品无关。
+	entitlement, err := s.plans.Entitlement(ctx, userID)
+	if err != nil {
+		// 读端说的「会员服务没答上来」原样往上传，理由与 applyMembershipPlan 那处一样：
+		// 再包一层会让同一句话在响应体里出现两次。
+		if errors.Is(err, ErrMemberPriceUnavailable) {
+			return err
+		}
+		return fmt.Errorf("%w: %v", ErrMemberPriceUnavailable, err)
+	}
+
+	for _, line := range lines {
+		if line.LineType != model.LineTypeDrink {
+			continue
+		}
+		drink, found, err := s.devices.GetDrink(ctx, derefString(line.ItemID))
+		if err != nil {
+			if errors.Is(err, ErrDrinkLookupUnavailable) {
+				return err
+			}
+			return fmt.Errorf("%w: %v", ErrDrinkLookupUnavailable, err)
+		}
+		if !found {
+			return ErrDrinkNotFound
+		}
+		// 已下架的不卖。**这条是下单这条路独有的判断**：设备回调那条路读的是同一条饮品的
+		// 同一个 status，但它有意不拦（钱已经在机器上收过了，拦了就是丢单）。分歧点不在
+		// status 那一列，在「钱收没收到」——所以判断留在本服务，咖啡机域只回答事实。
+		if drink.Status != drinkStatusOnShelf {
+			return ErrDrinkOffShelf
+		}
+		// 这一杯得挂在订单那台设备上。空 device_id 的饮品行（库里真有没挂设备的遗留行）
+		// 不拦：没有可比的设备，不是「挂错了设备」。
+		if line.DeviceID != nil && drink.DeviceID != "" && drink.DeviceID != *line.DeviceID {
+			return ErrDrinkDeviceMismatch
+		}
+
+		originalUnitPrice := drink.Price
+		unitPrice := originalUnitPrice
+		if entitlement.GrantsMemberPrice && drink.VipPrice > 0 && drink.VipPrice < originalUnitPrice {
+			unitPrice = drink.VipPrice
+		}
+		priceDiscount := originalUnitPrice - unitPrice
+
+		// item_code 存**机器报的那个编号**（product_num）：事后拿机器流水来对账时，唯一能
+		// 对上的就是它。与设备单那条路存机器报的编号同一条理由，只是那边编号来自报文、
+		// 这边来自目录。目录里没编号（后台手工建、不参与同步的饮品）就留空。
+		line.ItemCode = drink.ProductNum
+		line.ItemName = drink.Name
+		line.ItemImage = drink.Image
+		line.OriginalUnitPrice = originalUnitPrice
+		line.UnitPrice = unitPrice
+		line.PriceDiscountAmount = priceDiscount
+		// 券抵多少仍是调用方给的（见 CreateOrderLine），所以这里只重算「价格优惠进来了之后」
+		// 的那两个数——恒等式在库上还有一道 CHECK，算错了会以 23514 收场。
+		line.DiscountAmount = priceDiscount + line.CouponDiscountAmount
+		line.PayableAmount = originalUnitPrice*int64(line.Quantity) - line.DiscountAmount
+		if line.PayableAmount < 0 {
+			// buildLine 那条校验在饮品行上跳过了（那时还不知道原价），在这里补上：券抵得比
+			// 这一行还贵。库上 order_lines_payable_matches 也会拒，但回一句人话更好。
+			return ErrDiscountExceedsLine
+		}
+	}
+	return nil
+}
+
+// applyMembershipPlan 把会员行的价格、名称与套餐快照填上——**全部来自会员域**。
+//
+// 这是「下单买会员」这条路上唯一一处跨服务的读，放在这里而不是 buildLine 里，是因为
+// buildLine 是个纯函数（不碰网络、不碰时钟），而它承担的校验与算钱正是最需要能单独测的部分。
+//
+// # 为什么非要问一次
+//
+// 那份快照决定三件事：用户付多少钱（price_cents → 行的 original_unit_price 与
+// payable_amount）、买到多长（period / period_count）、会员价怎么来（member_price_mode）。
+// 三件都是会员域的事实。收客户端填的那一份就等于让客户端定价——一份 originalUnitPrice=1、
+// 快照写着年卡的请求能花一分钱开一年会员，而这在库上看起来完全正常。
+//
+// # 拿回来的是「此刻」的一份拷贝
+//
+// 它落进订单行就不再变：套餐改价、改时长、下架都不影响已经卖出去的那一单，而付款之后
+// order.paid 带回来的也正是这一份（见 repository.SettlePayment）——会员域据此开通，
+// 它读的同样是快照，不回头现查套餐。往返一圈，价格与时长只有一个来源。
+func (s *OrderService) applyMembershipPlan(ctx context.Context, lines []*repository.OrderLineInsert, planID string) error {
+	if s.plans == nil {
+		// 没配读端就不下单：退化成「那就用请求里那份」正是这条路要堵的东西。与设备那条
+		// 同一个口径（见 resolveDevice）。
+		return fmt.Errorf("%w: membership plan reader is not configured", ErrMembershipPlanUnavailable)
+	}
+	plan, found, err := s.plans.Get(ctx, planID)
+	if err != nil {
+		// 读端说的「会员服务没答上来」原样往上传：它就是这一层要说的话，再包一层会变成
+		// 「membership service is unavailable: membership service is unavailable」——而这句话
+		// 会原样进 503 响应体的 errorMessage。其余错误（读端自己坏了之类）才需要带上原因。
+		if errors.Is(err, ErrMembershipPlanUnavailable) {
+			return err
+		}
+		return fmt.Errorf("%w: %v", ErrMembershipPlanUnavailable, err)
+	}
+	if !found {
+		return ErrMembershipPlanNotFound
+	}
+	snapshot, err := json.Marshal(dto.MembershipPlanSnapshot{
+		PlanID:                      plan.ID,
+		PlanCode:                    plan.Code,
+		PlanName:                    plan.Name,
+		PriceCents:                  plan.PriceCents,
+		Period:                      plan.Period,
+		PeriodCount:                 plan.PeriodCount,
+		AutoRenew:                   plan.AutoRenew,
+		MemberPriceMode:             plan.MemberPriceMode,
+		MemberPriceCouponTemplateID: plan.MemberPriceCouponTemplateID,
+		MemberPriceCouponsPerPeriod: plan.MemberPriceCouponsPerPeriod,
+	})
+	if err != nil {
+		// 入参全是标量，编不出来只可能是代码写错了（与仓储的 mustJSON 同一条判断）。
+		return fmt.Errorf("encode membership plan snapshot: %w", err)
+	}
+
+	for _, line := range lines {
+		if line.LineType != model.LineTypeMembership {
+			continue
+		}
+		// item_id 是套餐的值引用，编码与名称是下单这一刻的副本。item_image 留空：套餐没有
+		// 图片这一说，而客户端给的图我们不认。
+		line.ItemID = &plan.ID
+		line.ItemCode = plan.Code
+		line.ItemName = plan.Name
+		// unit_price 与 original_unit_price 同值：会员套餐没有「标价」与「成交价」之分
+		// （会员价那条优惠是给饮品的，不是给会员套餐本身的），优惠额一律为零。
+		line.OriginalUnitPrice = plan.PriceCents
+		line.UnitPrice = plan.PriceCents
+		line.PriceDiscountAmount = 0
+		line.CouponDiscountAmount = 0
+		line.DiscountAmount = 0
+		line.PayableAmount = plan.PriceCents
+		line.MembershipPlanSnapshot = snapshot
+	}
+	return nil
 }
 
 // generateOrderNo 生成订单号：3CYM + YmdHis + 6 位数字。
@@ -320,6 +594,16 @@ func mapWriteError(err error) error {
 	default:
 		return err
 	}
+}
+
+// userMatches 判断这一单是不是这个调用方的。
+//
+// nil（设备单没有用户，见 order/005）**不等于任何调用方**，包括空串：它意味着这张单谁都
+// 不属于，不是「谁都能看/能付/能取消」。写成 `order.UserID == nil || *order.UserID != caller`
+// 是同一件事，但三处调用点各写一遍迟早会有一处漏掉 nil 判断——漏掉的那处就是一次越权
+// （nil 与空串调用方相等，后台那条路正是空串）。
+func userMatches(orderUserID *string, callerID string) bool {
+	return orderUserID != nil && *orderUserID == callerID
 }
 
 // derefString 读一个可选字符串，nil 当空串。

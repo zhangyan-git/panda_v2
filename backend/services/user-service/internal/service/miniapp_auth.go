@@ -504,26 +504,11 @@ func (s *MiniappAuthService) issue(ctx context.Context, user *model.User, ip, us
 	if err != nil {
 		return nil, err
 	}
-	// 会话的过期时间取自刚签出来的令牌本身，而不是在配置里再写一个 TTL。
-	// 两处各配一次的话，改了一处就会出现「令牌还有效，但刷新被拒」。
-	claims, err := s.jwtSvc.ParseRefresh(refreshToken)
+	// 会话的过期时间取自刚签出来的令牌本身，而不是在配置里再写一个 TTL，
+	// 见 newSessionFor。
+	session, err := newSessionFor(s.jwtSvc, user.ID, refreshToken, ip, userAgent)
 	if err != nil {
 		return nil, err
-	}
-	if claims.ExpiresAt == nil {
-		return nil, errors.New("signed refresh token carries no expiry")
-	}
-	now := time.Now()
-	session := &model.UserSession{
-		ID:               uuid.NewString(),
-		UserID:           user.ID,
-		RefreshTokenHash: hashRefreshToken(refreshToken),
-		IssuedAt:         now,
-		ExpiresAt:        claims.ExpiresAt.Time,
-		IP:               ip,
-		UserAgent:        userAgent,
-		CreatedAt:        now,
-		UpdatedAt:        now,
 	}
 	if err := s.sessions.CreateSession(ctx, session); err != nil {
 		return nil, err
@@ -611,6 +596,33 @@ func ensureConsumerActive(u *model.User) error {
 	default:
 		return ErrConsumerDisabled
 	}
+}
+
+// newSessionFor 由刚签出的 refresh token 造一条会话记录。
+//
+// C 端与后台两条签发路径共用它：会话的过期时间只能有一处来源（就是令牌本身），
+// 两处各读一次配置迟早会出现「令牌还有效，但刷新被拒」。ip/userAgent 只进审计
+// 字段，缺了不影响校验。
+func newSessionFor(jwtSvc *auth.Service, userID, refreshToken, ip, userAgent string) (*model.UserSession, error) {
+	claims, err := jwtSvc.ParseRefresh(refreshToken)
+	if err != nil {
+		return nil, err
+	}
+	if claims.ExpiresAt == nil {
+		return nil, errors.New("signed refresh token carries no expiry")
+	}
+	now := time.Now()
+	return &model.UserSession{
+		ID:               uuid.NewString(),
+		UserID:           userID,
+		RefreshTokenHash: hashRefreshToken(refreshToken),
+		IssuedAt:         now,
+		ExpiresAt:        claims.ExpiresAt.Time,
+		IP:               ip,
+		UserAgent:        userAgent,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}, nil
 }
 
 // hashRefreshToken 是刷新令牌落库前的确定性哈希。

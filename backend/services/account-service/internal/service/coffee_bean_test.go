@@ -50,7 +50,7 @@ func TestBeanKeysAreDerivedFromTheirBusinessIDs(t *testing.T) {
 		})
 	}
 
-	// 扣减那把键取的是**订单 ID 而不是支付单号**：冲正要从 order.after_sale.reviewed 反查
+	// 扣减那把键取的是**订单 ID 而不是支付单号**：冲正要从 order.after_sale.refunded 反查
 	// 这笔扣减，而那条事件只带 orderId。用支付单号做键的话，这里必须多一个参数，
 	// 而那个参数只能来自调用方——于是「同一张订单被扣两次」只差调用方发一次新的支付单。
 	if model.BeanConsumeKey(orderID) == model.BeanReverseKey(orderID) {

@@ -70,6 +70,24 @@ message ResetAccountScopeRequest {
 
 message ResetAccountScopeResponse {}
 
+// GetWechatIdentityRequest 取一个用户在某个应用下的微信身份。
+//
+// user_id 是值引用而不是身份声明：调用方（order-service）在一次已认证的请求里拿到
+// 付款人之后才发这次调用，而本次调用带的是服务令牌——身份建立在前一步，不在这里。
+message GetWechatIdentityRequest {
+  string user_id = 1;
+  // app_type 取 miniapp / official_account，与 user_wechat_identities 的 CHECK 一致。
+  // 必填：openid 是按应用独立的，不指明应用就答不出唯一的一条。
+  string app_type = 2;
+}
+
+message GetWechatIdentityResponse {
+  // openid 该用户在该应用下的微信标识。
+  string openid = 1;
+  // unionid 未绑定微信开放平台时为空串（列可空，仓库惯例 COALESCE 成 ''）。
+  string unionid = 2;
+}
+
 // GetAdminAccessRequest carries no fields: the caller's access token travels in
 // gRPC metadata and is the only source of identity.
 message GetAdminAccessRequest {}
@@ -91,10 +109,57 @@ service UserService {
   // than an end-user access token.
   rpc HasUsers(HasUsersRequest) returns (HasUsersResponse);
   rpc ResetAccountScope(ResetAccountScopeRequest) returns (ResetAccountScopeResponse);
+  // GetWechatIdentity 把用户的微信 openid 交给内部调用方。order-service 发起微信小程序
+  // 支付时需要它填 payer.openid（渠道必填），而 openid 是用户身份，只能服务间取，
+  // 不能由客户端自称（见 order-service 的 dto.PayOrderRequest）。
+  rpc GetWechatIdentity(GetWechatIdentityRequest) returns (GetWechatIdentityResponse);
 }
 
 // AdminAccessService answers only for the identity presented in metadata, so it
 // is authenticated by an end-user access token instead of the service token.
 service AdminAccessService {
   rpc GetAdminAccess(GetAdminAccessRequest) returns (GetAdminAccessResponse);
+}
+
+// GetMerchantAccessRequest carries no fields: like GetAdminAccess, the caller's
+// access token travels in gRPC metadata and is the only source of identity.
+message GetMerchantAccessRequest {}
+
+// GetMerchantAccessResponse is the live data boundary of a merchant account.
+//
+// store_ids is the part every consumer actually filters on. Devices and orders
+// carry only a store_id — neither holds a merchant_id, and the design forbids
+// adding one just to make filtering uniform — so "which rows may this account
+// see" has exactly one usable shape: a set of store ids. The merchant/brand
+// levels are expanded here rather than pushed down as a predicate, so all three
+// consumers share one code path.
+//
+// Like GetAdminAccessResponse, consumers must not cache it: the whole point is
+// that a scope change or a disabled account takes effect on the next request,
+// not when the 24-hour access token happens to expire.
+message GetMerchantAccessResponse {
+  // merchant_id is the tenant the account belongs to. Callers compare it against
+  // the token's tenant and reject on mismatch rather than trusting either alone.
+  string merchant_id = 1;
+  // scope_type is "merchant", "brand" or "store" — the vocabulary of
+  // merchant_users.scope_type, not of the auth.Scope claim.
+  string scope_type = 2;
+  // scope_id is the brand or store the scope points at; empty at merchant level.
+  string scope_id = 3;
+  // store_ids is the expanded boundary: an account authorized for no store gets
+  // an empty list, which filters to zero rows. At the call sites nil would be
+  // indistinguishable from "no filter", and that difference is the whole
+  // boundary.
+  //
+  // The field carries no nil/empty distinction of its own: proto3 does not put an
+  // empty repeated field on the wire, so both arrive as an empty list. Normalizing
+  // to a non-nil slice is therefore the receiver's job, and it is done once, in
+  // auth.WithStoreScope — not here, and not at each call site.
+  repeated string store_ids = 4;
+}
+
+// MerchantAccessService answers only for the identity presented in metadata, so
+// it is authenticated by an end-user access token instead of the service token.
+service MerchantAccessService {
+  rpc GetMerchantAccess(GetMerchantAccessRequest) returns (GetMerchantAccessResponse);
 }

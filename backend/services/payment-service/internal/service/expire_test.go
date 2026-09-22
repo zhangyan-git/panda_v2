@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/catalog"
 	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/model"
+	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/provider"
 	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/repository"
 )
 
@@ -24,11 +26,10 @@ import (
 func overdueFundedPayment(paymentID string) model.Payment {
 	entryID := "entry-" + paymentID
 	fundedAt := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-	methodID := testMethodID
 	return model.Payment{
 		ID: paymentID, PaymentNo: "PAY-" + paymentID, OrderNo: testOrderNo,
-		UserID: testUserID, Amount: 1980, FundingType: model.FundingCoffeeBean,
-		Status: model.PaymentCreated, PaymentMethodID: &methodID,
+		UserID: testUserID, Amount: 1980,
+		Status: model.PaymentCreated, PaymentMethod: catalog.CodeCoffeeBean,
 		RequestID:      "req-" + paymentID,
 		AccountEntryID: &entryID, AccountFundedAt: &fundedAt,
 	}
@@ -70,7 +71,7 @@ func TestSettleOverdueAccountPaymentsSettlesWithTheDeductionTime(t *testing.T) {
 	if !ok {
 		t.Fatalf("idempotency response = %T, want *CreateResult", got.IdempotencyResponse)
 	}
-	if snapshot.Status != model.PaymentSucceeded || snapshot.Action != model.ActionAccount {
+	if snapshot.Status != model.PaymentSucceeded || snapshot.Action != string(provider.ActionAccount) {
 		t.Fatalf("replayed snapshot = %+v, want a succeeded account result", snapshot)
 	}
 	if got.RequestID != payment.RequestID {

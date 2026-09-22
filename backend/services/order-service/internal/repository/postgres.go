@@ -1,7 +1,8 @@
 // Package repository 是订单库的数据访问层。
 //
 // 按聚合拆文件：order.go 是 Order 聚合的写路径（下单、支付落单、取消、超时关单，
-// 每条都在一个事务里连带写状态流水与 outbox），order_query.go 是读路径。
+// 每条都在一个事务里连带写状态流水与 outbox），device_order.go 是设备单那一条入口
+// （钱已经收过、直接落成 paid，见那里的说明），order_query.go 是读路径。
 // 跨表的业务事务由 service 编排，repository 只负责「一个事务里把这几个事实写进去」。
 package repository
 
@@ -44,6 +45,14 @@ var (
 	ErrOrderNotCompletable = errors.New("order is not awaiting completion")
 	// ErrCouponAlreadyUsed：这张券已经落在别的订单行上了。
 	ErrCouponAlreadyUsed = errors.New("coupon is already attached to another order line")
+	// ErrInvalidUUIDFilter：一个 uuid 列的筛选值不是 uuid 的形状（后台的 userId / storeId /
+	// deviceId 三个筛选框）。
+	//
+	// 它必须是一条**错误**，不能悄悄当成「没筛」：写错一个字符就返回全量，运营会以为自己
+	// 筛过了——与 status / source 那两个枚举筛选同一条理由（见 controller/admin_order.go）。
+	// 它也不该变成 500：把非 uuid 的字符串绑进 uuid 列，PG 抛的是 22P02，调用方看到的是一句
+	// 「服务器错误」，而错的其实是请求。
+	ErrInvalidUUIDFilter = errors.New("filter value is not a uuid")
 )
 
 // IdempotencyRecoveryWindow 是一条 processing 记录还能被认为「有事务正在跑」的时长。
@@ -57,12 +66,16 @@ const IdempotencyRecoveryWindow = 15 * time.Minute
 //
 // UUID 列一律 ::text：pgx 把 uuid 扫进 string 需要这一步，少了它 Scan 会报类型不匹配。
 // 列顺序与 scanOrder 的扫描顺序严格一一对应，两边必须一起改。
+//
+// user_id 是唯一一个**可空**的 UUID 列（设备单没有用户，见 order/005），所以它扫进的是
+// *string 而不是 string：NULL 扫进 string 会让 Scan 直接报错（NULL 只能进指针或 sql.Null*），
+// 而「没有用户」正是那条路上的常态，不是异常。
 const orderColumns = `id::text, order_no, legacy_id, user_id::text, source, status,
 	fulfillment_status, store_id::text, store_name, device_id::text, device_no, scene_token,
 	original_amount, discount_amount, payable_amount, paid_amount, refunded_amount,
 	membership_id::text, membership_snapshot, fortune_cards_expected, fortune_card_snapshot,
 	payment_method, payment_no, paid_at, finished_at, cancelled_at, cancellation_reason,
-	expires_at, remark, request_id, created_at, updated_at`
+	expires_at, remark, request_id, created_at, updated_at, third_party_order_no`
 
 const orderLineColumns = `id::text, order_id::text, line_no, line_type, legacy_id,
 	item_id::text, item_code, item_name, item_image, quantity, original_unit_price, unit_price,
@@ -113,7 +126,7 @@ func scanOrderWith(row scanner, extra ...any) (*model.Order, error) {
 		&order.MembershipSnapshot, &order.FortuneCardsExpected, &order.FortuneCardSnapshot,
 		&order.PaymentMethod, &order.PaymentNo, &order.PaidAt, &order.FinishedAt,
 		&order.CancelledAt, &order.CancellationReason, &order.ExpiresAt, &order.Remark,
-		&order.RequestID, &order.CreatedAt, &order.UpdatedAt}
+		&order.RequestID, &order.CreatedAt, &order.UpdatedAt, &order.ThirdPartyOrderNo}
 	targets = append(targets, extra...)
 	if err := row.Scan(targets...); err != nil {
 		return nil, err

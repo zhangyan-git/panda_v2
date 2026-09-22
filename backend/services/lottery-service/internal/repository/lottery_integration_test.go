@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/panda-dev/panda-v2/backend/services/lottery-service/internal/draw"
+	"github.com/panda-dev/panda-v2/backend/services/lottery-service/internal/dto"
 	"github.com/panda-dev/panda-v2/backend/services/lottery-service/internal/model"
 )
 
@@ -71,32 +72,34 @@ type lotteryFixture struct {
 	round      *model.Round
 }
 
-// newLotteryFixture 开一家新门店，门槛 target 人、奖池一共 prizeQuantity 个名额。
+// newLotteryFixture 开一家新门店，门槛 target 次、奖品带 prizeQuantity 个名额。
 //
-// 窗口给一小时：这一份里绝大多数用例不关心时间，只有专门验「到点开奖」的那两条会自己
-// 把 ends_at 拨到过去。活动窗口不动，因为期次连开依赖它还没结束。
+// 这里**没有任何时间参数**：活动与期次都没有窗口了（2026-09-15 去掉），一期收满门槛才
+// 开奖，不收满就一直开着。
+//
+// prizeQuantity 仍然是个参数，虽然 service 层恒填 1（见 campaignParams 里那一行）——**故意
+// 留着的**：让 winner_count 冻结成一个大等于 1 的数，才能验出「它确实是从奖池求和来的」。
+// 全填 1 的话，「冻结」写成一个写死的 1 也照样绿。仓储这一层本来也还认这个字段。
 func newLotteryFixture(t *testing.T, target, prizeQuantity int32) *lotteryFixture {
 	t.Helper()
 	pool := lotteryIntegrationPool(t)
 	repo := NewPostgresRepository(pool, nil)
 	ctx := testContext(t)
 
-	now := time.Now()
 	created, err := repo.Activate(ctx, ActivateParams{
-		LocationID:   uuid.NewString(),
-		LocationName: "集成测试门店",
-		Remark:       "integration test",
+		// 只给门店 id：名字不落库（见 migrations/lottery/003），显示时由 service 层向商户域
+		// 现解。所以这一层的夹具拿到的门店是一个商户域里并不存在的随机 UUID——这对仓储没
+		// 影响（它只写 id），但**它正是那个「幽灵门店」的形状**，存在性校验在服务层。
+		LocationID: uuid.NewString(),
+		Remark:     "integration test",
 		Campaign: DefaultCampaign{
 			Code:              newCampaignCode(),
 			Name:              "集成测试活动",
 			Description:       "integration test",
 			ParticipantTarget: target,
-			StartAt:           now,
-			EndAt:             now.Add(time.Hour),
 			Prize: DefaultPrize{
-				PrizeKind: model.PrizeKindCoupon,
-				Name:      "10 元咖啡兑换券",
-				Quantity:  prizeQuantity,
+				Name:     "10 元咖啡兑换券",
+				Quantity: prizeQuantity,
 			},
 		},
 	})
@@ -216,20 +219,17 @@ func countRows(t *testing.T, ctx context.Context, f *lotteryFixture, sql string,
 	return count
 }
 
-// expireRound 把一期的窗口整个挪到过去，模拟「时间到了」。
+// cancelRoundDirectly 绕过 CancelRound 直接把一期置成 cancelled。
 //
-// 直接改库而不是等：这一份测试不该为了验一条到点判定跑上一小时。挪到一小时前而不是一秒前，
-// 是为了不去赌容器与宿主之间的时钟偏差——那种偶发红会让人怀疑算法。
-//
-// **starts_at 要一起挪**：lottery_rounds_check 钉着 ends_at > starts_at，只改一个端点会
-// 撞上它。这也顺带说清了这条约束的用意——期次的窗口是个区间，不是两个可以各自设置的时刻。
-func expireRound(t *testing.T, ctx context.Context, f *lotteryFixture, roundID string) {
+// **CancelRound 现在会补开下一期**（见 TestCancelRoundOpensTheNextRound），所以它造不出
+// 「活动 enabled、却没有在跑的期次」这个状态，而那个状态在真实系统里是存在的——暂停期间
+// 开奖不开新期，恢复时才由 EnsureLiveRound 补。这一条给它用。
+func cancelRoundDirectly(t *testing.T, ctx context.Context, f *lotteryFixture, roundID string) {
 	t.Helper()
 	if _, err := f.pool.Exec(ctx, `UPDATE lottery_rounds
-		SET starts_at = NOW() - INTERVAL '2 hours',
-		    ends_at   = NOW() - INTERVAL '1 hour'
+		SET status='cancelled', cancelled_at=NOW(), cancel_reason='fixture'
 		WHERE id=$1`, roundID); err != nil {
-		t.Fatalf("expire round %s: %v", roundID, err)
+		t.Fatalf("cancel round %s directly: %v", roundID, err)
 	}
 }
 
@@ -648,22 +648,25 @@ func TestConfirmOnARoundClosedMidFlightIsCompensatedNotCounted(t *testing.T) {
 	}
 }
 
-// TestAutoDrawAtDeadlineChainsTheNextRound 验的是「到点必开」那条路，以及开奖的同事务连开
-// 下一期——原型里 LAKE-202608-12 已经到第 12 期，所以一期一活动是不成立的。
-func TestAutoDrawAtDeadlineChainsTheNextRound(t *testing.T) {
-	f := newLotteryFixture(t, 50, 2)
+// TestAutoDrawAtThresholdChainsTheNextRound 验的是**收满门槛**那条路（自动开奖今天唯一的
+// 一条路），以及开奖的同事务连开下一期——原型里 LAKE-202608-12 已经到第 12 期，所以
+// 一期一活动是不成立的。
+//
+// 门槛设成 4，然后正好参与 4 次：Confirm 里那一句 CASE 把期次置成 closed，于是它进了
+// worker 的取件。**这里曾经验的是「到点必开」**，2026-09-15 那条路删掉了——现在没有任何
+// 办法让一个没收满的期次被扫到，下面 TestOpenRoundsAreNeverSwept 专门钉这一点。
+func TestAutoDrawAtThresholdChainsTheNextRound(t *testing.T) {
+	f := newLotteryFixture(t, 4, 2)
 	ctx := testContext(t)
 	f.seedParticipations(t, ctx, 4)
 
-	expireRound(t, ctx, f, f.round.ID)
-
 	now := time.Now()
-	due, err := f.repo.RoundsAwaitingDraw(ctx, now, 200)
+	due, err := f.repo.RoundsAwaitingDraw(ctx, 200)
 	if err != nil {
 		t.Fatalf("list rounds awaiting a draw: %v", err)
 	}
 	if !containsString(due, f.round.ID) {
-		t.Fatal("到点的期次没有被开奖 worker 的取件查询扫到")
+		t.Fatal("收满门槛的期次没有被开奖 worker 的取件查询扫到")
 	}
 
 	outcome, err := f.repo.DrawRound(ctx, DrawParams{
@@ -673,10 +676,10 @@ func TestAutoDrawAtDeadlineChainsTheNextRound(t *testing.T) {
 		t.Fatalf("auto draw: %v", err)
 	}
 	if outcome.Draw == nil {
-		t.Fatal("有人参与的期次到点应当开出奖，而不是作废")
+		t.Fatal("有人参与的期次收满门槛应当开出奖，而不是作废")
 	}
-	if outcome.Draw.Trigger != model.TriggerDeadline {
-		t.Fatalf("trigger 是 %q，期望 %q", outcome.Draw.Trigger, model.TriggerDeadline)
+	if outcome.Draw.Trigger != model.TriggerThreshold {
+		t.Fatalf("trigger 是 %q，期望 %q", outcome.Draw.Trigger, model.TriggerThreshold)
 	}
 	if outcome.Draw.Mode != model.DrawModeAuto {
 		t.Fatalf("mode 是 %q，期望 %q", outcome.Draw.Mode, model.DrawModeAuto)
@@ -684,11 +687,8 @@ func TestAutoDrawAtDeadlineChainsTheNextRound(t *testing.T) {
 	if outcome.Draw.DrawnBy != nil {
 		t.Fatal("自动开奖不该有操作人——数据库的 CHECK 也挡这一条")
 	}
-	if outcome.CampaignEnded {
-		t.Fatal("活动窗口还没结束，不该在这次开奖里被置成 ended")
-	}
 	if outcome.NextRound == nil {
-		t.Fatal("活动还在窗口内，开奖的同事务里应当接着开出下一期")
+		t.Fatal("活动还是 enabled，开奖的同事务里应当接着开出下一期")
 	}
 	if outcome.NextRound.Seq != 2 {
 		t.Fatalf("下一期的 seq 是 %d，期望 2", outcome.NextRound.Seq)
@@ -699,7 +699,7 @@ func TestAutoDrawAtDeadlineChainsTheNextRound(t *testing.T) {
 	if outcome.NextRound.Status != model.RoundOpen {
 		t.Fatalf("下一期的状态是 %q，期望 %q", outcome.NextRound.Status, model.RoundOpen)
 	}
-	// 下一期的名额从当期奖池冻结，窗口取活动的窗口——它是新的一期，计数从零开始。
+	// 下一期的名额从当期奖池冻结——它是新的一期，计数从零开始。
 	if outcome.NextRound.ParticipantCount != 0 {
 		t.Fatalf("新一期的计数是 %d，期望 0", outcome.NextRound.ParticipantCount)
 	}
@@ -716,28 +716,160 @@ func TestAutoDrawAtDeadlineChainsTheNextRound(t *testing.T) {
 		t.Fatalf("开奖之后 LiveRound 读到的不是新开的那一期：%+v", live)
 	}
 	// 已开奖的那一期不再出现在取件里。
-	if due, err := f.repo.RoundsAwaitingDraw(ctx, time.Now(), 200); err != nil {
+	if due, err := f.repo.RoundsAwaitingDraw(ctx, 200); err != nil {
 		t.Fatalf("list rounds awaiting a draw: %v", err)
 	} else if containsString(due, f.round.ID) {
 		t.Fatal("已经开过奖的期次还在开奖 worker 的取件里")
 	}
 }
 
-// TestAutoDrawWithNoParticipantsCancelsWithoutADrawRecord 是「零人参与」那条分支。
+// TestEditingACampaignKeepsThePrizeRowInPlace 钉住奖品整份替换的前提：**提交上来的奖品要带着
+// 它自己的 id**。
 //
-// 到点必开、不流局（流局要把 N 张卡沿 N 次跨服务冲正还回去，而那条路没有截止时间），
-// 但零人参与连一张卡都没扣过——开一次没有名单的奖只会在后台留下一条谁也看不懂的记录。
-func TestAutoDrawWithNoParticipantsCancelsWithoutADrawRecord(t *testing.T) {
-	f := newLotteryFixture(t, 50, 2)
+// replacePrize 的形状是「删掉不是这一行的行 + 更新它」，而 lottery_wins.prize_id 是
+// ON DELETE RESTRICT——id 丢了，那句 DELETE 就会把唯一一行删掉，被外键拒绝，整次保存 500。
+// 后台表单曾经正是这样（campaigns/index.tsx 的 initialValues 映射奖品时没带 id），于是
+// **任何一个已经开过奖的活动都改不动**。这是那条路径的回归点。
+//
+// 后半段故意再跑一次不带 id 的保存：它必须失败。没有这一段，这条测试就只是「改活动能成功」，
+// 而「能成功」的原因可能是别的（比如外键哪天松了），钉不住 id 这件事本身。
+func TestEditingACampaignKeepsThePrizeRowInPlace(t *testing.T) {
+	f := newLotteryFixture(t, 2, 1)
 	ctx := testContext(t)
-
-	expireRound(t, ctx, f, f.round.ID)
+	f.seedParticipations(t, ctx, 2)
 
 	outcome, err := f.repo.DrawRound(ctx, DrawParams{
 		RoundID: f.round.ID, Mode: model.DrawModeAuto, Now: time.Now(),
 	})
 	if err != nil {
-		t.Fatalf("auto draw: %v", err)
+		t.Fatalf("开奖：%v", err)
+	}
+	if outcome.Draw == nil {
+		t.Fatal("收满门槛的期次应当开出奖——没有中奖记录，这条测试就没验到东西")
+	}
+
+	prizes, err := f.repo.ListPrizes(ctx, f.campaign.ID)
+	if err != nil {
+		t.Fatalf("读奖池：%v", err)
+	}
+	if len(prizes) != 1 {
+		t.Fatalf("奖池有 %d 行，要的是 1 行", len(prizes))
+	}
+	prizeID := prizes[0].ID
+
+	update := func(p PrizeInput) error {
+		_, err := f.repo.UpdateCampaign(ctx, f.campaign.ID, CampaignParams{
+			Code:              f.campaign.Code,
+			Name:              "改过名字的活动",
+			Description:       "integration test",
+			ParticipantTarget: 2,
+			Status:            model.CampaignEnabled,
+			Prize:             p,
+		})
+		return err
+	}
+
+	// 带上 id：原地 UPDATE 应当成功。
+	want := PrizeInput{
+		ID:                prizeID,
+		Name:              "改过的奖品",
+		CoverImage:        "https://example.test/new-cover.png",
+		PosterImage:       "https://example.test/new-poster.png",
+		ClaimInstructions: "到店出示中奖记录",
+		Quantity:          1,
+	}
+	if err := update(want); err != nil {
+		t.Fatalf("改一个已经开过奖的活动：%v——奖品行被删了重插的话这里就是外键拒绝", err)
+	}
+
+	after, err := f.repo.ListPrizes(ctx, f.campaign.ID)
+	if err != nil {
+		t.Fatalf("改完再读奖池：%v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("改完之后奖池有 %d 行，要的是 1 行——原地 UPDATE 不该多出一行", len(after))
+	}
+	if after[0].ID != prizeID {
+		t.Errorf("奖品 id 从 %s 变成了 %s：这是删了重插，中奖记录上的外键正是要挡这件事", prizeID, after[0].ID)
+	}
+	if after[0].Name != "改过的奖品" || after[0].CoverImage != want.CoverImage || after[0].PosterImage != want.PosterImage {
+		t.Errorf("改完的奖品是 %+v，要的是名字 / 两张图都换过来", after[0])
+	}
+
+	// 中奖记录仍指得通，而且**名字快照没被改写**：历史记录说的是当时发的是什么，
+	// current_prize_name 留给将来换奖那条路（见 model.Win 上的注释），不跟着活动改。
+	wins, total, err := f.repo.ListWins(ctx, dto.WinQuery{CampaignID: f.campaign.ID, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("读中奖记录：%v", err)
+	}
+	if total != 1 {
+		t.Fatalf("中奖记录有 %d 条，要的是 1 条", total)
+	}
+	if wins[0].PrizeID != prizeID {
+		t.Errorf("中奖记录的 prize_id = %s，要的还是原来那一行 %s", wins[0].PrizeID, prizeID)
+	}
+	if wins[0].OriginalPrizeName != "10 元咖啡兑换券" {
+		t.Errorf("原奖品名 = %q，改活动不该改写历史中奖记录", wins[0].OriginalPrizeName)
+	}
+
+	// 不带 id：必须失败。这一句就是「表单漏带 id」在仓储层的样子。
+	if err := update(PrizeInput{Name: "不带 id 的奖品", CoverImage: want.CoverImage, Quantity: 1}); err == nil {
+		t.Error("不带奖品 id 的保存竟然成功了——中奖记录没有被外键挡住，那它指的可能是一行已经不存在的奖品")
+	}
+}
+
+// TestOpenRoundsAreNeverSwept 钉住「没收满就一直等着」这条新规则最容易被改回去的一点。
+//
+// 取件查询曾经有一条 `OR (status='open' AND ends_at <= now)`。窗口删掉之后那条路就没有
+// 判据了，但如果有人把它写回成「open 且开得够久了就算到点」，**用户会看到说好收满 10 次
+// 才开的奖在参与 3 次时就开了**——这是这次改动要根除的那个结果。
+//
+// 期次的开期时刻故意做得足够老（一小时前）：即便有人按「年龄」来扫也扫不出来。
+func TestOpenRoundsAreNeverSwept(t *testing.T) {
+	f := newLotteryFixture(t, 10, 2)
+	ctx := testContext(t)
+	f.seedParticipations(t, ctx, 3)
+
+	if _, err := f.pool.Exec(ctx, `UPDATE lottery_rounds
+		SET created_at = NOW() - INTERVAL '1 hour' WHERE id=$1`, f.round.ID); err != nil {
+		t.Fatalf("age the round: %v", err)
+	}
+
+	due, err := f.repo.RoundsAwaitingDraw(ctx, 200)
+	if err != nil {
+		t.Fatalf("list rounds awaiting a draw: %v", err)
+	}
+	if containsString(due, f.round.ID) {
+		t.Fatal("一个没收满的 open 期次被开奖取件扫到了——收不满就等着，这是有意的")
+	}
+
+	// 扫不到还不算完：真拿它去开也应当被判成「现在不该开」。
+	if _, err := f.repo.DrawRound(ctx, DrawParams{
+		RoundID: f.round.ID, Mode: model.DrawModeAuto, Now: time.Now(),
+	}); !errors.Is(err, ErrRoundNotAwaitingDraw) {
+		t.Fatalf("对一个没收满的期次自动开奖，得到 %v，期望 ErrRoundNotAwaitingDraw", err)
+	}
+}
+
+// TestManualDrawWithNoParticipantsCancelsWithoutADrawRecord 是「零人参与」那条分支。
+//
+// 不流局（流局要把 N 张卡沿 N 次跨服务冲正还回去，而那条路没有截止时间），但零人参与连
+// 一张卡都没扣过——开一次没有名单的奖只会在后台留下一条谁也看不懂的记录。
+//
+// **这条路今天只有人工开奖走得到**：自动开奖只扫 status='closed' 的期次，而转 closed 的
+// 条件是参与数达到 target（CHECK 保证 target > 0），所以自动开奖永远碰不到期次。原先它是
+// 「到点必开」扫出来的，那条路 2026-09-15 删掉了。
+func TestManualDrawWithNoParticipantsCancelsWithoutADrawRecord(t *testing.T) {
+	f := newLotteryFixture(t, 50, 2)
+	ctx := testContext(t)
+
+	actor := uuid.NewString()
+	outcome, err := f.repo.DrawRound(ctx, DrawParams{
+		RoundID: f.round.ID, Mode: model.DrawModeManual, Now: time.Now(),
+		DrawnBy: &actor, Reason: "没人来，收摊",
+	})
+	if err != nil {
+		t.Fatalf("manual draw: %v", err)
 	}
 	if outcome.Draw != nil {
 		t.Fatal("零人参与的期次不该写开奖记录")
@@ -780,9 +912,9 @@ func TestCancelRoundRefusesWhenThereAreParticipants(t *testing.T) {
 		t.Fatalf("被拒的作废改动了期次状态：%q", round.Status)
 	}
 
-	// 同一家门店的活动里再开一期出来（零人），它才是可以作废的那种。
-	expired := newLotteryFixture(t, 50, 2)
-	cancelled, err := expired.repo.CancelRound(ctx, expired.round.ID, "运营误建", &actor)
+	// 另开一家门店，它第一期是零人参与的，那才是可以作废的那种。
+	fresh := newLotteryFixture(t, 50, 2)
+	cancelled, err := fresh.repo.CancelRound(ctx, fresh.round.ID, "运营误建", &actor)
 	if err != nil {
 		t.Fatalf("作废一期零人参与的期次：%v", err)
 	}
@@ -793,8 +925,66 @@ func TestCancelRoundRefusesWhenThereAreParticipants(t *testing.T) {
 		t.Fatalf("作废人没有落库：%v", cancelled.CancelledBy)
 	}
 	// 再作废一次是「这一期根本不作数」，与「你来晚了一步」（已开奖）分开报。
-	if _, err := expired.repo.CancelRound(ctx, expired.round.ID, "再来一次", &actor); !errors.Is(err, ErrRoundCancelled) {
+	if _, err := fresh.repo.CancelRound(ctx, fresh.round.ID, "再来一次", &actor); !errors.Is(err, ErrRoundCancelled) {
 		t.Fatalf("重复作废得到 %v，期望 ErrRoundCancelled", err)
+	}
+}
+
+// TestCancelRoundOpensTheNextRound 钉住作废后的那个空档。
+//
+// 后台的作废确认框一直写着「作废后会立刻开出下一期」，而仓储在此之前只把期次置成
+// cancelled——**说的和做的不一样**。拿掉到点必开之后它更要命：零人参与的期次以前能等到点
+// 自动收场，现在会永远开着，作废是唯一的出口，而作废之后没有任何东西会去开一期（自动开期
+// 那一句只在开奖时跑），活动会一直是「启用中、却没有进行中的期次」。
+func TestCancelRoundOpensTheNextRound(t *testing.T) {
+	f := newLotteryFixture(t, 50, 2)
+	ctx := testContext(t)
+
+	actor := uuid.NewString()
+	if _, err := f.repo.CancelRound(ctx, f.round.ID, "运营误建", &actor); err != nil {
+		t.Fatalf("cancel the first round: %v", err)
+	}
+
+	live, err := f.repo.LiveRound(ctx, f.campaign.ID)
+	if err != nil {
+		t.Fatalf("read the live round: %v", err)
+	}
+	if live == nil {
+		t.Fatal("作废之后没有在跑的期次——后台那句「作废后会立刻开出下一期」没有兑现")
+	}
+	if live.Seq != 2 {
+		t.Fatalf("补开的期次 seq 是 %d，期望 2（作废过的号不回收）", live.Seq)
+	}
+	if live.Status != model.RoundOpen {
+		t.Fatalf("补开的期次状态是 %q，期望 %q", live.Status, model.RoundOpen)
+	}
+	if live.ParticipantCount != 0 {
+		t.Fatalf("补开的期次计数是 %d，期望 0", live.ParticipantCount)
+	}
+	if live.WinnerCount != 2 {
+		t.Fatalf("补开的期次名额是 %d，期望 2（从奖池冻结）", live.WinnerCount)
+	}
+}
+
+// TestCancelRoundDoesNotOpenTheNextRoundWhenTheCampaignIsNotEnabled 是上一条的反面。
+//
+// 暂停 / 结束的活动作废一期之后不该凭空开出一期：那是「暂停停的是下一期」这条规矩的
+// 一部分（见 model.CampaignPaused）。
+func TestCancelRoundDoesNotOpenTheNextRoundWhenTheCampaignIsNotEnabled(t *testing.T) {
+	f := newLotteryFixture(t, 50, 2)
+	ctx := testContext(t)
+
+	actor := uuid.NewString()
+	if _, err := f.repo.UpdateCampaignStatus(ctx, f.campaign.ID, model.CampaignPaused, &actor); err != nil {
+		t.Fatalf("pause the campaign: %v", err)
+	}
+	if _, err := f.repo.CancelRound(ctx, f.round.ID, "运营误建", &actor); err != nil {
+		t.Fatalf("cancel the first round: %v", err)
+	}
+	if live, err := f.repo.LiveRound(ctx, f.campaign.ID); err != nil {
+		t.Fatalf("read the live round: %v", err)
+	} else if live != nil {
+		t.Fatalf("暂停中的活动不该在作废后补开一期，却开出了 %s", live.ID)
 	}
 }
 
@@ -807,7 +997,7 @@ func TestEnsureLiveRoundOpensOneOnlyWhenThereIsNone(t *testing.T) {
 	ctx := testContext(t)
 
 	// 已经有第一期在跑：不新开。这正是「管理员连点两下恢复」的那个场景。
-	got, err := f.repo.EnsureLiveRound(ctx, f.campaign.ID, time.Now())
+	got, err := f.repo.EnsureLiveRound(ctx, f.campaign.ID)
 	if err != nil {
 		t.Fatalf("ensure a live round: %v", err)
 	}
@@ -815,11 +1005,10 @@ func TestEnsureLiveRoundOpensOneOnlyWhenThereIsNone(t *testing.T) {
 		t.Fatalf("已经有在跑的一期时不该再开一期，却开出了 %s", got.ID)
 	}
 
-	// 作废掉第一期，制造出「enabled 但没有在跑的期次」。
-	if _, err := f.repo.CancelRound(ctx, f.round.ID, "运营误建", nil); err != nil {
-		t.Fatalf("cancel the first round: %v", err)
-	}
-	got, err = f.repo.EnsureLiveRound(ctx, f.campaign.ID, time.Now())
+	// 制造出「enabled 但没有在跑的期次」。直接改库而不是调 CancelRound：那个方法现在会在
+	// 同一事务里补开下一期（见 TestCancelRoundOpensTheNextRound），造不出这个状态。
+	cancelRoundDirectly(t, ctx, f, f.round.ID)
+	got, err = f.repo.EnsureLiveRound(ctx, f.campaign.ID)
 	if err != nil {
 		t.Fatalf("ensure a live round: %v", err)
 	}
@@ -833,7 +1022,7 @@ func TestEnsureLiveRoundOpensOneOnlyWhenThereIsNone(t *testing.T) {
 	}
 
 	// 再调一次不再重复开。
-	if again, err := f.repo.EnsureLiveRound(ctx, f.campaign.ID, time.Now()); err != nil {
+	if again, err := f.repo.EnsureLiveRound(ctx, f.campaign.ID); err != nil {
 		t.Fatalf("ensure a live round again: %v", err)
 	} else if again != nil {
 		t.Fatalf("第二次调用又开了一期：%s", again.ID)
@@ -855,17 +1044,13 @@ func TestMachineScopedCampaignRefusesAnotherMachinesSource(t *testing.T) {
 		Code:              newCampaignCode(),
 		Name:              "三号机专用活动",
 		ParticipantTarget: 50,
-		StartAt:           time.Now(),
-		EndAt:             time.Now().Add(time.Hour),
 		Status:            model.CampaignEnabled,
-		Prizes: []PrizeInput{{
-			SortOrder: 1, PrizeKind: model.PrizeKindCoffee, Name: "免费拿铁", Quantity: 1,
-		}},
+		Prize:             PrizeInput{Name: "免费拿铁", CoverImage: "https://example.test/latte.png", Quantity: 1},
 	})
 	if err != nil {
 		t.Fatalf("create a machine-scoped campaign: %v", err)
 	}
-	round, err := f.repo.EnsureLiveRound(ctx, campaign.ID, time.Now())
+	round, err := f.repo.EnsureLiveRound(ctx, campaign.ID)
 	if err != nil || round == nil {
 		t.Fatalf("open the first round of a machine-scoped campaign: %v / %+v", err, round)
 	}
@@ -923,14 +1108,11 @@ func TestActivatingTheSameLocationTwiceIsRefused(t *testing.T) {
 	f := newLotteryFixture(t, 50, 2)
 	ctx := testContext(t)
 
-	now := time.Now()
 	_, err := f.repo.Activate(ctx, ActivateParams{
-		LocationID:   f.activation.LocationID,
-		LocationName: "同一家门店",
+		LocationID: f.activation.LocationID,
 		Campaign: DefaultCampaign{
 			Code: newCampaignCode(), Name: "重复开通", ParticipantTarget: 10,
-			StartAt: now, EndAt: now.Add(time.Hour),
-			Prize: DefaultPrize{PrizeKind: model.PrizeKindCoupon, Name: "重复开通的奖品", Quantity: 1},
+			Prize: DefaultPrize{Name: "重复开通的奖品", Quantity: 1},
 		},
 	})
 	if !errors.Is(err, ErrLocationAlreadyActivated) {

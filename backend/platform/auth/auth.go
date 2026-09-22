@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -156,7 +157,26 @@ type Service struct {
 	refreshTokenTTL time.Duration
 }
 
+// placeholderSecrets are signing keys this repository publishes verbatim in its
+// example configuration (deploy/config/.env.example). They are deliberately long
+// enough to clear the length check below, which is exactly why the length check
+// alone is not enough: `cp .env.example .env` would otherwise start every service
+// on a key anyone who can read the repository can sign a token with.
+//
+// The comparison is exact, against the trimmed value, so surrounding whitespace
+// from a copy-paste cannot sneak one past. It only catches the values shipped
+// here; choosing a secret no one else knows is still the operator's job, and the
+// error says how.
+var placeholderSecrets = map[string]struct{}{
+	"replace-with-a-long-random-secret": {},
+}
+
 func NewService(secret []byte, issuer string, accessTokenTTL, refreshTokenTTL time.Duration) (*Service, error) {
+	if _, placeholder := placeholderSecrets[strings.TrimSpace(string(secret))]; placeholder {
+		return nil, fmt.Errorf("JWT secret is the placeholder published in deploy/config/.env.example (%q); "+
+			"it is not a secret, so anyone could sign a token this service would accept — "+
+			"replace it with a value of your own, for example the output of `openssl rand -hex 32`", string(secret))
+	}
 	if len(secret) < 32 {
 		return nil, errors.New("JWT secret must be at least 32 bytes")
 	}

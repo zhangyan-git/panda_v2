@@ -63,8 +63,8 @@ func TestPaymentEventPayloadDecodesOnTheOtherSide(t *testing.T) {
 		OrderNo:               "ORD20260914000001",
 		PaymentNo:             "PAY20260914120000000001",
 		Amount:                1980,
-		PaymentMethod:         "wechat",
-		Fundings:              []PaymentFunding{{LineType: "channel", Amount: 1980, PaymentNo: "PAY20260914120000000001", AccountEntryID: &entryID}},
+		PaymentMethod:         "ums_h5_alipay",
+		Fundings:              []PaymentFunding{{LineType: "ums_h5_alipay", Amount: 1980, PaymentNo: "PAY20260914120000000001", AccountEntryID: &entryID}},
 		ProviderTransactionID: "MANUAL-PAY20260914120000000001",
 		PaidAtUnix:            1789000000,
 		FailureCode:           "",
@@ -98,7 +98,7 @@ func TestPaymentEventPayloadDecodesOnTheOtherSide(t *testing.T) {
 		t.Fatalf("fundings: got %d entries, want 1", len(decoded.Fundings))
 	}
 	funding := decoded.Fundings[0]
-	if funding.LineType != "channel" || funding.Amount != 1980 || funding.PaymentNo != original.PaymentNo {
+	if funding.LineType != "ums_h5_alipay" || funding.Amount != 1980 || funding.PaymentNo != original.PaymentNo {
 		t.Errorf("funding fields did not survive the round trip: got %+v", funding)
 	}
 	if funding.AccountEntryID == nil || *funding.AccountEntryID != entryID {

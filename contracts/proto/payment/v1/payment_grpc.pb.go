@@ -19,7 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PaymentService_CreatePayment_FullMethodName = "/panda.payment.v1.PaymentService/CreatePayment"
+	PaymentService_CreatePayment_FullMethodName        = "/panda.payment.v1.PaymentService/CreatePayment"
+	PaymentService_CreateRefund_FullMethodName         = "/panda.payment.v1.PaymentService/CreateRefund"
+	PaymentService_CreateAgreement_FullMethodName      = "/panda.payment.v1.PaymentService/CreateAgreement"
+	PaymentService_QueryAgreement_FullMethodName       = "/panda.payment.v1.PaymentService/QueryAgreement"
+	PaymentService_TerminateAgreement_FullMethodName   = "/panda.payment.v1.PaymentService/TerminateAgreement"
+	PaymentService_ChargeAgreement_FullMethodName      = "/panda.payment.v1.PaymentService/ChargeAgreement"
+	PaymentService_ListAgreementCharges_FullMethodName = "/panda.payment.v1.PaymentService/ListAgreementCharges"
+	PaymentService_GetPayment_FullMethodName           = "/panda.payment.v1.PaymentService/GetPayment"
 )
 
 // PaymentServiceClient is the client API for PaymentService service.
@@ -27,7 +34,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // 支付服务的内部契约。调用方只有 order-service：发起支付这条链路不能走 MQ
-// （客户端要立刻拿到支付参数，方案 7.2），所以它是一次同步 RPC。
+// （客户端要立刻拿到支付参数，方案 7.2），退款那条同理，所以两者都是同步 RPC。
 //
 // 金额单位是分，用 int64。方案 13.1 要求的「金额在 JSON 传输里必须是字符串」是为了
 // 绕开 JS 的数字精度，protobuf 二进制里 int64 是精确的；真正回到客户端的那份是
@@ -39,6 +46,77 @@ type PaymentServiceClient interface {
 	// 不去读订单库——订单事实的归属方是订单服务，支付这边只拿一个值引用。反过来，
 	// 本服务建单成功后把渠道返回的支付参数原样交回，由调用方转给客户端。
 	CreatePayment(ctx context.Context, in *CreatePaymentRequest, opts ...grpc.CallOption) (*CreatePaymentResponse, error)
+	// 为一张已收妥的支付发起退款。
+	//
+	// 调用方是 order-service，在售后单**审核通过**那一刻调它。这条链路不能走 MQ 的理由
+	// 与发起支付不同，但同样硬：渠道对退款是**同步应答**（规范里没有退款回调），
+	// 「审核通过」这个动作在用户那边是立刻要有反馈的。
+	//
+	// 幂等键是 after_sale_no 而不是请求号：一次退款只该发生一次，而售后单是它唯一的出处。
+	// 同号重发拿回同一张退款单，不新建——调用方在某一步失败之后重试是常态（见下面 status）。
+	CreateRefund(ctx context.Context, in *CreateRefundRequest, opts ...grpc.CallOption) (*CreateRefundResponse, error)
+	// 为一位用户发起一次委托代扣签约：让他在渠道那边授权我们以后按期扣钱。
+	//
+	// # 它为什么不在支付聚合那条路上
+	//
+	// 签约不发钱、没有订单，也就没有能挂的支付单（payments.order_no 是 NOT NULL 的订单号）。
+	// 这一条的全部产出是**一份协议**加一组给客户端的跳转参数，钱的事在后面的代扣里。
+	//
+	// # 它签的是什么
+	//
+	// 调用方给的是**业务侧**的计划（plan_code，如会员套餐代码）；渠道侧的签约模板
+	// （provider_plan_id，如微信的 plan_id）也由调用方给——模板内容在渠道后台维护，本服务
+	// 只引用它的编号。渠道与支付方式由 payment_method 决定，本服务按它的 action 决定怎么签。
+	//
+	// # 幂等
+	//
+	// 键是 request_id：同一次提交重试拿回**同一份协议与同一组签约参数**。重算一遍签名会让
+	// 用户在微信那边拿到两个不同的 request_serial（那在渠道看来是两次签约）。同一个键换了
+	// 请求体一律拒绝（AlreadyExists）——重试没用，要改的是调用方。
+	CreateAgreement(ctx context.Context, in *CreateAgreementRequest, opts ...grpc.CallOption) (*CreateAgreementResponse, error)
+	// 回渠道核一份协议的状态，并把结论落回本库。
+	//
+	// 它是**写**而不是读：渠道说「这份协议没了」而本库还记着它生效中时，纠正只能发生在这里
+	// （后台那个「同步」按钮、以及签约之后的「确认」走的都是它）。所以它返回的是**纠正之后**
+	// 的本库状态，而渠道的原始状态另有一个字段带出来给人看。
+	QueryAgreement(ctx context.Context, in *QueryAgreementRequest, opts ...grpc.CallOption) (*QueryAgreementResponse, error)
+	// 解一份协议：**我们主动去撤**用户在渠道那边的授权。
+	//
+	// 调用方是 membership-service，两条路都走它：用户在小程序里点「关闭自动续费」，运营在
+	// 后台取消订阅。**它必须在改本地状态之前调**——反过来的话，一次失败会留下「本地已解约、
+	// 微信那边还挂着」，而微信下个月照样扣钱，用户看到的是「自动续费：已关闭」。
+	//
+	// 用户在微信里自己解约走的是另一条路（渠道推回来的协议变更通知），不经过这里。
+	TerminateAgreement(ctx context.Context, in *TerminateAgreementRequest, opts ...grpc.CallOption) (*TerminateAgreementResponse, error)
+	// 对一份已签约的协议发起一期扣款。
+	//
+	// 调用方是 membership-service 的到期扫描：订阅到点了才调，期次由它从订阅的 next_charge_at
+	// 派生。「一期只扣一次」的幂等键是 (agreement_no, biz_period)，库上那条唯一约束兜底——
+	// 所以调用方超时后重发同一个期次是安全的。
+	//
+	// **返回值不是「扣到钱了没有」**：渠道同步回的受理只说明请求被收下了（status=charging），
+	// 真正的结论在渠道推回来的扣款结果通知里（见 payment.agreement.charge_succeeded）。
+	// 续费的凭据是那条事件，不是这个响应。
+	ChargeAgreement(ctx context.Context, in *ChargeAgreementRequest, opts ...grpc.CallOption) (*ChargeAgreementResponse, error)
+	// 列一份协议上**已经发生过与正在发生**的每一期扣款。只读。
+	//
+	// 调用方是 membership-service，它替后台的订阅详情页取这一段（页面权限沿用 membership:read，
+	// 所以不能要求前端去够 payment:read）。老系统那栏「续费明细」读的就是同一件事
+	// （subscription_transactions）。
+	//
+	// 返回的**不只是成功的那几期**：pending / charging / failed 都要给出去——后台要看的是
+	// 「这个用户这一期扣了没、扣了几次、为什么没扣上」，只给成功的话，一张扣款失败的单子在
+	// 页面上根本不存在（而它恰恰是最需要被人看见的那一种）。
+	ListAgreementCharges(ctx context.Context, in *ListAgreementChargesRequest, opts ...grpc.CallOption) (*ListAgreementChargesResponse, error)
+	// 按支付单号取一张支付单的摘要。只读。**只给内部服务。**
+	//
+	// 它存在的理由是**渠道流水号的所有权**：provider_transaction_id 是对账凭据，全仓只有本
+	// 服务有对外给它的接口（order-service 的 GetOrder 只给 payment_no）。调用方拿着订单上的
+	// payment_no 来换这里的三格事实（渠道流水号 / 支付方式 / 支付时间）。
+	//
+	// 查不到回 NotFound——与订单那条不同：payment_no 是**值引用**，调用方手里的值对不上任何
+	// 一张支付单时，那是一个确定的事实（不是「还没建好」）。
+	GetPayment(ctx context.Context, in *GetPaymentRequest, opts ...grpc.CallOption) (*GetPaymentResponse, error)
 }
 
 type paymentServiceClient struct {
@@ -59,12 +137,82 @@ func (c *paymentServiceClient) CreatePayment(ctx context.Context, in *CreatePaym
 	return out, nil
 }
 
+func (c *paymentServiceClient) CreateRefund(ctx context.Context, in *CreateRefundRequest, opts ...grpc.CallOption) (*CreateRefundResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateRefundResponse)
+	err := c.cc.Invoke(ctx, PaymentService_CreateRefund_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) CreateAgreement(ctx context.Context, in *CreateAgreementRequest, opts ...grpc.CallOption) (*CreateAgreementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateAgreementResponse)
+	err := c.cc.Invoke(ctx, PaymentService_CreateAgreement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) QueryAgreement(ctx context.Context, in *QueryAgreementRequest, opts ...grpc.CallOption) (*QueryAgreementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QueryAgreementResponse)
+	err := c.cc.Invoke(ctx, PaymentService_QueryAgreement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) TerminateAgreement(ctx context.Context, in *TerminateAgreementRequest, opts ...grpc.CallOption) (*TerminateAgreementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TerminateAgreementResponse)
+	err := c.cc.Invoke(ctx, PaymentService_TerminateAgreement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) ChargeAgreement(ctx context.Context, in *ChargeAgreementRequest, opts ...grpc.CallOption) (*ChargeAgreementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ChargeAgreementResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ChargeAgreement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) ListAgreementCharges(ctx context.Context, in *ListAgreementChargesRequest, opts ...grpc.CallOption) (*ListAgreementChargesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAgreementChargesResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ListAgreementCharges_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) GetPayment(ctx context.Context, in *GetPaymentRequest, opts ...grpc.CallOption) (*GetPaymentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPaymentResponse)
+	err := c.cc.Invoke(ctx, PaymentService_GetPayment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PaymentServiceServer is the server API for PaymentService service.
 // All implementations must embed UnimplementedPaymentServiceServer
 // for forward compatibility.
 //
 // 支付服务的内部契约。调用方只有 order-service：发起支付这条链路不能走 MQ
-// （客户端要立刻拿到支付参数，方案 7.2），所以它是一次同步 RPC。
+// （客户端要立刻拿到支付参数，方案 7.2），退款那条同理，所以两者都是同步 RPC。
 //
 // 金额单位是分，用 int64。方案 13.1 要求的「金额在 JSON 传输里必须是字符串」是为了
 // 绕开 JS 的数字精度，protobuf 二进制里 int64 是精确的；真正回到客户端的那份是
@@ -76,6 +224,77 @@ type PaymentServiceServer interface {
 	// 不去读订单库——订单事实的归属方是订单服务，支付这边只拿一个值引用。反过来，
 	// 本服务建单成功后把渠道返回的支付参数原样交回，由调用方转给客户端。
 	CreatePayment(context.Context, *CreatePaymentRequest) (*CreatePaymentResponse, error)
+	// 为一张已收妥的支付发起退款。
+	//
+	// 调用方是 order-service，在售后单**审核通过**那一刻调它。这条链路不能走 MQ 的理由
+	// 与发起支付不同，但同样硬：渠道对退款是**同步应答**（规范里没有退款回调），
+	// 「审核通过」这个动作在用户那边是立刻要有反馈的。
+	//
+	// 幂等键是 after_sale_no 而不是请求号：一次退款只该发生一次，而售后单是它唯一的出处。
+	// 同号重发拿回同一张退款单，不新建——调用方在某一步失败之后重试是常态（见下面 status）。
+	CreateRefund(context.Context, *CreateRefundRequest) (*CreateRefundResponse, error)
+	// 为一位用户发起一次委托代扣签约：让他在渠道那边授权我们以后按期扣钱。
+	//
+	// # 它为什么不在支付聚合那条路上
+	//
+	// 签约不发钱、没有订单，也就没有能挂的支付单（payments.order_no 是 NOT NULL 的订单号）。
+	// 这一条的全部产出是**一份协议**加一组给客户端的跳转参数，钱的事在后面的代扣里。
+	//
+	// # 它签的是什么
+	//
+	// 调用方给的是**业务侧**的计划（plan_code，如会员套餐代码）；渠道侧的签约模板
+	// （provider_plan_id，如微信的 plan_id）也由调用方给——模板内容在渠道后台维护，本服务
+	// 只引用它的编号。渠道与支付方式由 payment_method 决定，本服务按它的 action 决定怎么签。
+	//
+	// # 幂等
+	//
+	// 键是 request_id：同一次提交重试拿回**同一份协议与同一组签约参数**。重算一遍签名会让
+	// 用户在微信那边拿到两个不同的 request_serial（那在渠道看来是两次签约）。同一个键换了
+	// 请求体一律拒绝（AlreadyExists）——重试没用，要改的是调用方。
+	CreateAgreement(context.Context, *CreateAgreementRequest) (*CreateAgreementResponse, error)
+	// 回渠道核一份协议的状态，并把结论落回本库。
+	//
+	// 它是**写**而不是读：渠道说「这份协议没了」而本库还记着它生效中时，纠正只能发生在这里
+	// （后台那个「同步」按钮、以及签约之后的「确认」走的都是它）。所以它返回的是**纠正之后**
+	// 的本库状态，而渠道的原始状态另有一个字段带出来给人看。
+	QueryAgreement(context.Context, *QueryAgreementRequest) (*QueryAgreementResponse, error)
+	// 解一份协议：**我们主动去撤**用户在渠道那边的授权。
+	//
+	// 调用方是 membership-service，两条路都走它：用户在小程序里点「关闭自动续费」，运营在
+	// 后台取消订阅。**它必须在改本地状态之前调**——反过来的话，一次失败会留下「本地已解约、
+	// 微信那边还挂着」，而微信下个月照样扣钱，用户看到的是「自动续费：已关闭」。
+	//
+	// 用户在微信里自己解约走的是另一条路（渠道推回来的协议变更通知），不经过这里。
+	TerminateAgreement(context.Context, *TerminateAgreementRequest) (*TerminateAgreementResponse, error)
+	// 对一份已签约的协议发起一期扣款。
+	//
+	// 调用方是 membership-service 的到期扫描：订阅到点了才调，期次由它从订阅的 next_charge_at
+	// 派生。「一期只扣一次」的幂等键是 (agreement_no, biz_period)，库上那条唯一约束兜底——
+	// 所以调用方超时后重发同一个期次是安全的。
+	//
+	// **返回值不是「扣到钱了没有」**：渠道同步回的受理只说明请求被收下了（status=charging），
+	// 真正的结论在渠道推回来的扣款结果通知里（见 payment.agreement.charge_succeeded）。
+	// 续费的凭据是那条事件，不是这个响应。
+	ChargeAgreement(context.Context, *ChargeAgreementRequest) (*ChargeAgreementResponse, error)
+	// 列一份协议上**已经发生过与正在发生**的每一期扣款。只读。
+	//
+	// 调用方是 membership-service，它替后台的订阅详情页取这一段（页面权限沿用 membership:read，
+	// 所以不能要求前端去够 payment:read）。老系统那栏「续费明细」读的就是同一件事
+	// （subscription_transactions）。
+	//
+	// 返回的**不只是成功的那几期**：pending / charging / failed 都要给出去——后台要看的是
+	// 「这个用户这一期扣了没、扣了几次、为什么没扣上」，只给成功的话，一张扣款失败的单子在
+	// 页面上根本不存在（而它恰恰是最需要被人看见的那一种）。
+	ListAgreementCharges(context.Context, *ListAgreementChargesRequest) (*ListAgreementChargesResponse, error)
+	// 按支付单号取一张支付单的摘要。只读。**只给内部服务。**
+	//
+	// 它存在的理由是**渠道流水号的所有权**：provider_transaction_id 是对账凭据，全仓只有本
+	// 服务有对外给它的接口（order-service 的 GetOrder 只给 payment_no）。调用方拿着订单上的
+	// payment_no 来换这里的三格事实（渠道流水号 / 支付方式 / 支付时间）。
+	//
+	// 查不到回 NotFound——与订单那条不同：payment_no 是**值引用**，调用方手里的值对不上任何
+	// 一张支付单时，那是一个确定的事实（不是「还没建好」）。
+	GetPayment(context.Context, *GetPaymentRequest) (*GetPaymentResponse, error)
 	mustEmbedUnimplementedPaymentServiceServer()
 }
 
@@ -88,6 +307,27 @@ type UnimplementedPaymentServiceServer struct{}
 
 func (UnimplementedPaymentServiceServer) CreatePayment(context.Context, *CreatePaymentRequest) (*CreatePaymentResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreatePayment not implemented")
+}
+func (UnimplementedPaymentServiceServer) CreateRefund(context.Context, *CreateRefundRequest) (*CreateRefundResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateRefund not implemented")
+}
+func (UnimplementedPaymentServiceServer) CreateAgreement(context.Context, *CreateAgreementRequest) (*CreateAgreementResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateAgreement not implemented")
+}
+func (UnimplementedPaymentServiceServer) QueryAgreement(context.Context, *QueryAgreementRequest) (*QueryAgreementResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method QueryAgreement not implemented")
+}
+func (UnimplementedPaymentServiceServer) TerminateAgreement(context.Context, *TerminateAgreementRequest) (*TerminateAgreementResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TerminateAgreement not implemented")
+}
+func (UnimplementedPaymentServiceServer) ChargeAgreement(context.Context, *ChargeAgreementRequest) (*ChargeAgreementResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ChargeAgreement not implemented")
+}
+func (UnimplementedPaymentServiceServer) ListAgreementCharges(context.Context, *ListAgreementChargesRequest) (*ListAgreementChargesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAgreementCharges not implemented")
+}
+func (UnimplementedPaymentServiceServer) GetPayment(context.Context, *GetPaymentRequest) (*GetPaymentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPayment not implemented")
 }
 func (UnimplementedPaymentServiceServer) mustEmbedUnimplementedPaymentServiceServer() {}
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue()                        {}
@@ -128,6 +368,132 @@ func _PaymentService_CreatePayment_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PaymentService_CreateRefund_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateRefundRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).CreateRefund(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_CreateRefund_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).CreateRefund(ctx, req.(*CreateRefundRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_CreateAgreement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateAgreementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).CreateAgreement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_CreateAgreement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).CreateAgreement(ctx, req.(*CreateAgreementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_QueryAgreement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryAgreementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).QueryAgreement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_QueryAgreement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).QueryAgreement(ctx, req.(*QueryAgreementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_TerminateAgreement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TerminateAgreementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).TerminateAgreement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_TerminateAgreement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).TerminateAgreement(ctx, req.(*TerminateAgreementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_ChargeAgreement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ChargeAgreementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ChargeAgreement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ChargeAgreement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ChargeAgreement(ctx, req.(*ChargeAgreementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_ListAgreementCharges_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAgreementChargesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ListAgreementCharges(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ListAgreementCharges_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ListAgreementCharges(ctx, req.(*ListAgreementChargesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_GetPayment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPaymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).GetPayment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_GetPayment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).GetPayment(ctx, req.(*GetPaymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PaymentService_ServiceDesc is the grpc.ServiceDesc for PaymentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -138,6 +504,34 @@ var PaymentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreatePayment",
 			Handler:    _PaymentService_CreatePayment_Handler,
+		},
+		{
+			MethodName: "CreateRefund",
+			Handler:    _PaymentService_CreateRefund_Handler,
+		},
+		{
+			MethodName: "CreateAgreement",
+			Handler:    _PaymentService_CreateAgreement_Handler,
+		},
+		{
+			MethodName: "QueryAgreement",
+			Handler:    _PaymentService_QueryAgreement_Handler,
+		},
+		{
+			MethodName: "TerminateAgreement",
+			Handler:    _PaymentService_TerminateAgreement_Handler,
+		},
+		{
+			MethodName: "ChargeAgreement",
+			Handler:    _PaymentService_ChargeAgreement_Handler,
+		},
+		{
+			MethodName: "ListAgreementCharges",
+			Handler:    _PaymentService_ListAgreementCharges_Handler,
+		},
+		{
+			MethodName: "GetPayment",
+			Handler:    _PaymentService_GetPayment_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

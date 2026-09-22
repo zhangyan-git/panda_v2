@@ -218,6 +218,16 @@ func TestValidationErrorsCoversEverySentinel(t *testing.T) {
 				dto.DrinkUpdateInput{ProductName: "拿铁", Price: 100, DeviceID: strptr("abc")})
 			return err
 		}, ErrDrinkDeviceInvalid},
+		// 设备回调取饮品（gRPC GetDeviceDrink）的两个参数。它们只从 gRPC 进来，但登记进
+		// ValidationErrors 是同一件事：不登记，rpc 层按 IsValidationError 判断时就会漏。
+		{"取饮品没给设备", func() error {
+			_, err := NewMasterDataService(nil).GetDeviceDrink(t.Context(), "", "1001")
+			return err
+		}, ErrDrinkLookupDeviceRequired},
+		{"取饮品没给编号", func() error {
+			_, err := NewMasterDataService(nil).GetDeviceDrink(t.Context(), validDeviceID, "  ")
+			return err
+		}, ErrDrinkLookupCodeRequired},
 	}
 
 	for _, tc := range cases {
@@ -241,8 +251,8 @@ func TestValidationErrorsCoversEverySentinel(t *testing.T) {
 func TestValidationErrorsHasNoStaleEntries(t *testing.T) {
 	// 每一条都得能在上面那批用例里找到出处。数量对不上就说明有人加了忘了加用例，
 	// 或者加了用例忘了登记。
-	if len(ValidationErrors) != 20 {
-		t.Fatalf("ValidationErrors has %d entries, want 20 — 新增一条时把用例也补上：%v",
+	if len(ValidationErrors) != 22 {
+		t.Fatalf("ValidationErrors has %d entries, want 22 — 新增一条时把用例也补上：%v",
 			len(ValidationErrors), ValidationErrors)
 	}
 	for i, err := range ValidationErrors {

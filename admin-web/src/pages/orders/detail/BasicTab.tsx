@@ -3,7 +3,8 @@ import type { ProDescriptionsItemProps } from '@ant-design/pro-components';
 import { Tag, Typography } from 'antd';
 import { formatYuan } from '../../../services/money';
 import type { OrderDetail } from '../../../services/order';
-import { FULFILLMENT_STATUS, ORDER_SOURCE, ORDER_STATUS, paymentMethodLabel } from '../../../services/orderLabels';
+import { FULFILLMENT_STATUS, ORDER_SOURCE, ORDER_STATUS } from '../../../services/orderLabels';
+import { paymentMethodLabel } from '../../../services/paymentMethodLabels';
 import CompositionTags from '../CompositionTags';
 
 /**

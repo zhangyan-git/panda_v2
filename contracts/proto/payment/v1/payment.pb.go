@@ -29,8 +29,13 @@ type CreatePaymentRequest struct {
 	UserId string `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	// 应付总额，单位为分。由 order-service 权威给出，本服务不对着订单库复核。
 	Amount int64 `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
-	// 用户选的支付方式（payment_methods.id）。本服务按它的 action 决定怎么起支付。
-	PaymentMethodId string `protobuf:"bytes,4,opt,name=payment_method_id,json=paymentMethodId,proto3" json:"payment_method_id,omitempty"`
+	// 用户选的支付方式 **code**（payment-service 的支付方式目录里的常量，如
+	// `ums_miniapp_wechat` / `coffee_bean`）。本服务按它的 action 决定怎么起支付。
+	//
+	// 它从前是 payment_methods.id（一个 uuid）。支付方式收成代码里的常量之后不再是数据，
+	// 于是对外契约从「一个指向某行的 id」变成「一个稳定的 code」——名字跟着值一起改，
+	// 免得调用方拿到的字段叫 id 而里面装的是 code。
+	PaymentMethod string `protobuf:"bytes,4,opt,name=payment_method,json=paymentMethod,proto3" json:"payment_method,omitempty"`
 	// 渠道收银台与账单上显示的商品描述。
 	Subject string `protobuf:"bytes,5,opt,name=subject,proto3" json:"subject,omitempty"`
 	// 幂等号：同一次提交重试要拿到同一张支付单，不新建。
@@ -46,7 +51,26 @@ type CreatePaymentRequest struct {
 	// ID 而不是支付单号做那把键，重试（用户第一次发起超时、又发起一次，那是两张支付单）
 	// 才不会把同一张订单的豆扣两遍。渠道支付用不到它，但一样必填——一个「只在某种支付方式
 	// 下才必填」的字段，缺失时被砸到的是选了豆支付的用户，而不是调用方的测试。
-	OrderId       string `protobuf:"bytes,9,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	OrderId string `protobuf:"bytes,9,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	// 下单点位，值引用（orders.store_id），可空。
+	//
+	// 分账规则按范围命中（device → store → brand → product → global），而分账任务是在
+	// **发起支付那一刻**就建的——所以这条请求必须在那一刻把范围带过来，不能等支付成功了
+	// 再回头凑。为什么不等：支付成功那条事件的方向是 Payment → Order（支付结果），带不了
+	// 订单维度，而本服务不读订单库。
+	//
+	// 可空是因为订单上本来就可空（纯会员订单没有点位）；空值只会让 store 档的规则命不中。
+	StoreId string `protobuf:"bytes,10,opt,name=store_id,json=storeId,proto3" json:"store_id,omitempty"`
+	// 下单设备，值引用（orders.device_id），可空。设备的规则比门店更具体，先命中它。
+	DeviceId string `protobuf:"bytes,11,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	// 这笔支付的业务分类，取 settlement_rules.biz_type 的词表：
+	// coffee / membership / store_consume / addon_product。**必填**。
+	//
+	// 由 order-service 从订单行推（有 drink 就是 coffee，否则 membership，再否则
+	// addon_product）。为什么必须由调用方给：它是规则命中键的第一段
+	// `(biz_type, scope_type, scope_ref)`，而「这一单是什么类型」是订单域的事实——本服务
+	// 猜不出来，猜错的表现是「安静地命不中规则、整单归平台」，没有报错。
+	BizType       string `protobuf:"bytes,12,opt,name=biz_type,json=bizType,proto3" json:"biz_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -102,9 +126,9 @@ func (x *CreatePaymentRequest) GetAmount() int64 {
 	return 0
 }
 
-func (x *CreatePaymentRequest) GetPaymentMethodId() string {
+func (x *CreatePaymentRequest) GetPaymentMethod() string {
 	if x != nil {
-		return x.PaymentMethodId
+		return x.PaymentMethod
 	}
 	return ""
 }
@@ -144,6 +168,27 @@ func (x *CreatePaymentRequest) GetOrderId() string {
 	return ""
 }
 
+func (x *CreatePaymentRequest) GetStoreId() string {
+	if x != nil {
+		return x.StoreId
+	}
+	return ""
+}
+
+func (x *CreatePaymentRequest) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+func (x *CreatePaymentRequest) GetBizType() string {
+	if x != nil {
+		return x.BizType
+	}
+	return ""
+}
+
 type CreatePaymentResponse struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	PaymentNo string                 `protobuf:"bytes,1,opt,name=payment_no,json=paymentNo,proto3" json:"payment_no,omitempty"`
@@ -156,8 +201,8 @@ type CreatePaymentResponse struct {
 	// failed    = 发起即失败（渠道拒绝、余额不足、参数不全），客户端可以换方式重试
 	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
 	// 这条支付方式的行为：jump_miniapp / native_pay / direct_pay / qrcode / h5 /
-	// account。客户端只认它决定怎么调起支付，不认 code——同形态的新渠道是插一行
-	// 数据，客户端零改动。
+	// account。客户端只认它决定怎么调起支付，不认 code——同形态的新渠道是在
+	// payment-service 的 catalog 里加一行常量（要发一次版），客户端零改动。
 	Action string `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"`
 	// 渠道返回的支付参数，扁平字符串键值：native_pay 的 timeStamp/nonceStr/package/
 	// signType/paySign，jump_miniapp 的 path 与附加 query，qrcode 与 h5 的 URL。
@@ -249,22 +294,1243 @@ func (x *CreatePaymentResponse) GetFailureMessage() string {
 	return ""
 }
 
+// CreateRefundRequest 是发起一次退款要交给支付服务的事实。
+//
+// 比 CreatePaymentRequest 短得多，因为**钱的来路已经记在这边了**：payments 上那张单
+// 带着 order_no 与 user_id，退款单要的那两栏从它取，不需要调用方再声明一遍（声明一遍
+// 就多一个能对不上的地方，而它们没有理由对不上）。
+type CreateRefundRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// order-service 的售后单号，值引用。**幂等键**：payment_refunds.after_sale_no 整表
+	// 唯一，一张售后单最多落一张退款单。
+	AfterSaleNo string `protobuf:"bytes,1,opt,name=after_sale_no,json=afterSaleNo,proto3" json:"after_sale_no,omitempty"`
+	// 要退的那一笔支付，值引用（payments.payment_no）。必须是一张已收妥的单。
+	PaymentNo string `protobuf:"bytes,2,opt,name=payment_no,json=paymentNo,proto3" json:"payment_no,omitempty"`
+	// 退款金额，单位为分，**由 order-service 权威给出**（售后单上算好的 refund_amount）。
+	// 本服务只校验它不超过这张支付单的可退余额，不对着订单库复核。
+	//
+	// 单位与粒度和 amount 一致：这是单笔退款的总额，不是某一条出资行的那一份——钱从哪几条
+	// 出资里出由本服务按 payment_fundings 自己分（用户付的时候可能一半豆一半渠道）。
+	Amount int64 `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	// 原因，进渠道账单也进退款单的 reason 列。可空。
+	Reason string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	// 退的是订单的哪一行（order_lines.id），值引用，**整单退为空**——与售后单上
+	// order_line_id 的那条 CHECK 同一条口径（scope=all 才为空）。
+	OrderLineId   string `protobuf:"bytes,5,opt,name=order_line_id,json=orderLineId,proto3" json:"order_line_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateRefundRequest) Reset() {
+	*x = CreateRefundRequest{}
+	mi := &file_payment_v1_payment_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateRefundRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateRefundRequest) ProtoMessage() {}
+
+func (x *CreateRefundRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateRefundRequest.ProtoReflect.Descriptor instead.
+func (*CreateRefundRequest) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *CreateRefundRequest) GetAfterSaleNo() string {
+	if x != nil {
+		return x.AfterSaleNo
+	}
+	return ""
+}
+
+func (x *CreateRefundRequest) GetPaymentNo() string {
+	if x != nil {
+		return x.PaymentNo
+	}
+	return ""
+}
+
+func (x *CreateRefundRequest) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *CreateRefundRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *CreateRefundRequest) GetOrderLineId() string {
+	if x != nil {
+		return x.OrderLineId
+	}
+	return ""
+}
+
+type CreateRefundResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 本服务的退款单号，调用方把它写进 order_after_sales.refund_no。
+	RefundNo string `protobuf:"bytes,1,opt,name=refund_no,json=refundNo,proto3" json:"refund_no,omitempty"`
+	// pending    = 已建单，还没向渠道发起（上一次调用停在这里，重发会续上）
+	// processing = 已向渠道发起，渠道还没给结论，退款查询 worker 在跟
+	// succeeded  = 钱已退回
+	// failed     = 渠道拒绝或余额不足，failure_code 说明为什么
+	//
+	// **与 CreatePaymentResponse.status 的词表刻意不同**：那边多一个 created（还没发起），
+	// 这边没有那个停留态——退款单建出来就是为了立刻发出去，而「建了还没发」只出现在
+	// 崩溃恢复的窗口里，对调用方没有可执行的含义。
+	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// 渠道的退款单号，值引用；调用方不用它，留着是为了让一次人工排查有个能拿去问渠道的号。
+	ProviderRefundId string `protobuf:"bytes,3,opt,name=provider_refund_id,json=providerRefundId,proto3" json:"provider_refund_id,omitempty"`
+	FailureCode      string `protobuf:"bytes,4,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
+	FailureMessage   string `protobuf:"bytes,5,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *CreateRefundResponse) Reset() {
+	*x = CreateRefundResponse{}
+	mi := &file_payment_v1_payment_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateRefundResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateRefundResponse) ProtoMessage() {}
+
+func (x *CreateRefundResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateRefundResponse.ProtoReflect.Descriptor instead.
+func (*CreateRefundResponse) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CreateRefundResponse) GetRefundNo() string {
+	if x != nil {
+		return x.RefundNo
+	}
+	return ""
+}
+
+func (x *CreateRefundResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *CreateRefundResponse) GetProviderRefundId() string {
+	if x != nil {
+		return x.ProviderRefundId
+	}
+	return ""
+}
+
+func (x *CreateRefundResponse) GetFailureCode() string {
+	if x != nil {
+		return x.FailureCode
+	}
+	return ""
+}
+
+func (x *CreateRefundResponse) GetFailureMessage() string {
+	if x != nil {
+		return x.FailureMessage
+	}
+	return ""
+}
+
+// CreateAgreementRequest 是发起一次委托代扣签约要交给支付服务的事实。
+type CreateAgreementRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 签约的用户，值引用（同 CreatePaymentRequest.user_id）。
+	//
+	// 它是**选填的**：真正的签约要素是 wallet_open_id（渠道在那个渠道里认的是它），而它由
+	// 另一个域维护。今天调用方两个都给，都填才能把事情说清楚。
+	UserId string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// 用户选的支付方式 **code**（同 CreatePaymentRequest.payment_method）。代扣只能走渠道，
+	// 所以它今天必须是目录里那种能签约的方式（`wechat_papay`）——给一个不能签约的方式
+	// （比如银联 H5）会得到一句 FailedPrecondition，而不是一份签不了的协议。
+	PaymentMethod string `protobuf:"bytes,2,opt,name=payment_method,json=paymentMethod,proto3" json:"payment_method,omitempty"`
+	// 业务侧的签约计划标识（如会员套餐代码）。本服务**不解释它的含义**，只落库与它一起带回来
+	// ——「这个计划是干嘛的」是业务方的事实。
+	PlanCode string `protobuf:"bytes,3,opt,name=plan_code,json=planCode,proto3" json:"plan_code,omitempty"`
+	// 渠道侧的签约模板 id（微信的 plan_id，如连续包月那个 214488）。
+	//
+	// 为什么由调用方给而不是本服务配：模板是**按业务计划**配的（哪个套餐每月扣多少），
+	// 而套餐住在业务库里；同一个渠道下不同套餐用不同的模板。渠道后台改模板编号时，
+	// 要改的是业务那一行，不是支付服务的环境变量。
+	ProviderPlanId string `protobuf:"bytes,4,opt,name=provider_plan_id,json=providerPlanId,proto3" json:"provider_plan_id,omitempty"`
+	// 用户在渠道里的身份（微信 openid）。**签约要素**：渠道要拿它认「签的是谁」。
+	WalletOpenId string `protobuf:"bytes,5,opt,name=wallet_open_id,json=walletOpenId,proto3" json:"wallet_open_id,omitempty"`
+	// 幂等号：同一次提交重试要拿回同一份协议与同一组签约参数，不新建。
+	RequestId string `protobuf:"bytes,6,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// 签约用途，落在协议的 subject 上，也是渠道账单上的一句话。
+	Subject string `protobuf:"bytes,7,opt,name=subject,proto3" json:"subject,omitempty"`
+	// 单次扣款上限，单位为分；0 表示签约未约定上限。
+	//
+	// 它是**签约要素**（渠道要求签约时就写明单次上限），不是我们自己的风控：超过它的扣款
+	// 请求渠道会拒。所以它随签约一起冻结在本库里。
+	MaxChargeAmount int64 `protobuf:"varint,8,opt,name=max_charge_amount,json=maxChargeAmount,proto3" json:"max_charge_amount,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *CreateAgreementRequest) Reset() {
+	*x = CreateAgreementRequest{}
+	mi := &file_payment_v1_payment_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateAgreementRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateAgreementRequest) ProtoMessage() {}
+
+func (x *CreateAgreementRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateAgreementRequest.ProtoReflect.Descriptor instead.
+func (*CreateAgreementRequest) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CreateAgreementRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *CreateAgreementRequest) GetPaymentMethod() string {
+	if x != nil {
+		return x.PaymentMethod
+	}
+	return ""
+}
+
+func (x *CreateAgreementRequest) GetPlanCode() string {
+	if x != nil {
+		return x.PlanCode
+	}
+	return ""
+}
+
+func (x *CreateAgreementRequest) GetProviderPlanId() string {
+	if x != nil {
+		return x.ProviderPlanId
+	}
+	return ""
+}
+
+func (x *CreateAgreementRequest) GetWalletOpenId() string {
+	if x != nil {
+		return x.WalletOpenId
+	}
+	return ""
+}
+
+func (x *CreateAgreementRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *CreateAgreementRequest) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *CreateAgreementRequest) GetMaxChargeAmount() int64 {
+	if x != nil {
+		return x.MaxChargeAmount
+	}
+	return 0
+}
+
+// CreateAgreementResponse 是发起签约的结果。
+//
+// **没有 failure_code**：签约这一侧没有「渠道拒了」这个类别。真正的渠道动作（用户在微信里
+// 点同意）发生在客户端跳过去之后，服务端这几步只有「我们自己的问题」（密钥没配、套餐没配），
+// 那些是 error 不是结果；渠道的拒绝会以一条通知回来。
+type CreateAgreementResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 本服务的协议号，调用方把它写进 membership_subscriptions.agreement_id 指的那一行的
+	// agreement_no 上（两条记录靠它互相指认）。**它同时就是签约时交给渠道的 contract_code**
+	// ——这条链路上只有一个协议编号，两份号对不上正是老系统那条「续费回调永远查不到单」
+	// 的病根（见 payment_agreements 的注释）。
+	AgreementNo string `protobuf:"bytes,1,opt,name=agreement_no,json=agreementNo,proto3" json:"agreement_no,omitempty"`
+	// 协议的 uuid，值引用（membership_subscriptions.agreement_id 用这个）。
+	AgreementId string `protobuf:"bytes,2,opt,name=agreement_id,json=agreementId,proto3" json:"agreement_id,omitempty"`
+	// pending   = 已发起、等用户在渠道那边确认
+	// active    = 用户已确认，可以扣款
+	// terminated / expired / suspended 见 payment_agreements 的 CHECK
+	//
+	// 返回给调用方的永远是 pending（确认走通知或 QueryAgreement），但字段留着——调用方
+	// 拿到重放的那份响应时，读到的是**当时**的状态。
+	Status string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	// 这条支付方式的行为（jump_miniapp）。与 CreatePaymentResponse.action 同一个词表，
+	// 客户端只认它决定怎么把用户送到签约页。
+	Action string `protobuf:"bytes,4,opt,name=action,proto3" json:"action,omitempty"`
+	// 给客户端的跳转参数，扁平字符串键值：签约协议的 8 个字段 + sign，外加跳转目标
+	// （mini_program_appid / mini_program_path）。
+	//
+	// **它含签名，是一次性凭据**：进响应、进日志都要当敏感值对待，不进任何流水。
+	PayParams     map[string]string `protobuf:"bytes,5,rep,name=pay_params,json=payParams,proto3" json:"pay_params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateAgreementResponse) Reset() {
+	*x = CreateAgreementResponse{}
+	mi := &file_payment_v1_payment_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateAgreementResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateAgreementResponse) ProtoMessage() {}
+
+func (x *CreateAgreementResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateAgreementResponse.ProtoReflect.Descriptor instead.
+func (*CreateAgreementResponse) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CreateAgreementResponse) GetAgreementNo() string {
+	if x != nil {
+		return x.AgreementNo
+	}
+	return ""
+}
+
+func (x *CreateAgreementResponse) GetAgreementId() string {
+	if x != nil {
+		return x.AgreementId
+	}
+	return ""
+}
+
+func (x *CreateAgreementResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *CreateAgreementResponse) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *CreateAgreementResponse) GetPayParams() map[string]string {
+	if x != nil {
+		return x.PayParams
+	}
+	return nil
+}
+
+// QueryAgreementRequest 是回渠道核一份协议要给的输入。
+//
+// 只要一个协议号：渠道侧的签约模板（plan_id）与 contract_code 是本服务在建协议时冻结在
+// 自己库里的，调用方拿不到也不需要拿——让它传，就多了一个能传错、且传错了才会在渠道那边
+// 查无此约的地方。
+type QueryAgreementRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 本服务的协议号，值引用（CreateAgreementResponse.agreement_no）。
+	AgreementNo string `protobuf:"bytes,1,opt,name=agreement_no,json=agreementNo,proto3" json:"agreement_no,omitempty"`
+	// 这次核查的发起方标识，只进渠道调用流水（payment_provider_calls.request_id）。
+	RequestId     string `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueryAgreementRequest) Reset() {
+	*x = QueryAgreementRequest{}
+	mi := &file_payment_v1_payment_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueryAgreementRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueryAgreementRequest) ProtoMessage() {}
+
+func (x *QueryAgreementRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueryAgreementRequest.ProtoReflect.Descriptor instead.
+func (*QueryAgreementRequest) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *QueryAgreementRequest) GetAgreementNo() string {
+	if x != nil {
+		return x.AgreementNo
+	}
+	return ""
+}
+
+func (x *QueryAgreementRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+type QueryAgreementResponse struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	AgreementNo string                 `protobuf:"bytes,1,opt,name=agreement_no,json=agreementNo,proto3" json:"agreement_no,omitempty"`
+	// 纠正之后的本库状态。调用方按它决定业务动作：active 表示这份授权今天能扣款，
+	// terminated 表示不能了（**它同时包括「查无此约」**，见 provider.AgreementState）。
+	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// 渠道侧的协议号（微信的 contract_id）。**它是发起扣款与解约的凭据**——签约时给渠道的是
+	// contract_code（就是本服务的协议号），而这两件事认的是渠道发回来的 contract_id，两者不是
+	// 一个值。本服务把它冻在协议行上，所以调用方拿不到也不需要拿。
+	ContractNo string `protobuf:"bytes,3,opt,name=contract_no,json=contractNo,proto3" json:"contract_no,omitempty"`
+	// 渠道给的原始状态词（signed / terminated / pending），脱敏、不做翻译。排查时先看它
+	// ——本库状态是**我们**的判断，这一个才是渠道的原话。
+	ProviderState string `protobuf:"bytes,4,opt,name=provider_state,json=providerState,proto3" json:"provider_state,omitempty"`
+	// 这次核查是否改了本库状态。后台那个「同步」按钮拿它决定提示「已同步」还是「无需更正」。
+	Changed       bool `protobuf:"varint,5,opt,name=changed,proto3" json:"changed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueryAgreementResponse) Reset() {
+	*x = QueryAgreementResponse{}
+	mi := &file_payment_v1_payment_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueryAgreementResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueryAgreementResponse) ProtoMessage() {}
+
+func (x *QueryAgreementResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueryAgreementResponse.ProtoReflect.Descriptor instead.
+func (*QueryAgreementResponse) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *QueryAgreementResponse) GetAgreementNo() string {
+	if x != nil {
+		return x.AgreementNo
+	}
+	return ""
+}
+
+func (x *QueryAgreementResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *QueryAgreementResponse) GetContractNo() string {
+	if x != nil {
+		return x.ContractNo
+	}
+	return ""
+}
+
+func (x *QueryAgreementResponse) GetProviderState() string {
+	if x != nil {
+		return x.ProviderState
+	}
+	return ""
+}
+
+func (x *QueryAgreementResponse) GetChanged() bool {
+	if x != nil {
+		return x.Changed
+	}
+	return false
+}
+
+type TerminateAgreementRequest struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	AgreementNo string                 `protobuf:"bytes,1,opt,name=agreement_no,json=agreementNo,proto3" json:"agreement_no,omitempty"`
+	// 解约原因，落库也进渠道的备注。
+	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	RequestId     string `protobuf:"bytes,3,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminateAgreementRequest) Reset() {
+	*x = TerminateAgreementRequest{}
+	mi := &file_payment_v1_payment_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminateAgreementRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminateAgreementRequest) ProtoMessage() {}
+
+func (x *TerminateAgreementRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminateAgreementRequest.ProtoReflect.Descriptor instead.
+func (*TerminateAgreementRequest) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *TerminateAgreementRequest) GetAgreementNo() string {
+	if x != nil {
+		return x.AgreementNo
+	}
+	return ""
+}
+
+func (x *TerminateAgreementRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *TerminateAgreementRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+type TerminateAgreementResponse struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	AgreementNo string                 `protobuf:"bytes,1,opt,name=agreement_no,json=agreementNo,proto3" json:"agreement_no,omitempty"`
+	// 解约之后的协议状态（成功即 terminated）。
+	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// 渠道明确拒绝了解约时非空。**它是业务结论不是 error**：重试没用，要处理的是渠道给的理由。
+	FailureCode    string `protobuf:"bytes,3,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
+	FailureMessage string `protobuf:"bytes,4,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *TerminateAgreementResponse) Reset() {
+	*x = TerminateAgreementResponse{}
+	mi := &file_payment_v1_payment_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminateAgreementResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminateAgreementResponse) ProtoMessage() {}
+
+func (x *TerminateAgreementResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminateAgreementResponse.ProtoReflect.Descriptor instead.
+func (*TerminateAgreementResponse) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *TerminateAgreementResponse) GetAgreementNo() string {
+	if x != nil {
+		return x.AgreementNo
+	}
+	return ""
+}
+
+func (x *TerminateAgreementResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *TerminateAgreementResponse) GetFailureCode() string {
+	if x != nil {
+		return x.FailureCode
+	}
+	return ""
+}
+
+func (x *TerminateAgreementResponse) GetFailureMessage() string {
+	if x != nil {
+		return x.FailureMessage
+	}
+	return ""
+}
+
+type ChargeAgreementRequest struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	AgreementNo string                 `protobuf:"bytes,1,opt,name=agreement_no,json=agreementNo,proto3" json:"agreement_no,omitempty"`
+	// 期次，由业务方从**订阅的到期日**派生（今天给的是 Asia/Shanghai 下的 yyyyMMdd，如
+	// 20261001）。**它是这条链路的幂等键**：一个协议一个期次只扣一次，库上
+	// UNIQUE (agreement_id, biz_period) 兜底。
+	//
+	// 为什么必须从到期日派生、而不是从「这次调用发生在哪天」派生：一期扣成之前到期日不推进，
+	// 所以几次重试算出来的是同一个期次、落在同一行上（重试是 attempt_count 加一）。换成一个
+	// 每天都会变的输入，重试就变成了新的一期。
+	BizPeriod string `protobuf:"bytes,2,opt,name=biz_period,json=bizPeriod,proto3" json:"biz_period,omitempty"`
+	// 扣款金额，单位为分。由业务方权威给出（本服务不对着会员套餐复核）。
+	Amount int64 `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	// 账单上的一句话。
+	Subject       string `protobuf:"bytes,4,opt,name=subject,proto3" json:"subject,omitempty"`
+	RequestId     string `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChargeAgreementRequest) Reset() {
+	*x = ChargeAgreementRequest{}
+	mi := &file_payment_v1_payment_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChargeAgreementRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChargeAgreementRequest) ProtoMessage() {}
+
+func (x *ChargeAgreementRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChargeAgreementRequest.ProtoReflect.Descriptor instead.
+func (*ChargeAgreementRequest) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ChargeAgreementRequest) GetAgreementNo() string {
+	if x != nil {
+		return x.AgreementNo
+	}
+	return ""
+}
+
+func (x *ChargeAgreementRequest) GetBizPeriod() string {
+	if x != nil {
+		return x.BizPeriod
+	}
+	return ""
+}
+
+func (x *ChargeAgreementRequest) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *ChargeAgreementRequest) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *ChargeAgreementRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+type ChargeAgreementResponse struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	AgreementNo string                 `protobuf:"bytes,1,opt,name=agreement_no,json=agreementNo,proto3" json:"agreement_no,omitempty"`
+	BizPeriod   string                 `protobuf:"bytes,2,opt,name=biz_period,json=bizPeriod,proto3" json:"biz_period,omitempty"`
+	// pending   = 这一期还没向渠道发起过（建了行就停在这里）
+	// charging  = **已受理**，等渠道推扣款结果回来。受理不等于扣到钱，所以这不是终局
+	// succeeded = 钱已扣到（由通知推进，不会在这个响应里出现）
+	// failed    = 渠道当场拒了，或结果不明之后被判定为失败（尚未耗尽重试次数时本服务会自己再试）
+	// skipped / cancelled 见 payment_agreement_charges 的 CHECK
+	Status string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	// 渠道侧的这笔扣款的流水号；受理即返回，但**受理不等于扣到钱**（结果是异步推回来的）。
+	ProviderTransactionId string `protobuf:"bytes,4,opt,name=provider_transaction_id,json=providerTransactionId,proto3" json:"provider_transaction_id,omitempty"`
+	FailureCode           string `protobuf:"bytes,5,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
+	FailureMessage        string `protobuf:"bytes,6,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *ChargeAgreementResponse) Reset() {
+	*x = ChargeAgreementResponse{}
+	mi := &file_payment_v1_payment_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChargeAgreementResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChargeAgreementResponse) ProtoMessage() {}
+
+func (x *ChargeAgreementResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChargeAgreementResponse.ProtoReflect.Descriptor instead.
+func (*ChargeAgreementResponse) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ChargeAgreementResponse) GetAgreementNo() string {
+	if x != nil {
+		return x.AgreementNo
+	}
+	return ""
+}
+
+func (x *ChargeAgreementResponse) GetBizPeriod() string {
+	if x != nil {
+		return x.BizPeriod
+	}
+	return ""
+}
+
+func (x *ChargeAgreementResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ChargeAgreementResponse) GetProviderTransactionId() string {
+	if x != nil {
+		return x.ProviderTransactionId
+	}
+	return ""
+}
+
+func (x *ChargeAgreementResponse) GetFailureCode() string {
+	if x != nil {
+		return x.FailureCode
+	}
+	return ""
+}
+
+func (x *ChargeAgreementResponse) GetFailureMessage() string {
+	if x != nil {
+		return x.FailureMessage
+	}
+	return ""
+}
+
+type ListAgreementChargesRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 商户协议号（payment_agreements.agreement_no）。**非空**，为空回 InvalidArgument。
+	//
+	// 用协议号而不是协议 ID：调用方（membership-service）手里那份副本就是协议号
+	// （membership_subscriptions.contract_code），而 ID 是支付库内部的主键。
+	AgreementNo   string `protobuf:"bytes,1,opt,name=agreement_no,json=agreementNo,proto3" json:"agreement_no,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAgreementChargesRequest) Reset() {
+	*x = ListAgreementChargesRequest{}
+	mi := &file_payment_v1_payment_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAgreementChargesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAgreementChargesRequest) ProtoMessage() {}
+
+func (x *ListAgreementChargesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAgreementChargesRequest.ProtoReflect.Descriptor instead.
+func (*ListAgreementChargesRequest) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ListAgreementChargesRequest) GetAgreementNo() string {
+	if x != nil {
+		return x.AgreementNo
+	}
+	return ""
+}
+
+type AgreementCharge struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 期次（业务方派生，见 ChargeAgreementRequest.biz_period）。它是这一期的稳定标识。
+	BizPeriod string `protobuf:"bytes,1,opt,name=biz_period,json=bizPeriod,proto3" json:"biz_period,omitempty"`
+	// 这一期应收的金额（分）。**不是已收金额**——失败的那几期一分钱都没收到。
+	Amount int64 `protobuf:"varint,2,opt,name=amount,proto3" json:"amount,omitempty"`
+	// 这一期的状态：pending / charging / succeeded / failed / skipped / cancelled。
+	// 取值与 payment_agreement_charges 的 CHECK 逐字一致。调用方按它显示中文并决定要不要标红。
+	Status string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	// 已经向渠道发起过几次。读它比读状态更能说明「这一期在反复重试」。
+	AttemptCount int32 `protobuf:"varint,4,opt,name=attempt_count,json=attemptCount,proto3" json:"attempt_count,omitempty"`
+	// 下一次重试的时刻（RFC3339，UTC）。空串表示没有排定的重试（已终局，或还没失败过）。
+	NextRetryAt string `protobuf:"bytes,5,opt,name=next_retry_at,json=nextRetryAt,proto3" json:"next_retry_at,omitempty"`
+	// 渠道侧的流水号，成功那一期就是它；未受理时为空串。
+	ProviderTransactionId string `protobuf:"bytes,6,opt,name=provider_transaction_id,json=providerTransactionId,proto3" json:"provider_transaction_id,omitempty"`
+	// 失败的机器可读原因与给人看的那句话。成功与进行中的期次都是空串。
+	FailureCode    string `protobuf:"bytes,7,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
+	FailureMessage string `protobuf:"bytes,8,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
+	// 这一期**扣成的时刻**（RFC3339，UTC）。没扣成就是空串，不是「发起时刻」。
+	ChargedAt string `protobuf:"bytes,9,opt,name=charged_at,json=chargedAt,proto3" json:"charged_at,omitempty"`
+	// 这一行是什么时候建的（RFC3339，UTC）。**发起扣款是建行，不是扣成**——所以它比
+	// charged_at 早，而在一期反复失败时它是「第一次尝试」的时间，不是最后一次。
+	CreatedAt     string `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgreementCharge) Reset() {
+	*x = AgreementCharge{}
+	mi := &file_payment_v1_payment_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgreementCharge) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgreementCharge) ProtoMessage() {}
+
+func (x *AgreementCharge) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgreementCharge.ProtoReflect.Descriptor instead.
+func (*AgreementCharge) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *AgreementCharge) GetBizPeriod() string {
+	if x != nil {
+		return x.BizPeriod
+	}
+	return ""
+}
+
+func (x *AgreementCharge) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *AgreementCharge) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *AgreementCharge) GetAttemptCount() int32 {
+	if x != nil {
+		return x.AttemptCount
+	}
+	return 0
+}
+
+func (x *AgreementCharge) GetNextRetryAt() string {
+	if x != nil {
+		return x.NextRetryAt
+	}
+	return ""
+}
+
+func (x *AgreementCharge) GetProviderTransactionId() string {
+	if x != nil {
+		return x.ProviderTransactionId
+	}
+	return ""
+}
+
+func (x *AgreementCharge) GetFailureCode() string {
+	if x != nil {
+		return x.FailureCode
+	}
+	return ""
+}
+
+func (x *AgreementCharge) GetFailureMessage() string {
+	if x != nil {
+		return x.FailureMessage
+	}
+	return ""
+}
+
+func (x *AgreementCharge) GetChargedAt() string {
+	if x != nil {
+		return x.ChargedAt
+	}
+	return ""
+}
+
+func (x *AgreementCharge) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+type ListAgreementChargesResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 按 biz_period 升序（最早的期次在前）。这不只是排版问题：期次是 yyyyMMdd，字典序就是
+	// 时间序，而调用方拿它当时间轴渲染。
+	Charges       []*AgreementCharge `protobuf:"bytes,1,rep,name=charges,proto3" json:"charges,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAgreementChargesResponse) Reset() {
+	*x = ListAgreementChargesResponse{}
+	mi := &file_payment_v1_payment_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAgreementChargesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAgreementChargesResponse) ProtoMessage() {}
+
+func (x *ListAgreementChargesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAgreementChargesResponse.ProtoReflect.Descriptor instead.
+func (*ListAgreementChargesResponse) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ListAgreementChargesResponse) GetCharges() []*AgreementCharge {
+	if x != nil {
+		return x.Charges
+	}
+	return nil
+}
+
+type GetPaymentRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 支付单号（payments.payment_no）。**非空**，为空回 InvalidArgument。
+	//
+	// 空串在这里不是「没有这一单」：设备单与会员续费单的订单上 payment_no 就是空的
+	// （那两条路上没有支付单），而调用方拿着空值过来问，说明它把「这条路没有支付单」
+	// 误当成「来查一下」。回 InvalidArgument 而不是 NotFound，让那个 bug 显形。
+	PaymentNo     string `protobuf:"bytes,1,opt,name=payment_no,json=paymentNo,proto3" json:"payment_no,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPaymentRequest) Reset() {
+	*x = GetPaymentRequest{}
+	mi := &file_payment_v1_payment_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPaymentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPaymentRequest) ProtoMessage() {}
+
+func (x *GetPaymentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPaymentRequest.ProtoReflect.Descriptor instead.
+func (*GetPaymentRequest) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *GetPaymentRequest) GetPaymentNo() string {
+	if x != nil {
+		return x.PaymentNo
+	}
+	return ""
+}
+
+type GetPaymentResponse struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	PaymentNo string                 `protobuf:"bytes,1,opt,name=payment_no,json=paymentNo,proto3" json:"payment_no,omitempty"`
+	// 支付单主状态：created / pending / succeeded / failed / closed / expired，
+	// 取值同 payments 的 CHECK（见 payment-service 的 model.PaymentStatus*）。
+	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// 支付单金额（分）。
+	Amount int64 `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	// 支付方式 code（catalog 里的常量），与订单上那一列同一个词表。
+	PaymentMethod string `protobuf:"bytes,4,opt,name=payment_method,json=paymentMethod,proto3" json:"payment_method,omitempty"`
+	// 渠道流水号。**这就是本 RPC 存在的理由**（见 service 的说明）：对账凭据只从这里出。
+	// 未支付成功时为空串。
+	ProviderTransactionId string `protobuf:"bytes,5,opt,name=provider_transaction_id,json=providerTransactionId,proto3" json:"provider_transaction_id,omitempty"`
+	// 支付成功时刻（RFC3339，UTC）。未成功时为空串。
+	PaidAt string `protobuf:"bytes,6,opt,name=paid_at,json=paidAt,proto3" json:"paid_at,omitempty"`
+	// 订单号，值引用。
+	OrderNo       string `protobuf:"bytes,7,opt,name=order_no,json=orderNo,proto3" json:"order_no,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPaymentResponse) Reset() {
+	*x = GetPaymentResponse{}
+	mi := &file_payment_v1_payment_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPaymentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPaymentResponse) ProtoMessage() {}
+
+func (x *GetPaymentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_v1_payment_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPaymentResponse.ProtoReflect.Descriptor instead.
+func (*GetPaymentResponse) Descriptor() ([]byte, []int) {
+	return file_payment_v1_payment_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *GetPaymentResponse) GetPaymentNo() string {
+	if x != nil {
+		return x.PaymentNo
+	}
+	return ""
+}
+
+func (x *GetPaymentResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *GetPaymentResponse) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *GetPaymentResponse) GetPaymentMethod() string {
+	if x != nil {
+		return x.PaymentMethod
+	}
+	return ""
+}
+
+func (x *GetPaymentResponse) GetProviderTransactionId() string {
+	if x != nil {
+		return x.ProviderTransactionId
+	}
+	return ""
+}
+
+func (x *GetPaymentResponse) GetPaidAt() string {
+	if x != nil {
+		return x.PaidAt
+	}
+	return ""
+}
+
+func (x *GetPaymentResponse) GetOrderNo() string {
+	if x != nil {
+		return x.OrderNo
+	}
+	return ""
+}
+
 var File_payment_v1_payment_proto protoreflect.FileDescriptor
 
 const file_payment_v1_payment_proto_rawDesc = "" +
 	"\n" +
-	"\x18payment/v1/payment.proto\x12\x10panda.payment.v1\"\x8f\x03\n" +
+	"\x18payment/v1/payment.proto\x12\x10panda.payment.v1\"\xdd\x03\n" +
 	"\x14CreatePaymentRequest\x12\x19\n" +
 	"\border_no\x18\x01 \x01(\tR\aorderNo\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x16\n" +
-	"\x06amount\x18\x03 \x01(\x03R\x06amount\x12*\n" +
-	"\x11payment_method_id\x18\x04 \x01(\tR\x0fpaymentMethodId\x12\x18\n" +
+	"\x06amount\x18\x03 \x01(\x03R\x06amount\x12%\n" +
+	"\x0epayment_method\x18\x04 \x01(\tR\rpaymentMethod\x12\x18\n" +
 	"\asubject\x18\x05 \x01(\tR\asubject\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x06 \x01(\tR\trequestId\x12$\n" +
 	"\x0ewallet_open_id\x18\a \x01(\tR\fwalletOpenId\x12J\n" +
 	"\x06attach\x18\b \x03(\v22.panda.payment.v1.CreatePaymentRequest.AttachEntryR\x06attach\x12\x19\n" +
-	"\border_id\x18\t \x01(\tR\aorderId\x1a9\n" +
+	"\border_id\x18\t \x01(\tR\aorderId\x12\x19\n" +
+	"\bstore_id\x18\n" +
+	" \x01(\tR\astoreId\x12\x1b\n" +
+	"\tdevice_id\x18\v \x01(\tR\bdeviceId\x12\x19\n" +
+	"\bbiz_type\x18\f \x01(\tR\abizType\x1a9\n" +
 	"\vAttachEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xef\x02\n" +
@@ -280,9 +1546,118 @@ const file_payment_v1_payment_proto_rawDesc = "" +
 	"\x0ffailure_message\x18\a \x01(\tR\x0efailureMessage\x1a<\n" +
 	"\x0ePayParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012r\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xac\x01\n" +
+	"\x13CreateRefundRequest\x12\"\n" +
+	"\rafter_sale_no\x18\x01 \x01(\tR\vafterSaleNo\x12\x1d\n" +
+	"\n" +
+	"payment_no\x18\x02 \x01(\tR\tpaymentNo\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\x03R\x06amount\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\"\n" +
+	"\rorder_line_id\x18\x05 \x01(\tR\vorderLineId\"\xc5\x01\n" +
+	"\x14CreateRefundResponse\x12\x1b\n" +
+	"\trefund_no\x18\x01 \x01(\tR\brefundNo\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12,\n" +
+	"\x12provider_refund_id\x18\x03 \x01(\tR\x10providerRefundId\x12!\n" +
+	"\ffailure_code\x18\x04 \x01(\tR\vfailureCode\x12'\n" +
+	"\x0ffailure_message\x18\x05 \x01(\tR\x0efailureMessage\"\xaa\x02\n" +
+	"\x16CreateAgreementRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12%\n" +
+	"\x0epayment_method\x18\x02 \x01(\tR\rpaymentMethod\x12\x1b\n" +
+	"\tplan_code\x18\x03 \x01(\tR\bplanCode\x12(\n" +
+	"\x10provider_plan_id\x18\x04 \x01(\tR\x0eproviderPlanId\x12$\n" +
+	"\x0ewallet_open_id\x18\x05 \x01(\tR\fwalletOpenId\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x06 \x01(\tR\trequestId\x12\x18\n" +
+	"\asubject\x18\a \x01(\tR\asubject\x12*\n" +
+	"\x11max_charge_amount\x18\b \x01(\x03R\x0fmaxChargeAmount\"\xa6\x02\n" +
+	"\x17CreateAgreementResponse\x12!\n" +
+	"\fagreement_no\x18\x01 \x01(\tR\vagreementNo\x12!\n" +
+	"\fagreement_id\x18\x02 \x01(\tR\vagreementId\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12\x16\n" +
+	"\x06action\x18\x04 \x01(\tR\x06action\x12W\n" +
+	"\n" +
+	"pay_params\x18\x05 \x03(\v28.panda.payment.v1.CreateAgreementResponse.PayParamsEntryR\tpayParams\x1a<\n" +
+	"\x0ePayParamsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"Y\n" +
+	"\x15QueryAgreementRequest\x12!\n" +
+	"\fagreement_no\x18\x01 \x01(\tR\vagreementNo\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x02 \x01(\tR\trequestId\"\xb5\x01\n" +
+	"\x16QueryAgreementResponse\x12!\n" +
+	"\fagreement_no\x18\x01 \x01(\tR\vagreementNo\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1f\n" +
+	"\vcontract_no\x18\x03 \x01(\tR\n" +
+	"contractNo\x12%\n" +
+	"\x0eprovider_state\x18\x04 \x01(\tR\rproviderState\x12\x18\n" +
+	"\achanged\x18\x05 \x01(\bR\achanged\"u\n" +
+	"\x19TerminateAgreementRequest\x12!\n" +
+	"\fagreement_no\x18\x01 \x01(\tR\vagreementNo\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x03 \x01(\tR\trequestId\"\xa3\x01\n" +
+	"\x1aTerminateAgreementResponse\x12!\n" +
+	"\fagreement_no\x18\x01 \x01(\tR\vagreementNo\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12!\n" +
+	"\ffailure_code\x18\x03 \x01(\tR\vfailureCode\x12'\n" +
+	"\x0ffailure_message\x18\x04 \x01(\tR\x0efailureMessage\"\xab\x01\n" +
+	"\x16ChargeAgreementRequest\x12!\n" +
+	"\fagreement_no\x18\x01 \x01(\tR\vagreementNo\x12\x1d\n" +
+	"\n" +
+	"biz_period\x18\x02 \x01(\tR\tbizPeriod\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\x03R\x06amount\x12\x18\n" +
+	"\asubject\x18\x04 \x01(\tR\asubject\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x05 \x01(\tR\trequestId\"\xf7\x01\n" +
+	"\x17ChargeAgreementResponse\x12!\n" +
+	"\fagreement_no\x18\x01 \x01(\tR\vagreementNo\x12\x1d\n" +
+	"\n" +
+	"biz_period\x18\x02 \x01(\tR\tbizPeriod\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x126\n" +
+	"\x17provider_transaction_id\x18\x04 \x01(\tR\x15providerTransactionId\x12!\n" +
+	"\ffailure_code\x18\x05 \x01(\tR\vfailureCode\x12'\n" +
+	"\x0ffailure_message\x18\x06 \x01(\tR\x0efailureMessage\"@\n" +
+	"\x1bListAgreementChargesRequest\x12!\n" +
+	"\fagreement_no\x18\x01 \x01(\tR\vagreementNo\"\xeb\x02\n" +
+	"\x0fAgreementCharge\x12\x1d\n" +
+	"\n" +
+	"biz_period\x18\x01 \x01(\tR\tbizPeriod\x12\x16\n" +
+	"\x06amount\x18\x02 \x01(\x03R\x06amount\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12#\n" +
+	"\rattempt_count\x18\x04 \x01(\x05R\fattemptCount\x12\"\n" +
+	"\rnext_retry_at\x18\x05 \x01(\tR\vnextRetryAt\x126\n" +
+	"\x17provider_transaction_id\x18\x06 \x01(\tR\x15providerTransactionId\x12!\n" +
+	"\ffailure_code\x18\a \x01(\tR\vfailureCode\x12'\n" +
+	"\x0ffailure_message\x18\b \x01(\tR\x0efailureMessage\x12\x1d\n" +
+	"\n" +
+	"charged_at\x18\t \x01(\tR\tchargedAt\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\n" +
+	" \x01(\tR\tcreatedAt\"[\n" +
+	"\x1cListAgreementChargesResponse\x12;\n" +
+	"\acharges\x18\x01 \x03(\v2!.panda.payment.v1.AgreementChargeR\acharges\"2\n" +
+	"\x11GetPaymentRequest\x12\x1d\n" +
+	"\n" +
+	"payment_no\x18\x01 \x01(\tR\tpaymentNo\"\xf6\x01\n" +
+	"\x12GetPaymentResponse\x12\x1d\n" +
+	"\n" +
+	"payment_no\x18\x01 \x01(\tR\tpaymentNo\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\x03R\x06amount\x12%\n" +
+	"\x0epayment_method\x18\x04 \x01(\tR\rpaymentMethod\x126\n" +
+	"\x17provider_transaction_id\x18\x05 \x01(\tR\x15providerTransactionId\x12\x17\n" +
+	"\apaid_at\x18\x06 \x01(\tR\x06paidAt\x12\x19\n" +
+	"\border_no\x18\a \x01(\tR\aorderNo2\xc7\x06\n" +
 	"\x0ePaymentService\x12`\n" +
-	"\rCreatePayment\x12&.panda.payment.v1.CreatePaymentRequest\x1a'.panda.payment.v1.CreatePaymentResponseB:Z8github.com/panda-dev/panda-v2/contracts/proto/payment/v1b\x06proto3"
+	"\rCreatePayment\x12&.panda.payment.v1.CreatePaymentRequest\x1a'.panda.payment.v1.CreatePaymentResponse\x12]\n" +
+	"\fCreateRefund\x12%.panda.payment.v1.CreateRefundRequest\x1a&.panda.payment.v1.CreateRefundResponse\x12f\n" +
+	"\x0fCreateAgreement\x12(.panda.payment.v1.CreateAgreementRequest\x1a).panda.payment.v1.CreateAgreementResponse\x12c\n" +
+	"\x0eQueryAgreement\x12'.panda.payment.v1.QueryAgreementRequest\x1a(.panda.payment.v1.QueryAgreementResponse\x12o\n" +
+	"\x12TerminateAgreement\x12+.panda.payment.v1.TerminateAgreementRequest\x1a,.panda.payment.v1.TerminateAgreementResponse\x12f\n" +
+	"\x0fChargeAgreement\x12(.panda.payment.v1.ChargeAgreementRequest\x1a).panda.payment.v1.ChargeAgreementResponse\x12u\n" +
+	"\x14ListAgreementCharges\x12-.panda.payment.v1.ListAgreementChargesRequest\x1a..panda.payment.v1.ListAgreementChargesResponse\x12W\n" +
+	"\n" +
+	"GetPayment\x12#.panda.payment.v1.GetPaymentRequest\x1a$.panda.payment.v1.GetPaymentResponseB:Z8github.com/panda-dev/panda-v2/contracts/proto/payment/v1b\x06proto3"
 
 var (
 	file_payment_v1_payment_proto_rawDescOnce sync.Once
@@ -296,23 +1671,55 @@ func file_payment_v1_payment_proto_rawDescGZIP() []byte {
 	return file_payment_v1_payment_proto_rawDescData
 }
 
-var file_payment_v1_payment_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_payment_v1_payment_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_payment_v1_payment_proto_goTypes = []any{
-	(*CreatePaymentRequest)(nil),  // 0: panda.payment.v1.CreatePaymentRequest
-	(*CreatePaymentResponse)(nil), // 1: panda.payment.v1.CreatePaymentResponse
-	nil,                           // 2: panda.payment.v1.CreatePaymentRequest.AttachEntry
-	nil,                           // 3: panda.payment.v1.CreatePaymentResponse.PayParamsEntry
+	(*CreatePaymentRequest)(nil),         // 0: panda.payment.v1.CreatePaymentRequest
+	(*CreatePaymentResponse)(nil),        // 1: panda.payment.v1.CreatePaymentResponse
+	(*CreateRefundRequest)(nil),          // 2: panda.payment.v1.CreateRefundRequest
+	(*CreateRefundResponse)(nil),         // 3: panda.payment.v1.CreateRefundResponse
+	(*CreateAgreementRequest)(nil),       // 4: panda.payment.v1.CreateAgreementRequest
+	(*CreateAgreementResponse)(nil),      // 5: panda.payment.v1.CreateAgreementResponse
+	(*QueryAgreementRequest)(nil),        // 6: panda.payment.v1.QueryAgreementRequest
+	(*QueryAgreementResponse)(nil),       // 7: panda.payment.v1.QueryAgreementResponse
+	(*TerminateAgreementRequest)(nil),    // 8: panda.payment.v1.TerminateAgreementRequest
+	(*TerminateAgreementResponse)(nil),   // 9: panda.payment.v1.TerminateAgreementResponse
+	(*ChargeAgreementRequest)(nil),       // 10: panda.payment.v1.ChargeAgreementRequest
+	(*ChargeAgreementResponse)(nil),      // 11: panda.payment.v1.ChargeAgreementResponse
+	(*ListAgreementChargesRequest)(nil),  // 12: panda.payment.v1.ListAgreementChargesRequest
+	(*AgreementCharge)(nil),              // 13: panda.payment.v1.AgreementCharge
+	(*ListAgreementChargesResponse)(nil), // 14: panda.payment.v1.ListAgreementChargesResponse
+	(*GetPaymentRequest)(nil),            // 15: panda.payment.v1.GetPaymentRequest
+	(*GetPaymentResponse)(nil),           // 16: panda.payment.v1.GetPaymentResponse
+	nil,                                  // 17: panda.payment.v1.CreatePaymentRequest.AttachEntry
+	nil,                                  // 18: panda.payment.v1.CreatePaymentResponse.PayParamsEntry
+	nil,                                  // 19: panda.payment.v1.CreateAgreementResponse.PayParamsEntry
 }
 var file_payment_v1_payment_proto_depIdxs = []int32{
-	2, // 0: panda.payment.v1.CreatePaymentRequest.attach:type_name -> panda.payment.v1.CreatePaymentRequest.AttachEntry
-	3, // 1: panda.payment.v1.CreatePaymentResponse.pay_params:type_name -> panda.payment.v1.CreatePaymentResponse.PayParamsEntry
-	0, // 2: panda.payment.v1.PaymentService.CreatePayment:input_type -> panda.payment.v1.CreatePaymentRequest
-	1, // 3: panda.payment.v1.PaymentService.CreatePayment:output_type -> panda.payment.v1.CreatePaymentResponse
-	3, // [3:4] is the sub-list for method output_type
-	2, // [2:3] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	17, // 0: panda.payment.v1.CreatePaymentRequest.attach:type_name -> panda.payment.v1.CreatePaymentRequest.AttachEntry
+	18, // 1: panda.payment.v1.CreatePaymentResponse.pay_params:type_name -> panda.payment.v1.CreatePaymentResponse.PayParamsEntry
+	19, // 2: panda.payment.v1.CreateAgreementResponse.pay_params:type_name -> panda.payment.v1.CreateAgreementResponse.PayParamsEntry
+	13, // 3: panda.payment.v1.ListAgreementChargesResponse.charges:type_name -> panda.payment.v1.AgreementCharge
+	0,  // 4: panda.payment.v1.PaymentService.CreatePayment:input_type -> panda.payment.v1.CreatePaymentRequest
+	2,  // 5: panda.payment.v1.PaymentService.CreateRefund:input_type -> panda.payment.v1.CreateRefundRequest
+	4,  // 6: panda.payment.v1.PaymentService.CreateAgreement:input_type -> panda.payment.v1.CreateAgreementRequest
+	6,  // 7: panda.payment.v1.PaymentService.QueryAgreement:input_type -> panda.payment.v1.QueryAgreementRequest
+	8,  // 8: panda.payment.v1.PaymentService.TerminateAgreement:input_type -> panda.payment.v1.TerminateAgreementRequest
+	10, // 9: panda.payment.v1.PaymentService.ChargeAgreement:input_type -> panda.payment.v1.ChargeAgreementRequest
+	12, // 10: panda.payment.v1.PaymentService.ListAgreementCharges:input_type -> panda.payment.v1.ListAgreementChargesRequest
+	15, // 11: panda.payment.v1.PaymentService.GetPayment:input_type -> panda.payment.v1.GetPaymentRequest
+	1,  // 12: panda.payment.v1.PaymentService.CreatePayment:output_type -> panda.payment.v1.CreatePaymentResponse
+	3,  // 13: panda.payment.v1.PaymentService.CreateRefund:output_type -> panda.payment.v1.CreateRefundResponse
+	5,  // 14: panda.payment.v1.PaymentService.CreateAgreement:output_type -> panda.payment.v1.CreateAgreementResponse
+	7,  // 15: panda.payment.v1.PaymentService.QueryAgreement:output_type -> panda.payment.v1.QueryAgreementResponse
+	9,  // 16: panda.payment.v1.PaymentService.TerminateAgreement:output_type -> panda.payment.v1.TerminateAgreementResponse
+	11, // 17: panda.payment.v1.PaymentService.ChargeAgreement:output_type -> panda.payment.v1.ChargeAgreementResponse
+	14, // 18: panda.payment.v1.PaymentService.ListAgreementCharges:output_type -> panda.payment.v1.ListAgreementChargesResponse
+	16, // 19: panda.payment.v1.PaymentService.GetPayment:output_type -> panda.payment.v1.GetPaymentResponse
+	12, // [12:20] is the sub-list for method output_type
+	4,  // [4:12] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_payment_v1_payment_proto_init() }
@@ -326,7 +1733,7 @@ func file_payment_v1_payment_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_payment_v1_payment_proto_rawDesc), len(file_payment_v1_payment_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

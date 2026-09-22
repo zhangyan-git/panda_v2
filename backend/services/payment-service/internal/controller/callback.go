@@ -38,7 +38,7 @@ func (c *CallbackController) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	channelCode, ok := callbackChannelCode(r.URL.Path)
+	channelCode, ok := channelCodeFromPath(r.URL.Path, CallbackPath)
 	if !ok {
 		// 路径形状不对，连这是哪个渠道都认不出来，也就没有任何适配器能告诉我们该怎么答。
 		// 这一条只能回一个与渠道无关的 404。
@@ -59,6 +59,11 @@ func (c *CallbackController) Callback(w http.ResponseWriter, r *http.Request) {
 		ChannelCode: channelCode,
 		Body:        body,
 		Headers:     r.Header,
+		// 方法与路径一起交下去：有的协议族（hmac_body）把它们签进了待签串，缺了这两个
+		// 就一条都验不过。取 `r.URL.Path` 而不是我们自己拼的地址——渠道签的是它实际
+		// POST 到的那个路径，中间有没有网关得按事实说话。
+		HTTPMethod:  r.Method,
+		RequestPath: r.URL.Path,
 	})
 	if err != nil {
 		// 应答体里一个字都不放，只在日志里带上错误（见 provider.Ack 的注释：把内部原因

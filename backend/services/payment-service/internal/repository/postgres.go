@@ -36,17 +36,6 @@ var (
 	ErrIdempotencyConflict = errors.New("idempotency key request hash conflict")
 	// ErrPaymentNotFound：支付单不存在。
 	ErrPaymentNotFound = errors.New("payment not found")
-	// ErrChannelNotFound：回调路径里的渠道代码在 payment_channels 里没有对应的行。
-	//
-	// 与「渠道停用」严格分开：停用只是不给用户看了，回调照收（见 FindChannelByCode）。
-	// 真正查无此码说明有人在往一个不存在的地址打，或者渠道代码被人改过——那种情况下
-	// 我们连该用哪把密钥验签都不知道，只能拒。
-	ErrChannelNotFound = errors.New("payment channel not found")
-	// ErrPaymentMethodNotFound：选中的支付方式不存在或已停用。
-	ErrPaymentMethodNotFound = errors.New("payment method not found")
-	// ErrPaymentMethodInactive：支付方式存在但已停用。与上面的「不存在」分开：前者是配置
-	// 错误（调用方传错了 id），后者是运营有意关掉的，重试多少次都一样。
-	ErrPaymentMethodInactive = errors.New("payment method is disabled")
 	// ErrPaymentNotPending：支付单已经不在能推进的状态（成功过了、关掉了）。
 	ErrPaymentNotPending = errors.New("payment is not awaiting a result")
 	// ErrPaymentNotificationConflict：渠道回调用的通知号已经落过库。
@@ -75,7 +64,7 @@ const IdempotencyRecoveryWindow = 15 * time.Minute
 // UUID 列一律 ::text：pgx 把 uuid 扫进 string 需要这一步，少了它 Scan 会报类型不匹配。
 // 列顺序与 scanPayment 的扫描顺序严格一一对应，两边必须一起改。
 const paymentColumns = `id::text, payment_no, legacy_id, order_no, user_id::text, amount,
-	funding_type, channel_id::text, payment_method_id::text, status, subject, attach,
+	provider, payment_method, status, subject, attach,
 	provider_transaction_id, failure_code, failure_message, request_id,
 	expires_at, paid_at, closed_at, created_at, updated_at,
 	account_entry_id::text, account_funded_at`
@@ -110,8 +99,8 @@ func newEventID() string { return uuid.NewString() }
 func scanPayment(row scanner) (*model.Payment, error) {
 	payment := &model.Payment{}
 	err := row.Scan(&payment.ID, &payment.PaymentNo, &payment.LegacyID, &payment.OrderNo,
-		&payment.UserID, &payment.Amount, &payment.FundingType, &payment.ChannelID,
-		&payment.PaymentMethodID, &payment.Status, &payment.Subject, &payment.Attach,
+		&payment.UserID, &payment.Amount, &payment.Provider,
+		&payment.PaymentMethod, &payment.Status, &payment.Subject, &payment.Attach,
 		&payment.ProviderTransactionID, &payment.FailureCode, &payment.FailureMessage,
 		&payment.RequestID, &payment.ExpiresAt, &payment.PaidAt, &payment.ClosedAt,
 		&payment.CreatedAt, &payment.UpdatedAt,

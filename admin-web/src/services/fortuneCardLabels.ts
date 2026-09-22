@@ -53,8 +53,13 @@ export function fortuneCardAmountLabel(amount: number): string {
  *
  * 「已解冻」用 default 而不是绿：解冻不是一件好事也不是坏事，它只是「卡又能抽奖了」，
  * 而当初为什么冻、后来为什么解，答案在 reason 那一列。给绿色会让人以为这是一次成功操作。
+ *
+ * 「已追回」用 error 也不是因为它是一次失败，而是因为它比冻结更重：冻结只是把卡锁住，
+ * 追回是**真的从账上扣掉**（钱退回去了，赠品也退了）。这一格是客服区分「这单的卡还在不在」
+ * 的唯一线索，用与解冻同一个颜色会让两件事看起来一样。
  */
 export const FORTUNE_CARD_FREEZE_STATUS: Record<string, EnumMeta> = {
   frozen: { text: '冻结中', color: 'warning' },
   released: { text: '已解冻', color: 'default' },
+  recovered: { text: '已追回（退款成功）', color: 'error' },
 };

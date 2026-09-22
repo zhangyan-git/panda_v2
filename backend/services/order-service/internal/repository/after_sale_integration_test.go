@@ -16,6 +16,7 @@ import (
 
 	"github.com/panda-dev/panda-v2/backend/platform/audit"
 	"github.com/panda-dev/panda-v2/backend/platform/auth"
+	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/dto"
 	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/model"
 )
 
@@ -84,6 +85,10 @@ type afterSaleFixture struct {
 //
 // paid_amount = payable_amount 是支付落单那条路的对账结果（见 SettlePayment），这里直接
 // 按那个结果造：售后算钱读的就是这两列。
+//
+// payment_no 必须给：申请退款那条路**在入口就收窄**（见 ApplyAfterSale 里的
+// ErrOrderHasNoPayment）——没有支付单的订单（设备单）根本走不到退款，而这一整套夹具描述的
+// 是「一张能退的正常订单」。要测那条例外用 clearOrderPaymentNo。
 func afterSaleOrderFixture(t *testing.T, pool *pgxpool.Pool, status string, fortuneCards int) *afterSaleFixture {
 	t.Helper()
 	ctx := context.Background()
@@ -98,9 +103,10 @@ func afterSaleOrderFixture(t *testing.T, pool *pgxpool.Pool, status string, fort
 	}
 	_, err := pool.Exec(ctx, `INSERT INTO orders
 		(id, order_no, user_id, source, status, original_amount, payable_amount, paid_amount,
-		 fortune_cards_expected, fortune_card_snapshot, paid_at)
-		VALUES ($1,$2,$3,'miniapp',$4,$5,$5,$5,$6,$7,NOW())`,
-		fixture.orderID, "INT-"+fixture.orderID, fixture.userID, status, payable, fortuneCards, snapshot)
+		 fortune_cards_expected, fortune_card_snapshot, paid_at, payment_method, payment_no)
+		VALUES ($1,$2,$3,'miniapp',$4,$5,$5,$5,$6,$7,NOW(),'wechat_miniapp',$8)`,
+		fixture.orderID, "INT-"+fixture.orderID, fixture.userID, status, payable, fortuneCards, snapshot,
+		"PAY-"+fixture.orderID)
 	if err != nil {
 		t.Fatalf("insert order: %v", err)
 	}
@@ -298,6 +304,20 @@ func TestPostgresApplyAfterSaleGuards(t *testing.T) {
 		}
 	})
 
+	t.Run("没有支付单的订单不能退", func(t *testing.T) {
+		// 线下刷卡机与取货码那两类设备单：钱在机器上收过了，订单库里没有 payments 行。
+		// 退款这条链**结构上**装不下它们（payment_refunds.payment_id 是 NOT NULL），
+		// 所以在这里就拒——放到审核之后再炸，用户拿到的是一句「已同意退款」而钱退不出去。
+		fixture := afterSaleOrderFixture(t, pool, model.OrderStatusPaid, 0)
+		if _, err := pool.Exec(ctx, `UPDATE orders SET payment_no='' WHERE id=$1`, fixture.orderID); err != nil {
+			t.Fatalf("清 payment_no: %v", err)
+		}
+		_, _, err := repo.ApplyAfterSale(ctx, applyParams(t, fixture, model.AfterSaleScopeAll, ""))
+		if !errors.Is(err, ErrOrderHasNoPayment) {
+			t.Fatalf("err = %v, want ErrOrderHasNoPayment", err)
+		}
+	})
+
 	t.Run("别人的单回不存在", func(t *testing.T) {
 		fixture := afterSaleOrderFixture(t, pool, model.OrderStatusPaid, 0)
 		params := applyParams(t, fixture, model.AfterSaleScopeAll, "")
@@ -374,6 +394,143 @@ func TestPostgresApplyAfterSaleGuards(t *testing.T) {
 		}
 		if _, _, err := repo.ApplyAfterSale(ctx, applyParams(t, fixture, model.AfterSaleScopeDrink, fixture.lineID)); !errors.Is(err, ErrAfterSaleAlreadyRefunded) {
 			t.Fatalf("err = %v, want ErrAfterSaleAlreadyRefunded", err)
+		}
+	})
+}
+
+// TestPostgresFortuneCardFreezeGate 验受理之前那次只读预看的两件事：**要冻哪几笔**（按退款
+// 范围分层）与**什么时候不该做这个判断**。
+//
+// 这一问的分量不在它自己身上，而在它下游：订单域拿 EntryKeys 去问账户域「这几笔还冻得上
+// 吗」，答不上来的申请会被拒。所以键算错（退加购行却给了 base 那张）等于拿着别人的答案
+// 去回答这一单的问题，而两个方向都会错——多要一张会把一条本来能退的单拒掉，少要一张会
+// 把追不回来的卡退出去。
+//
+// 下半段（checkable=false 的三种）同样重要：它们是「这次判断做不了，别拿它去回一句话」。
+// 少了这道闸，一张还没付款的订单来申请退款会收到「福卡已使用」——一句不相干的冤枉话，
+// 而且是在真正的拒绝理由（订单不可退）之前说出来的。
+func TestPostgresFortuneCardFreezeGate(t *testing.T) {
+	pool := afterSaleIntegrationPool(t)
+	repo := NewPostgresRepository(pool, audit.NewRecorder())
+	ctx := context.Background()
+
+	// 一张承诺 3 张的快照：基础 2 张 + 某次加购活动加赠 1 张。夹具默认写的是只有 base 的
+	// 快照，这里换成能拆出两层的，才测得到「按范围分层」。
+	newSplitOrder := func(t *testing.T, status string) *afterSaleFixture {
+		t.Helper()
+		fixture := afterSaleOrderFixture(t, pool, status, 3)
+		if _, err := pool.Exec(ctx, `UPDATE orders SET fortune_card_snapshot = $2 WHERE id = $1`,
+			fixture.orderID, []byte(`{"base":2,"bonus":{"id":"campaign-gate","name":"加赠活动","reward":1}}`)); err != nil {
+			t.Fatalf("改快照: %v", err)
+		}
+		return fixture
+	}
+
+	t.Run("整单退冻两笔、共三张", func(t *testing.T) {
+		fixture := newSplitOrder(t, model.OrderStatusPaid)
+		plan, checkable, err := repo.FortuneCardFreezeGate(ctx, fixture.orderID, fixture.userID, model.AfterSaleScopeAll)
+		if err != nil {
+			t.Fatalf("gate: %v", err)
+		}
+		if !checkable {
+			t.Fatal("一张已付款、有福卡的订单说不该判")
+		}
+		want := []string{baseGrantKey(fixture.orderID), bonusGrantKey(fixture.orderID, "campaign-gate")}
+		if len(plan.EntryKeys) != len(want) {
+			t.Fatalf("entryKeys = %v, want %v", plan.EntryKeys, want)
+		}
+		for i := range want {
+			if plan.EntryKeys[i] != want[i] {
+				t.Fatalf("entryKeys = %v, want %v", plan.EntryKeys, want)
+			}
+		}
+		if plan.Cards != 3 {
+			t.Fatalf("cards = %d, want 3（张数必须与键出自同一次拆分）", plan.Cards)
+		}
+	})
+
+	t.Run("退饮品行只冻基础那张", func(t *testing.T) {
+		fixture := newSplitOrder(t, model.OrderStatusPaid)
+		plan, checkable, err := repo.FortuneCardFreezeGate(ctx, fixture.orderID, fixture.userID, model.AfterSaleScopeDrink)
+		if err != nil || !checkable {
+			t.Fatalf("gate: %v / checkable=%v", err, checkable)
+		}
+		if len(plan.EntryKeys) != 1 || plan.EntryKeys[0] != baseGrantKey(fixture.orderID) {
+			t.Fatalf("entryKeys = %v, want 只有基础那一笔", plan.EntryKeys)
+		}
+		// Cards 与 EntryKeys 同源：退加购行时拿整单的 3 张去比一张卡，会让判据整体偏松。
+		if plan.Cards != 2 {
+			t.Fatalf("cards = %d, want 2", plan.Cards)
+		}
+	})
+
+	t.Run("退加购行只冻加赠那张", func(t *testing.T) {
+		fixture := newSplitOrder(t, model.OrderStatusPaid)
+		plan, checkable, err := repo.FortuneCardFreezeGate(ctx, fixture.orderID, fixture.userID, model.AfterSaleScopeAddon)
+		if err != nil || !checkable {
+			t.Fatalf("gate: %v / checkable=%v", err, checkable)
+		}
+		if len(plan.EntryKeys) != 1 || plan.EntryKeys[0] != bonusGrantKey(fixture.orderID, "campaign-gate") {
+			t.Fatalf("entryKeys = %v, want 只有加赠那一笔", plan.EntryKeys)
+		}
+		if plan.Cards != 1 {
+			t.Fatalf("cards = %d, want 1", plan.Cards)
+		}
+	})
+
+	t.Run("已完成但还没发卡的单仍然要判", func(t *testing.T) {
+		// completed 是发卡事件的那一刻；发卡落库之前先申请退款是支持的（那时账户域答 0/0，
+		// 由订单域判成「还没发」放行）。所以这个状态必须 checkable，不能当成「没什么可冻的」。
+		fixture := newSplitOrder(t, model.OrderStatusCompleted)
+		plan, checkable, err := repo.FortuneCardFreezeGate(ctx, fixture.orderID, fixture.userID, model.AfterSaleScopeAll)
+		if err != nil {
+			t.Fatalf("gate: %v", err)
+		}
+		if !checkable || plan.Cards != 3 {
+			t.Fatalf("checkable=%v cards=%d, want true/3", checkable, plan.Cards)
+		}
+	})
+
+	t.Run("没承诺福卡的单不判", func(t *testing.T) {
+		fixture := afterSaleOrderFixture(t, pool, model.OrderStatusPaid, 0)
+		plan, checkable, err := repo.FortuneCardFreezeGate(ctx, fixture.orderID, fixture.userID, model.AfterSaleScopeAll)
+		if err != nil {
+			t.Fatalf("gate: %v", err)
+		}
+		// checkable 仍为 true：这一单可判，只是判出来是空的。调用方看的是 Cards > 0，
+		// 所以这里不把「没福卡」说成「不该判」——那是两件事，混了会让日志里读不出原因。
+		if !checkable || plan.Cards != 0 || len(plan.EntryKeys) != 0 {
+			t.Fatalf("checkable=%v plan=%+v, want true 且空计划", checkable, plan)
+		}
+	})
+
+	t.Run("别人的单、没付款的单、不存在的单都不判", func(t *testing.T) {
+		paid := afterSaleOrderFixture(t, pool, model.OrderStatusPaid, 2)
+		unpaid := afterSaleOrderFixture(t, pool, model.OrderStatusPendingPayment, 2)
+		cases := []struct {
+			name    string
+			orderID string
+			userID  string
+		}{
+			{"不是本人的", paid.orderID, uuid.NewString()},
+			{"还没付款的", unpaid.orderID, unpaid.userID},
+			{"查不到的单", uuid.NewString(), uuid.NewString()},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				plan, checkable, err := repo.FortuneCardFreezeGate(ctx, tc.orderID, tc.userID, model.AfterSaleScopeAll)
+				if err != nil {
+					// 「不存在」不是错误：这是一次查询，不是一次写入。报错会让调用方
+					// 把「查无此单」翻成 5xx，而它真正的答复在下面的 ApplyAfterSale 里。
+					t.Fatalf("gate 报错了: %v", err)
+				}
+				if checkable {
+					t.Fatal("这三种情形都不该在这里下结论")
+				}
+				if len(plan.EntryKeys) != 0 || plan.Cards != 0 {
+					t.Fatalf("不该判却给了计划: %+v", plan)
+				}
+			})
 		}
 	})
 }
@@ -636,4 +793,425 @@ func TestPostgresListAfterSales(t *testing.T) {
 // 也不会因为多一层包装就漏判。
 func containsJSON(raw json.RawMessage, needle string) bool {
 	return bytes.Contains(raw, []byte(`"`+needle+`"`))
+}
+
+// —— 退款推进（StartRefund / AdvanceRefund，见 after_sale.go 里那两段）——
+
+// approvedAfterSale 走完「申请 → 审核通过」，返回一张 approved 的售后单。
+//
+// 它停在 approved 而不是 refunding，是因为这两条是**仓储层**的两段：审核（事务 A）与
+// 发起退款（事务 B）中间隔着一次调支付域的网络调用，而仓储只管自己那两段。
+func approvedAfterSale(t *testing.T, repo *PostgresRepository,
+	ctx context.Context, fixture *afterSaleFixture, scope, lineID string) *AfterSaleRow {
+	t.Helper()
+	applied, _, err := repo.ApplyAfterSale(ctx, applyParams(t, fixture, scope, lineID))
+	if err != nil {
+		t.Fatalf("申请: %v", err)
+	}
+	reviewed, err := repo.ReviewAfterSale(ctx, ReviewAfterSaleParams{
+		AfterSaleNo: applied.AfterSale.AfterSaleNo,
+		Action:      model.AfterSaleActionApprove,
+		Remark:      "客服已核对",
+		ReviewedBy:  uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatalf("审核: %v", err)
+	}
+	if reviewed.AfterSale.Status != model.AfterSaleStatusApproved {
+		t.Fatalf("审核后的状态 = %s, want approved", reviewed.AfterSale.Status)
+	}
+	return reviewed
+}
+
+func orderStatusOf(t *testing.T, pool *pgxpool.Pool, orderID string) (string, int64) {
+	t.Helper()
+	var status string
+	var refunded int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT status, refunded_amount FROM orders WHERE id=$1`, orderID).Scan(&status, &refunded); err != nil {
+		t.Fatalf("读订单: %v", err)
+	}
+	return status, refunded
+}
+
+// outboxEventsForSale 数一张售后单下某个主题的 outbox 行。
+//
+// 按**售后单号**而不是 trace 数：这张单上一次结论只能有一条这样的事件，重投多发一条在这里
+// 现形，而按 trace 数会把「重投那条没带 trace」的那种多发悄悄放过。
+func outboxEventsForSale(t *testing.T, pool *pgxpool.Pool, eventType, afterSaleNo string) int {
+	t.Helper()
+	var count int
+	// payload 是 bytea（信封整体序列化后的字节），要读字段得先转成文本再当 jsonb 解。
+	if err := pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM message_outbox
+		WHERE event_type=$1 AND (convert_from(payload,'UTF8')::jsonb)->>'afterSaleNo'=$2`,
+		eventType, afterSaleNo).Scan(&count); err != nil {
+		t.Fatalf("读 outbox: %v", err)
+	}
+	return count
+}
+
+// outboxEvents 数一条 trace 下某个主题的 outbox 行。
+//
+// 退款结果这两条事件是**别的域唯一能知道钱退成没退成的信号**（account-service 靠它们决定
+// 追回还是解冻福卡），所以断言不能停在「售后单状态变了」——那件事下游看不见。发没发出去、
+// 发的哪一条，只能从 outbox 里读。
+func outboxEvents(t *testing.T, pool *pgxpool.Pool, traceID, eventType string) int {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM message_outbox
+		WHERE trace_id=$1 AND event_type=$2`, traceID, eventType).Scan(&count); err != nil {
+		t.Fatalf("读 outbox: %v", err)
+	}
+	return count
+}
+
+// outboxPayload 读某条主题的载荷，用来验字段（尤其是金额与时刻）。
+func outboxPayload(t *testing.T, pool *pgxpool.Pool, traceID, eventType string) []byte {
+	t.Helper()
+	var payload []byte
+	if err := pool.QueryRow(context.Background(), `SELECT payload FROM message_outbox
+		WHERE trace_id=$1 AND event_type=$2`, traceID, eventType).Scan(&payload); err != nil {
+		t.Fatalf("读 outbox 载荷: %v", err)
+	}
+	return payload
+}
+
+// TestPostgresStartRefundMovesOrderAndIsIdempotent 是事务 B 的现场：售后单从 approved
+// 走到 refunding、退款单号落下来、订单跟着进退款中，而重复推一次不会写出第二段历史。
+func TestPostgresStartRefundMovesOrderAndIsIdempotent(t *testing.T) {
+	pool := afterSaleIntegrationPool(t)
+	repo := NewPostgresRepository(pool, audit.NewRecorder())
+	fixture := afterSaleOrderFixture(t, pool, model.OrderStatusPaid, 0)
+	ctx, traceID := ctxWithTraceID(t, uuid.NewString())
+
+	approved := approvedAfterSale(t, repo, ctx, fixture, model.AfterSaleScopeAll, "")
+	refundNo := "RF" + uuid.NewString()[:20]
+
+	row, replayed, err := repo.StartRefund(ctx, StartRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo,
+		RefundNo:    refundNo, ActorID: uuid.NewString(), RequestID: traceID,
+	})
+	if err != nil {
+		t.Fatalf("StartRefund: %v", err)
+	}
+	if replayed {
+		t.Fatal("第一次推进不该是重放")
+	}
+	if row.AfterSale.Status != model.AfterSaleStatusRefunding || row.AfterSale.RefundNo != refundNo {
+		t.Fatalf("售后单 = %s / %s, want refunding / %s", row.AfterSale.Status, row.AfterSale.RefundNo, refundNo)
+	}
+	if status, _ := orderStatusOf(t, pool, fixture.orderID); status != model.OrderStatusRefunding {
+		t.Fatalf("订单状态 = %s, want refunding", status)
+	}
+
+	// 重放：同一张售后单、同一个退款单号。它**什么都不写**——多写一条 refunding→refunding
+	// 的流水会让「这张单被推过几次」查不出来。
+	again, replayed, err := repo.StartRefund(ctx, StartRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo, RefundNo: refundNo, ActorID: uuid.NewString(),
+	})
+	if err != nil || !replayed {
+		t.Fatalf("重放 StartRefund: replayed=%v err=%v", replayed, err)
+	}
+	if again.AfterSale.RefundNo != refundNo {
+		t.Fatalf("重放回的退款单号 = %s, want %s", again.AfterSale.RefundNo, refundNo)
+	}
+
+	// 同一个售后单换一个退款单号：这不是重放，是「这张单上记的是另一张退款单」，要人来看。
+	if _, _, err := repo.StartRefund(ctx, StartRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo, RefundNo: "RF-other", ActorID: uuid.NewString(),
+	}); !errors.Is(err, ErrAfterSaleRefundMismatch) {
+		t.Fatalf("换退款单号 = %v, want ErrAfterSaleRefundMismatch", err)
+	}
+}
+
+// TestPostgresStartRefundOnlyFromApproved：待审核与已结束（驳回/撤销/失败）的单都推不动。
+// 前者是绕过审核，后者是同一笔钱的第二张退款单。
+func TestPostgresStartRefundOnlyFromApproved(t *testing.T) {
+	pool := afterSaleIntegrationPool(t)
+	repo := NewPostgresRepository(pool, audit.NewRecorder())
+	ctx := context.Background()
+
+	t.Run("还没审核通过", func(t *testing.T) {
+		fixture := afterSaleOrderFixture(t, pool, model.OrderStatusPaid, 0)
+		applied, _, err := repo.ApplyAfterSale(ctx, applyParams(t, fixture, model.AfterSaleScopeAll, ""))
+		if err != nil {
+			t.Fatalf("申请: %v", err)
+		}
+		_, _, err = repo.StartRefund(ctx, StartRefundParams{
+			AfterSaleNo: applied.AfterSale.AfterSaleNo, RefundNo: "RF1",
+		})
+		if !errors.Is(err, ErrAfterSaleNotApproved) {
+			t.Fatalf("err = %v, want ErrAfterSaleNotApproved", err)
+		}
+		if status, _ := orderStatusOf(t, pool, fixture.orderID); status != model.OrderStatusPaid {
+			t.Fatalf("订单状态被改成了 %s", status)
+		}
+	})
+
+	t.Run("已经驳回", func(t *testing.T) {
+		fixture := afterSaleOrderFixture(t, pool, model.OrderStatusPaid, 0)
+		applied, _, err := repo.ApplyAfterSale(ctx, applyParams(t, fixture, model.AfterSaleScopeAll, ""))
+		if err != nil {
+			t.Fatalf("申请: %v", err)
+		}
+		if _, err := repo.ReviewAfterSale(ctx, ReviewAfterSaleParams{
+			AfterSaleNo: applied.AfterSale.AfterSaleNo, Action: model.AfterSaleActionReject, Remark: "不符合规则",
+			// 审核人不能空：reviewed_by 是 uuid 列，空串会被 PG 当场拒掉（而这条路只有
+			// 后台走得到，身份一定在令牌里——见 controller.review 从 identity 取审核人）。
+			ReviewedBy: uuid.NewString(),
+		}); err != nil {
+			t.Fatalf("驳回: %v", err)
+		}
+		_, _, err = repo.StartRefund(ctx, StartRefundParams{
+			AfterSaleNo: applied.AfterSale.AfterSaleNo, RefundNo: "RF1",
+		})
+		if !errors.Is(err, ErrAfterSaleNotApproved) {
+			t.Fatalf("err = %v, want ErrAfterSaleNotApproved", err)
+		}
+	})
+}
+
+// TestPostgresAdvanceRefundSucceedsOnAWholeOrder：整单退成功 → 售后 refunded（记退款时刻）、
+// 订单 refunded、已退金额累加。事件重投一次不会退两次钱。
+func TestPostgresAdvanceRefundSucceedsOnAWholeOrder(t *testing.T) {
+	pool := afterSaleIntegrationPool(t)
+	repo := NewPostgresRepository(pool, audit.NewRecorder())
+	fixture := afterSaleOrderFixture(t, pool, model.OrderStatusPaid, 0)
+	ctx, traceID := ctxWithTraceID(t, uuid.NewString())
+
+	approved := approvedAfterSale(t, repo, ctx, fixture, model.AfterSaleScopeAll, "")
+	refundNo := "RF" + uuid.NewString()[:20]
+	if _, _, err := repo.StartRefund(ctx, StartRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo, RefundNo: refundNo,
+	}); err != nil {
+		t.Fatalf("StartRefund: %v", err)
+	}
+
+	refundedAt := time.Now().UTC().Truncate(time.Second)
+	// TraceID 就是 service 层从事件里取来再传下来的那个（见 service/refund.go），这里按同
+	// 一条路给：少传它，outbox 行在链路上就断了线。
+	row, replayed, err := repo.AdvanceRefund(ctx, AdvanceRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo, RefundNo: refundNo,
+		Succeeded: true, RefundedAt: refundedAt, RequestID: traceID, TraceID: traceID,
+	})
+	if err != nil {
+		t.Fatalf("AdvanceRefund: %v", err)
+	}
+	if replayed {
+		t.Fatal("第一次落结论不该是重放")
+	}
+	if row.AfterSale.Status != model.AfterSaleStatusRefunded || row.AfterSale.RefundedAt == nil {
+		t.Fatalf("售后单 = %s / refundedAt=%v", row.AfterSale.Status, row.AfterSale.RefundedAt)
+	}
+	status, refunded := orderStatusOf(t, pool, fixture.orderID)
+	if status != model.OrderStatusRefunded {
+		t.Fatalf("订单状态 = %s, want refunded（整单退成功）", status)
+	}
+	if refunded != 3800 {
+		t.Fatalf("已退金额 = %d, want 3800（不累加的话同一笔钱能再退一次）", refunded)
+	}
+
+	// 钱退成了 ⇒ 一条 order.after_sale.refunded 必须发出去。它是 account-service 追回福卡
+	// 的唯一信号：发了它那些卡才被注销，不发就永远是「钱退了、赠品还在」。
+	if got := outboxEventsForSale(t, pool, EventAfterSaleRefunded, approved.AfterSale.AfterSaleNo); got != 1 {
+		t.Fatalf("%s 事件 %d 条，want 1", EventAfterSaleRefunded, got)
+	}
+	// trace 也必须落在那一行上，否则这条消息在链路上找不到上游。
+	if got := outboxEvents(t, pool, traceID, EventAfterSaleRefunded); got != 1 {
+		t.Fatalf("带 trace %s 的 %s 事件 %d 条，want 1", traceID, EventAfterSaleRefunded, got)
+	}
+	// 失败那条**不能**搭车发出去：两个结局做的是两件事（追回 vs 解冻），绑错主题的下游
+	// 会照着一条「退款成功」去解冻。
+	if got := outboxEventsForSale(t, pool, EventAfterSaleRefundFailed, approved.AfterSale.AfterSaleNo); got != 0 {
+		t.Fatalf("成功的退款发了 %d 条 %s", got, EventAfterSaleRefundFailed)
+	}
+
+	var refundPayload dto.AfterSaleRefundEventPayload
+	if err := json.Unmarshal(outboxPayload(t, pool, traceID, EventAfterSaleRefunded), &refundPayload); err != nil {
+		t.Fatalf("退款事件载荷解不开: %v", err)
+	}
+	// 账户域按售后单号找冻结行，按订单号把冲正挂到订单详情那一屏上，两者缺一不可。
+	if refundPayload.AfterSaleNo != approved.AfterSale.AfterSaleNo || refundPayload.OrderNo != row.AfterSale.OrderNo {
+		t.Fatalf("退款事件的单号不对: %+v", refundPayload)
+	}
+	if refundPayload.RefundNo != refundNo || refundPayload.RefundAmount != 3800 {
+		t.Fatalf("退款事件的退款单号/金额不对: %+v", refundPayload)
+	}
+	// 时刻取自渠道（这里是调用方给的 refundedAt），不是发消息那一刻——补投旧事件时账上的
+	// 顺序必须还是那几天。
+	if refundPayload.RefundedAtUnix != refundedAt.Unix() {
+		t.Fatalf("refundedAtUnix = %d, want %d", refundPayload.RefundedAtUnix, refundedAt.Unix())
+	}
+
+	// 重投同一条事件：消息队列保证的是至少一次，重复是常态而不是异常。
+	_, replayed, err = repo.AdvanceRefund(ctx, AdvanceRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo, RefundNo: refundNo, Succeeded: true,
+	})
+	if err != nil || !replayed {
+		t.Fatalf("重投: replayed=%v err=%v", replayed, err)
+	}
+	if _, refunded := orderStatusOf(t, pool, fixture.orderID); refunded != 3800 {
+		t.Fatalf("重投把已退金额加成了 %d", refunded)
+	}
+	// 重投**不再发第二遍**：再发一次会让账户域把同一笔追回走第二趟——今天靠冻结行的状态
+	// 挡住（no-op），但那是下游替发送方兜底，不该当成发送方的正确性。
+	if got := outboxEventsForSale(t, pool, EventAfterSaleRefunded, approved.AfterSale.AfterSaleNo); got != 1 {
+		t.Fatalf("重投后 %s 事件变成了 %d 条", EventAfterSaleRefunded, got)
+	}
+
+	// 换一个退款单号的事件：这张单上记的是另一张退款单，要人来看。
+	if _, _, err := repo.AdvanceRefund(ctx, AdvanceRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo, RefundNo: "RF-other", Succeeded: true,
+	}); !errors.Is(err, ErrAfterSaleRefundMismatch) {
+		t.Fatalf("换退款单号的事件 = %v, want ErrAfterSaleRefundMismatch", err)
+	}
+}
+
+// TestPostgresAdvanceRefundFailureRestoresThePreviousStatus 是「退款失败后订单回到哪」：
+// **回到退款前那个状态**，不是一律回 paid。这一单当初已经取过杯（completed），失败之后
+// 它必须还是 completed——降回 paid 的意思是「还没做完」，与事实正好相反。
+func TestPostgresAdvanceRefundFailureRestoresThePreviousStatus(t *testing.T) {
+	pool := afterSaleIntegrationPool(t)
+	repo := NewPostgresRepository(pool, audit.NewRecorder())
+	fixture := afterSaleOrderFixture(t, pool, model.OrderStatusCompleted, 0)
+	ctx, traceID := ctxWithTraceID(t, uuid.NewString())
+
+	approved := approvedAfterSale(t, repo, ctx, fixture, model.AfterSaleScopeAll, "")
+	refundNo := "RF" + uuid.NewString()[:20]
+	if _, _, err := repo.StartRefund(ctx, StartRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo, RefundNo: refundNo,
+	}); err != nil {
+		t.Fatalf("StartRefund: %v", err)
+	}
+
+	row, replayed, err := repo.AdvanceRefund(ctx, AdvanceRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo, RefundNo: refundNo,
+		Succeeded: false, FailureCode: "ACQ.TRADE_NOT_EXIST", FailureMessage: "原交易不存在",
+		RequestID: traceID, TraceID: traceID,
+	})
+	if err != nil || replayed {
+		t.Fatalf("AdvanceRefund: replayed=%v err=%v", replayed, err)
+	}
+	if row.AfterSale.Status != model.AfterSaleStatusFailed {
+		t.Fatalf("售后单状态 = %s, want failed", row.AfterSale.Status)
+	}
+	if row.AfterSale.FailureCode != "ACQ.TRADE_NOT_EXIST" {
+		t.Fatalf("failureCode = %q, 后台与客服靠它解释「为什么没退成」", row.AfterSale.FailureCode)
+	}
+	if row.AfterSale.FailureMessage != "原交易不存在" {
+		t.Fatalf("failureMessage = %q, want 渠道原文——码给机器认，这句话才是给人读的",
+			row.AfterSale.FailureMessage)
+	}
+	status, refunded := orderStatusOf(t, pool, fixture.orderID)
+	if status != model.OrderStatusCompleted {
+		t.Fatalf("订单状态 = %s, want completed（回到退款前那个状态）", status)
+	}
+	if refunded != 0 {
+		t.Fatalf("没退成却记了已退 %d", refunded)
+	}
+
+	// 钱没退成**也要发事件**，而且必须是失败那一条。它是账户域解冻福卡的唯一信号：不发，
+	// 那些卡就永远冻着；发成成功那条，账户域会把卡真的扣掉——钱没退，赠品先没了。
+	if got := outboxEventsForSale(t, pool, EventAfterSaleRefundFailed, approved.AfterSale.AfterSaleNo); got != 1 {
+		t.Fatalf("%s 事件 %d 条，want 1", EventAfterSaleRefundFailed, got)
+	}
+	if got := outboxEvents(t, pool, traceID, EventAfterSaleRefundFailed); got != 1 {
+		t.Fatalf("带 trace %s 的 %s 事件 %d 条，want 1", traceID, EventAfterSaleRefundFailed, got)
+	}
+	if got := outboxEventsForSale(t, pool, EventAfterSaleRefunded, approved.AfterSale.AfterSaleNo); got != 0 {
+		t.Fatalf("失败的退款发了 %d 条 %s", got, EventAfterSaleRefunded)
+	}
+	var failurePayload dto.AfterSaleRefundEventPayload
+	if err := json.Unmarshal(outboxPayload(t, pool, traceID, EventAfterSaleRefundFailed), &failurePayload); err != nil {
+		t.Fatalf("退款失败事件载荷解不开: %v", err)
+	}
+	// 渠道为什么拒要跟着事件走：后台与客服就是靠这两格解释「这笔钱为什么没退成」。
+	if failurePayload.FailureCode != "ACQ.TRADE_NOT_EXIST" || failurePayload.FailureMessage != "原交易不存在" {
+		t.Fatalf("失败原因没进事件: %+v", failurePayload)
+	}
+	if failurePayload.AfterSaleNo != approved.AfterSale.AfterSaleNo {
+		t.Fatalf("退款失败事件的售后单号 = %q", failurePayload.AfterSaleNo)
+	}
+	// 没退成，就没有退款时刻——调用方给的是零值，unixOrZero 把它压成 0。这里也不能编一个
+	// 出来：一个凭空的时间会让账上的顺序变成「失败发生在刚才」。
+	if failurePayload.RefundedAtUnix != 0 {
+		t.Fatalf("失败的退款带了时刻 %d", failurePayload.RefundedAtUnix)
+	}
+
+	// 失败之后那张单确实**回到了可退的状态**：钱没出去，用户本来就该能再申请一次。
+	if _, _, err := repo.ApplyAfterSale(ctx, applyParams(t, fixture, model.AfterSaleScopeAll, "")); err != nil {
+		t.Fatalf("退款失败后重新申请: %v", err)
+	}
+}
+
+// TestPostgresAdvanceRefundLineScopeKeepsTheOrderAlive：按行退成功**不把整单判死**。
+// 只退了一杯的订单还活着，剩下那行还要履约——标成 refunded 会让它做不下去。
+func TestPostgresAdvanceRefundLineScopeKeepsTheOrderAlive(t *testing.T) {
+	pool := afterSaleIntegrationPool(t)
+	repo := NewPostgresRepository(pool, audit.NewRecorder())
+	fixture := afterSaleOrderFixture(t, pool, model.OrderStatusPaid, 0)
+	ctx, traceID := ctxWithTraceID(t, uuid.NewString())
+
+	approved := approvedAfterSale(t, repo, ctx, fixture, model.AfterSaleScopeDrink, fixture.lineID)
+	refundNo := "RF" + uuid.NewString()[:20]
+	if _, _, err := repo.StartRefund(ctx, StartRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo, RefundNo: refundNo,
+	}); err != nil {
+		t.Fatalf("StartRefund: %v", err)
+	}
+
+	if _, _, err := repo.AdvanceRefund(ctx, AdvanceRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo, RefundNo: refundNo,
+		Succeeded: true, RefundedAt: time.Now().UTC(), RequestID: traceID,
+	}); err != nil {
+		t.Fatalf("AdvanceRefund: %v", err)
+	}
+	status, refunded := orderStatusOf(t, pool, fixture.orderID)
+	if status != model.OrderStatusPaid {
+		t.Fatalf("订单状态 = %s, want paid（只退了一杯，整单还活着）", status)
+	}
+	if refunded != 1900 {
+		t.Fatalf("已退金额 = %d, want 1900（这一行的应付额）", refunded)
+	}
+}
+
+// TestPostgresAdvanceRefundAdoptsAnEventThatBeatTransactionB：审核通过 → 建退款单 → 写
+// refunding 这三步之间挂过一次，而钱已经退成了。
+//
+// 这条事件**不能扔**：钱是真的出去了，扔掉它订单域就永远不知道。补写那一步，让流水上
+// 每一段迁移都是合法的（approved → refunding → refunded），结论照常落。
+func TestPostgresAdvanceRefundAdoptsAnEventThatBeatTransactionB(t *testing.T) {
+	pool := afterSaleIntegrationPool(t)
+	repo := NewPostgresRepository(pool, audit.NewRecorder())
+	fixture := afterSaleOrderFixture(t, pool, model.OrderStatusPaid, 0)
+	ctx, traceID := ctxWithTraceID(t, uuid.NewString())
+
+	approved := approvedAfterSale(t, repo, ctx, fixture, model.AfterSaleScopeAll, "")
+	refundNo := "RF" + uuid.NewString()[:20]
+	// 注意：**没有调 StartRefund**，这就是那个窗口。
+
+	row, replayed, err := repo.AdvanceRefund(ctx, AdvanceRefundParams{
+		AfterSaleNo: approved.AfterSale.AfterSaleNo, RefundNo: refundNo,
+		Succeeded: true, RefundedAt: time.Now().UTC(), RequestID: traceID,
+	})
+	if err != nil || replayed {
+		t.Fatalf("AdvanceRefund: replayed=%v err=%v", replayed, err)
+	}
+	if row.AfterSale.Status != model.AfterSaleStatusRefunded || row.AfterSale.RefundNo != refundNo {
+		t.Fatalf("售后单 = %s / %s", row.AfterSale.Status, row.AfterSale.RefundNo)
+	}
+	if status, refunded := orderStatusOf(t, pool, fixture.orderID); status != model.OrderStatusRefunded || refunded != 3800 {
+		t.Fatalf("订单 = %s / 已退 %d", status, refunded)
+	}
+	// 补写那一步要留下痕迹：两段迁移都要在流水里看得到，否则「这张单怎么从 approved
+	// 直接跳到 refunded 的」事后查不出来。
+	var toRefunding int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM order_state_transitions
+		WHERE aggregate_type='after_sale' AND aggregate_id=$1 AND to_status='refunding'`,
+		approved.AfterSale.ID).Scan(&toRefunding); err != nil {
+		t.Fatalf("读状态流水: %v", err)
+	}
+	if toRefunding != 1 {
+		t.Fatalf("approved→refunding 的流水有 %d 条，want 1", toRefunding)
+	}
 }

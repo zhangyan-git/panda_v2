@@ -110,6 +110,18 @@ func TestStoreScopeDoesNotGrantTheMerchant(t *testing.T) {
 	}
 }
 
+// An empty boundary must reach SQL as '{}' rather than NULL: a predicate that reads
+// NULL as "no filter" would turn "authorized for no store" into "sees every store".
+func TestAuthorizedStoreIDsNeverReturnsNil(t *testing.T) {
+	if got := (StoreScope{}).AuthorizedStoreIDs(); got == nil || len(got) != 0 {
+		t.Fatalf("empty scope = %#v; want a non-nil empty slice", got)
+	}
+	granted := StoreScope{StoreIDs: []string{"store-1"}}
+	if got := granted.AuthorizedStoreIDs(); len(got) != 1 || got[0] != "store-1" {
+		t.Fatalf("granted scope = %#v; want the authorized stores", got)
+	}
+}
+
 func TestScopeSurvivesTheTokenRoundTrip(t *testing.T) {
 	service := scopeService(t)
 	scope := Scope{

@@ -14,28 +14,25 @@ import (
 
 // ErrCampaignEnded：活动已经结束，不能再改回别的状态。
 //
-// ended 是终态：它落下来只有两种原因——窗口走完了，或者运营主动结束了。把它改回 enabled
-// 等于让一个已经开过 N 期的活动重新开期，而它的 start_at / end_at 还在过去，开出来的第一期
-// 一开门就到点。真要重来就新建一个活动——那留下的是两条清清楚楚的记录，而不是一条被反复
-// 改写的。
+// ended 是终态，**由运营主动结束**（活动已经没有时间窗口，没有「窗口走完自动结束」这条路
+// 了）。把它改回 enabled 等于让一个已经开过 N 期的活动重新开期——那一段历史在新开的期次
+// 里读不出来，会让人以为第 12 期是第 1 期。真要重来就新建一个活动，留下的是两条清清楚楚
+// 的记录，而不是一条被反复改写的。
 var ErrCampaignEnded = errors.New("campaign has already ended")
-
-// ErrCampaignWindowOver：活动的窗口已经过了，启用它开不出一期。
-//
-// 它单独成一条而不是让 EnsureLiveRound 静默返回 nil：管理员点「启用」得到的回应必须是
-// 「这活动的时间已经过了」，而不是一个 200 加一个没有期次的活动——那种成功比失败更难查。
-var ErrCampaignWindowOver = errors.New("campaign end_at is in the past")
 
 // ErrCampaignStatusTransition：这次状态变化不被允许。
 var ErrCampaignStatusTransition = errors.New("campaign status transition is not allowed")
 
-// CampaignDetail 是活动详情：活动本身 + 奖池。
+// CampaignDetail 是活动详情：活动本身 + 那个奖品。
 //
-// 奖池单独读一次而不是塞进 CampaignListRow 的一个字段：列表接口**不带**奖池（一页 20 个
-// 活动、每个 5 个奖品，列表就成了奖池查询），把它变成富行的一个字段会诱使列表也去填它。
+// 奖品单独读一次而不是塞进 CampaignListRow 的一个字段：列表接口**不带**它（一页 20 个活动、
+// 每个带一张图，列表响应会白胖一圈），把它变成富行的一个字段会诱使列表也去填它。
+//
+// Prize 可以是 nil：奖池表允许一个活动暂时没有奖品行（老数据、或者哪天有人直接改库）。
+// 详情页照着「还没有奖品」渲染，而不是给一个零值奖品——那会显示成一个名字为空的奖品。
 type CampaignDetail struct {
-	View   *repository.CampaignListRow
-	Prizes []*model.CampaignPrize
+	View  *repository.CampaignListRow
+	Prize *model.CampaignPrize
 }
 
 // CreateCampaign 新建一个活动（含奖池）。
@@ -66,7 +63,7 @@ func (s *LotteryService) CreateCampaign(ctx context.Context, req dto.CampaignReq
 		return nil, err
 	}
 	if campaign.Status == model.CampaignEnabled {
-		if _, err := s.repository.EnsureLiveRound(ctx, campaign.ID, s.now()); err != nil {
+		if _, err := s.repository.EnsureLiveRound(ctx, campaign.ID); err != nil {
 			return nil, err
 		}
 	}
@@ -124,11 +121,6 @@ func (s *LotteryService) SetCampaignStatus(ctx context.Context, id, rawStatus st
 	if err := checkCampaignTransition(existing.Status, status); err != nil {
 		return nil, err
 	}
-	if status == model.CampaignEnabled && !s.now().Before(existing.EndAt) {
-		// 窗口已过还去启用：开不出一期，活动会显示成「启用中、0 期」。与其让管理员看到
-		// 一个说不通的状态，不如在这里说清楚。
-		return nil, ErrCampaignWindowOver
-	}
 
 	// 读-判-写之间那个窗口由 checkCampaignTransition 与这次 UPDATE 之间的**唯一一条**
 	// 数据库往返收窄；真正的兜底是「改状态不碰期次」——即使两个人同时按，改出来的也只有
@@ -137,7 +129,7 @@ func (s *LotteryService) SetCampaignStatus(ctx context.Context, id, rawStatus st
 		return nil, err
 	}
 	if status == model.CampaignEnabled {
-		if _, err := s.repository.EnsureLiveRound(ctx, id, s.now()); err != nil {
+		if _, err := s.repository.EnsureLiveRound(ctx, id); err != nil {
 			return nil, err
 		}
 	}
@@ -194,11 +186,16 @@ func (s *LotteryService) GetCampaign(ctx context.Context, id string) (*CampaignD
 	if err != nil {
 		return nil, err
 	}
+	s.fillCampaignNames(ctx, []*repository.CampaignListRow{view})
 	prizes, err := s.repository.ListPrizes(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return &CampaignDetail{View: view, Prizes: prizes}, nil
+	detail := &CampaignDetail{View: view}
+	if len(prizes) > 0 {
+		detail.Prize = prizes[0]
+	}
+	return detail, nil
 }
 
 // ListCampaigns 分页读活动（不带奖池明细）。
@@ -216,13 +213,19 @@ func (s *LotteryService) ListCampaigns(ctx context.Context, q dto.CampaignQuery)
 			return nil, 0, err
 		}
 	}
-	return s.repository.ListCampaigns(ctx, q)
+	rows, total, err := s.repository.ListCampaigns(ctx, q)
+	if err != nil {
+		return nil, 0, err
+	}
+	s.fillCampaignNames(ctx, rows)
+	return rows, total, nil
 }
 
-// ListPrizes 读一个活动的奖池。
+// ListPrizes 读一个活动的奖品，零个或一个。
 //
-// 独立成一个动作是因为后台的活动详情页要单独刷新它（改完奖池不等整页重读），而奖池在修改
-// 活动时是整体替换的——没有按行读接口。
+// 独立成一个动作是因为它有一条自己的路由（GET /campaigns/{id}/prizes），而奖品在修改活动
+// 时是整份替换的——没有按行改的接口。后台的活动详情已经不再单独调它（详情响应里带上了
+// prize），留着是因为删一条没人调的接口不在这次改动范围里。
 func (s *LotteryService) ListPrizes(ctx context.Context, campaignID string) ([]*model.CampaignPrize, error) {
 	if _, err := uuid.Parse(strings.TrimSpace(campaignID)); err != nil {
 		return nil, ErrCampaignIDInvalid
@@ -267,13 +270,19 @@ func (s *LotteryService) campaignParams(req dto.CampaignRequest, activationID st
 	if req.ParticipantTarget <= 0 {
 		return repository.CampaignParams{}, ErrTargetNotPositive
 	}
-	if req.StartAt.IsZero() || req.EndAt.IsZero() || !req.EndAt.After(req.StartAt) {
-		return repository.CampaignParams{}, ErrCampaignWindowInvalid
+	// 一个奖品，不是一张清单。名字为空就是「没给奖品」——没有单独的「奖池不能为空」错误：
+	// 一个没有奖品的抽奖活动不是「还没配好」，是一个说不通的东西（开期时 winner_count 会是
+	// 0，而那一列有 CHECK (> 0)），所以缺名字这一条同时挡住它。
+	prizeName := strings.TrimSpace(req.Prize.Name)
+	if prizeName == "" {
+		return repository.CampaignParams{}, ErrPrizeNameRequired
 	}
-	if len(req.Prizes) == 0 {
-		// 空的奖池意味着开期时 winner_count 是 0，而那一列有 CHECK (> 0)——一个没有奖品的
-		// 抽奖活动不是「还没配好」，是一个说不通的东西。
-		return repository.CampaignParams{}, ErrPrizesRequired
+	// 封面必填。**这一条才是真的闸门**：后台表单上也拦一道，但那个上传组件在本仓没有传
+	// rules 的先例（类型上接得到，没被跑过）。开通模板建出的奖品是唯一能绕过它的路径，
+	// 那是有意的（见 repository.DefaultPrize）。
+	coverImage := strings.TrimSpace(req.Prize.CoverImage)
+	if coverImage == "" {
+		return repository.CampaignParams{}, ErrPrizeCoverRequired
 	}
 
 	status := model.CampaignDraft
@@ -290,35 +299,14 @@ func (s *LotteryService) campaignParams(req dto.CampaignRequest, activationID st
 		status = parsed
 	}
 
-	prizes := make([]repository.PrizeInput, 0, len(req.Prizes))
-	seenOrder := make(map[int32]struct{}, len(req.Prizes))
-	for _, prize := range req.Prizes {
-		if !model.ValidPrizeKind(prize.PrizeKind) {
-			return repository.CampaignParams{}, ErrPrizeKindInvalid
+	// 带回来的 id 决定服务端是原地改那一行还是插一行新的（见 repository.replacePrize）。
+	// 非 uuid 的 id 在这里就拒掉：它进 SQL 的 uuid 比较会变成一条 22P02，也就是一个 500，
+	// 而这只可能是调用方自己拼错了。
+	prizeID := strings.TrimSpace(req.Prize.ID)
+	if prizeID != "" {
+		if _, err := uuid.Parse(prizeID); err != nil {
+			return repository.CampaignParams{}, ErrPrizeIDInvalid
 		}
-		prizeName := strings.TrimSpace(prize.Name)
-		if prizeName == "" {
-			return repository.CampaignParams{}, ErrPrizeNameRequired
-		}
-		if prize.Quantity <= 0 {
-			return repository.CampaignParams{}, ErrPrizeQuantityInvalid
-		}
-		// sort_order 上有 (campaign_id, sort_order) 唯一索引，重复的值会撞成一条 23505。
-		// 在这里先拦，是因为给前端的报错要说得出「第几行和第几行重了」，而唯一索引只会说
-		// 「有一行重了」。顺带一提：负数 sort_order 也被这一条挡住（前端从 0 起编号）。
-		if _, dup := seenOrder[prize.SortOrder]; dup {
-			return repository.CampaignParams{}, ErrPrizeSortOrderConflict
-		}
-		seenOrder[prize.SortOrder] = struct{}{}
-		prizes = append(prizes, repository.PrizeInput{
-			SortOrder:         prize.SortOrder,
-			PrizeKind:         prize.PrizeKind,
-			Name:              prizeName,
-			CouponTemplateID:  strings.TrimSpace(prize.CouponTemplateID),
-			ImageURL:          strings.TrimSpace(prize.ImageURL),
-			ClaimInstructions: strings.TrimSpace(prize.ClaimInstructions),
-			Quantity:          prize.Quantity,
-		})
 	}
 
 	machineID, err := optionalUUID(req.MachineID, ErrMachineIDInvalid)
@@ -333,11 +321,19 @@ func (s *LotteryService) campaignParams(req dto.CampaignRequest, activationID st
 		Name:              name,
 		Description:       strings.TrimSpace(req.Description),
 		ParticipantTarget: req.ParticipantTarget,
-		StartAt:           req.StartAt,
-		EndAt:             req.EndAt,
 		Status:            status,
-		Prizes:            prizes,
-		Actor:             actor,
+		Prize: repository.PrizeInput{
+			ID:         prizeID,
+			Name:       prizeName,
+			CoverImage: coverImage,
+			// 海报选填：留空时前端回落到原型里那块横幅占位。
+			PosterImage:       strings.TrimSpace(req.Prize.PosterImage),
+			ClaimInstructions: strings.TrimSpace(req.Prize.ClaimInstructions),
+			// 名额恒为 1。**这里是「每期开几个人」唯一的决定处**：接口收不到它，开期时
+			// 它被求和冻结成期次的 winner_count，之后改这里不影响已经开出的期次。
+			Quantity: 1,
+		},
+		Actor: actor,
 	}, nil
 }
 

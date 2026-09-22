@@ -45,6 +45,8 @@ CREATE TABLE orders (
     legacy_id TEXT,
     -- 小程序用户 ID。只存值不留快照：手机号/昵称是身份库的资料，本库复制一份就会
     -- 在用户改资料后变成两份不一样的真相，需要时经 gRPC 现查。
+    -- 设备单（线下刷卡机）没有用户，order/005 去掉了这里的 NOT NULL：那种单的 user_id
+    -- 是 NULL，见那条迁移。
     user_id UUID NOT NULL,
     -- 这里**没有** order_type：一次支付可以只买咖啡、只买会员，也可以两样一起买（老库
     -- 一张 orders 表 + 一个支付单号，组合单的钱只能挂在同一个订单上），一个列表达不了。
@@ -53,7 +55,8 @@ CREATE TABLE orders (
     -- 这种对不上的情况。注意方案 5.4 把「会员订单」写在 membership-service 名下：会员那边
     -- 拥有的是套餐、权益周期与续费，订单事实仍在 order-service 这里。
     --
-    -- 两类下单来源（方案 5.8）：小程序直接下单、咖啡机屏幕选品后扫码下单。
+    -- 下单来源（方案 5.8）：小程序直接下单、咖啡机屏幕选品后扫码下单。第三类「线下刷卡机
+    -- 设备回调」由 order/005 加进来（device），见那条迁移。
     source TEXT NOT NULL CHECK (source IN ('miniapp', 'screen_qr')),
     status TEXT NOT NULL DEFAULT 'pending_payment' CHECK (status IN (
         'pending_payment', 'paid', 'completed', 'cancelled', 'expired', 'refunding', 'refunded'

@@ -33,12 +33,15 @@ type OrderAfterSale struct {
 	RefundAmount int64           `db:"refund_amount"`
 	RefundNo     string          `db:"refund_no"`
 	FailureCode  string          `db:"failure_code"`
-	ReviewedBy   *string         `db:"reviewed_by"`
-	ReviewedAt   *time.Time      `db:"reviewed_at"`
-	ReviewRemark string          `db:"review_remark"`
-	CreatedAt    time.Time       `db:"created_at"`
-	UpdatedAt    time.Time       `db:"updated_at"`
-	RefundedAt   *time.Time      `db:"refunded_at"`
+	// FailureMessage 是渠道回的原文（「原交易不存在」这种）。failure_code 给机器认、
+	// 这一列给人读，后台那一行要解释「为什么没退成」靠的就是它。成功时两者都是空串。
+	FailureMessage string     `db:"failure_message"`
+	ReviewedBy     *string    `db:"reviewed_by"`
+	ReviewedAt     *time.Time `db:"reviewed_at"`
+	ReviewRemark   string     `db:"review_remark"`
+	CreatedAt      time.Time  `db:"created_at"`
+	UpdatedAt      time.Time  `db:"updated_at"`
+	RefundedAt     *time.Time `db:"refunded_at"`
 }
 
 // 退款范围取值，与 order_after_sales.scope 的 CHECK 逐字一致。

@@ -39,6 +39,7 @@ import {
 import { listBrands } from '../../services/brand';
 import { listStores } from '../../services/store';
 import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
+import { requestErrorMessage } from '../../services/requestError';
 
 const STATUS_TAG: Record<MerchantStatus, { color: string; label: string }> = {
   pending: { color: 'gold', label: '待审核' },
@@ -106,9 +107,13 @@ const MerchantsPage: React.FC = () => {
             <Popconfirm
               title="确认审核通过该商户？"
               onConfirm={async () => {
-                await updateMerchantStatus(row.id, 'active');
-                message.success('已审核通过');
-                actionRef.current?.reload();
+                try {
+                  await updateMerchantStatus(row.id, 'active');
+                  message.success('已审核通过');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  message.error(requestErrorMessage(error, '审核失败，请稍后重试'));
+                }
               }}
             >
               <Button type="link" size="small" icon={<CheckCircleOutlined />}>
@@ -120,9 +125,13 @@ const MerchantsPage: React.FC = () => {
             <Popconfirm
               title="暂停后该商户账号将无法登录，确认暂停？"
               onConfirm={async () => {
-                await updateMerchantStatus(row.id, 'suspended');
-                message.success('已暂停');
-                actionRef.current?.reload();
+                try {
+                  await updateMerchantStatus(row.id, 'suspended');
+                  message.success('已暂停');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  message.error(requestErrorMessage(error, '暂停失败，请稍后重试'));
+                }
               }}
             >
               <Button type="link" size="small" danger icon={<PauseCircleOutlined />}>
@@ -134,9 +143,13 @@ const MerchantsPage: React.FC = () => {
             <Popconfirm
               title="确认恢复该商户？"
               onConfirm={async () => {
-                await updateMerchantStatus(row.id, 'active');
-                message.success('已恢复');
-                actionRef.current?.reload();
+                try {
+                  await updateMerchantStatus(row.id, 'active');
+                  message.success('已恢复');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  message.error(requestErrorMessage(error, '恢复失败，请稍后重试'));
+                }
               }}
             >
               <Button type="link" size="small" icon={<PlayCircleOutlined />}>
@@ -165,9 +178,14 @@ const MerchantsPage: React.FC = () => {
             <Popconfirm
               title="确认删除该商户？"
               onConfirm={async () => {
-                await deleteMerchant(row.id);
-                message.success('已删除');
-                actionRef.current?.reload();
+                try {
+                  await deleteMerchant(row.id);
+                  message.success('已删除');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  // 名下还有品牌/门店/账号时后端会拒，理由只有后端知道。
+                  message.error(requestErrorMessage(error, '删除失败，请稍后重试'));
+                }
               }}
             >
               <Button type="link" size="small" danger icon={<DeleteOutlined />}>
@@ -211,26 +229,38 @@ const MerchantsPage: React.FC = () => {
         <Space>
           {row.status === 'active' ? (
             <Popconfirm title="禁用后该账号将无法登录，确认禁用？" onConfirm={async () => {
-              await updateMerchantUserStatus(row.id, 'disabled');
-              message.success('已禁用');
-              accountTableRef.current?.reload();
+              try {
+                await updateMerchantUserStatus(row.id, 'disabled');
+                message.success('已禁用');
+                accountTableRef.current?.reload();
+              } catch (error) {
+                message.error(requestErrorMessage(error, '禁用失败，请稍后重试'));
+              }
             }}>
               <Button type="link" size="small" danger>禁用</Button>
             </Popconfirm>
           ) : (
             <Popconfirm title="确认启用该账号？" onConfirm={async () => {
-              await updateMerchantUserStatus(row.id, 'active');
-              message.success('已启用');
-              accountTableRef.current?.reload();
+              try {
+                await updateMerchantUserStatus(row.id, 'active');
+                message.success('已启用');
+                accountTableRef.current?.reload();
+              } catch (error) {
+                message.error(requestErrorMessage(error, '启用失败，请稍后重试'));
+              }
             }}>
               <Button type="link" size="small">启用</Button>
             </Popconfirm>
           )}
           <Button type="link" size="small" onClick={() => openScope(row)}>范围</Button>
           <Popconfirm title="确认删除该账号？" onConfirm={async () => {
-            await deleteMerchantUser(row.id);
-            message.success('已删除');
-            accountTableRef.current?.reload();
+            try {
+              await deleteMerchantUser(row.id);
+              message.success('已删除');
+              accountTableRef.current?.reload();
+            } catch (error) {
+              message.error(requestErrorMessage(error, '删除失败，请稍后重试'));
+            }
           }}>
             <Button type="link" size="small" danger icon={<DeleteOutlined />} />
           </Popconfirm>
@@ -292,13 +322,18 @@ const MerchantsPage: React.FC = () => {
             : undefined
         }
         onFinish={async (values) => {
-          if (editing) {
-            await updateMerchant(editing.id, values);
-            message.success('已保存');
-          } else {
-            await createMerchant(values);
-            message.success('已创建，状态为待审核');
+          try {
+            if (editing) {
+              await updateMerchant(editing.id, values);
+            } else {
+              await createMerchant(values);
+            }
+          } catch (error) {
+            // 商户名重复一类只有后端判得了；返回 false 让弹窗留着，填过的字段不丢。
+            message.error(requestErrorMessage(error, '保存失败，请稍后重试'));
+            return false;
           }
+          message.success(editing ? '已保存' : '已创建，状态为待审核');
           actionRef.current?.reload();
           return true;
         }}
@@ -367,7 +402,13 @@ const MerchantsPage: React.FC = () => {
         modalProps={{ destroyOnClose: true }}
         onFinish={async (values) => {
           if (!accountTarget) return false;
-          await createMerchantUser(accountTarget.id, values);
+          try {
+            await createMerchantUser(accountTarget.id, values);
+          } catch (error) {
+            // 用户名全局唯一，重名只有后端知道；留着弹窗让人改一个再提交。
+            message.error(requestErrorMessage(error, '账号创建失败，请稍后重试'));
+            return false;
+          }
           message.success('账号已创建');
           accountTableRef.current?.reload();
           return true;
@@ -447,7 +488,13 @@ const MerchantsPage: React.FC = () => {
         initialValues={scopeTarget ? { scopeType: scopeTarget.scopeType, scopeId: scopeTarget.scopeId, isAdmin: scopeTarget.isAdmin } : { scopeType: 'merchant' }}
         onFinish={async (values) => {
           if (!scopeTarget) return false;
-          await updateMerchantUserScope(scopeTarget.id, values);
+          try {
+            await updateMerchantUserScope(scopeTarget.id, values);
+          } catch (error) {
+            // 范围目标与所选层级对不上时后端会拒；留着弹窗让人重选，别静默失败。
+            message.error(requestErrorMessage(error, '范围更新失败，请稍后重试'));
+            return false;
+          }
           message.success('数据范围已更新');
           accountTableRef.current?.reload();
           return true;

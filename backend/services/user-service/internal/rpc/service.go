@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/panda-dev/panda-v2/backend/platform/auth"
+	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/model"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/repository"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/service"
 	userv1 "github.com/panda-dev/panda-v2/contracts/proto/user/v1"
@@ -20,16 +21,21 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// UserServiceServer answers the internal RPCs merchant-service performs against
-// the identity database. GetProfile/UpdateProfile stay unimplemented: no caller
-// exists yet, and the embedded Unimplemented server reports that honestly.
+// UserServiceServer answers the internal RPCs merchant-service and order-service
+// perform against the identity database. GetProfile/UpdateProfile stay
+// unimplemented: no caller exists yet, and the embedded Unimplemented server
+// reports that honestly.
+//
+// 两个仓库分开而不是合成一个「大仓库」：merchant_users 与 users 是两张互不认识
+// 的表，一个入口拿得到它们只是因为它们同库，不是因为它们同域。
 type UserServiceServer struct {
 	userv1.UnimplementedUserServiceServer
-	users repository.MerchantUserRepository
+	users         repository.MerchantUserRepository
+	consumerUsers repository.UserRepository
 }
 
-func NewUserServiceServer(users repository.MerchantUserRepository) *UserServiceServer {
-	return &UserServiceServer{users: users}
+func NewUserServiceServer(users repository.MerchantUserRepository, consumerUsers repository.UserRepository) *UserServiceServer {
+	return &UserServiceServer{users: users, consumerUsers: consumerUsers}
 }
 
 // HasUsers tells merchant-service whether a merchant still owns accounts, which
@@ -64,6 +70,40 @@ func (s *UserServiceServer) ResetAccountScope(ctx context.Context, req *userv1.R
 		return nil, status.Error(codes.Internal, "reset account scope")
 	}
 	return &userv1.ResetAccountScopeResponse{}, nil
+}
+
+// GetWechatIdentity 把用户在某个应用下的 openid 交给内部调用方（今天只有 order-service
+// 发起微信小程序支付这一条路）。
+//
+// 这是**唯一**一条把 openid 交出去的入口，而且是服务间调用：openid 是用户身份，微信 JSAPI
+// 拿它当 payer.openid，谁能拿到它就等于能替这个人发起支付。所以它不接受终端用户的 access
+// token 调用——判据是 auth.RequireService，与 HasUsers 同一条。
+//
+// 「没有绑定」与「问不到」必须分开回（NotFound vs Internal）：前者的正解是换一种支付方式，
+// 后者重发一次可能就好了。调用方（order-service）靠状态码区分这两种结局。
+func (s *UserServiceServer) GetWechatIdentity(ctx context.Context, req *userv1.GetWechatIdentityRequest) (*userv1.GetWechatIdentityResponse, error) {
+	if err := auth.RequireService(ctx); err != nil {
+		return nil, err
+	}
+	if req.GetUserId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	}
+	// 取值面在 model 上收口，不在 SQL 里收：app_type 是 CHECK 约束的取值，传一个
+	// 库里不可能存在的值只会白白查一次空表，而调用方会把它读成「这个人没绑定微信」。
+	if req.GetAppType() != model.WechatAppMiniapp && req.GetAppType() != model.WechatAppOfficialAccount {
+		return nil, status.Error(codes.InvalidArgument, `app_type must be "miniapp" or "official_account"`)
+	}
+	ident, err := s.consumerUsers.FindWechatIdentityByUser(ctx, req.GetUserId(), req.GetAppType())
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, status.Error(codes.NotFound, "wechat identity not found")
+	}
+	if err != nil {
+		return nil, status.Error(codes.Internal, "query wechat identity")
+	}
+	return &userv1.GetWechatIdentityResponse{
+		Openid:  ident.OpenID,
+		Unionid: ident.UnionID,
+	}, nil
 }
 
 // AdminAccessServiceServer answers live authorization queries about the caller.

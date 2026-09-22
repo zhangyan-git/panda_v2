@@ -1,7 +1,9 @@
 package repository
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/panda-dev/panda-v2/backend/platform/audit"
+	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/dto"
 	"github.com/panda-dev/panda-v2/backend/services/order-service/internal/model"
 )
 
@@ -58,6 +61,118 @@ func newSettlePaymentFixture(t *testing.T, pool *pgxpool.Pool) *settlePaymentFix
 		_, _ = pool.Exec(ctx, `DELETE FROM orders WHERE id=$1`, fixture.orderID)
 	})
 	return fixture
+}
+
+// settleMembershipSnapshot 是会员行上那份套餐快照。内容照着 membership-service 的
+// dto.OrderMembershipSnapshot 写——字段名对不上那边会整条进死信，所以这里刻意写全，
+// 少一个字段的改动在这条用例上会立刻显形。
+const settleMembershipSnapshot = `{"planId":"7f0f2c8e-6a1a-4d0e-9b8f-1f2a3b4c5d6e",
+	"planCode":"MONTHLY","planName":"连续包月会员","priceCents":990,"period":"month","periodCount":1,
+	"autoRenew":true,"memberPriceMode":"coupon","memberPriceCouponTemplateId":"TPL-1",
+	"memberPriceCouponsPerPeriod":2}`
+
+// addMembershipLine 往这张订单上补一行会员行。
+//
+// 不改 newSettlePaymentFixture 的默认形状：那条路（一单只有饮品行）是**绝大多数订单**，
+// 而「没有会员段」正是下面那条用例要盯的另一种结果。
+func addMembershipLine(t *testing.T, pool *pgxpool.Pool, fixture *settlePaymentFixture) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `INSERT INTO order_lines
+		(id, order_id, line_no, line_type, item_code, item_name, quantity,
+		 original_unit_price, unit_price, payable_amount, membership_plan_snapshot)
+		VALUES ($1,$2,2,$3,'MONTHLY','连续包月会员',1,990,990,990,$4::jsonb)`,
+		uuid.NewString(), fixture.orderID, model.LineTypeMembership, settleMembershipSnapshot)
+	if err != nil {
+		t.Fatalf("insert membership line: %v", err)
+	}
+}
+
+// orderPaidMembership 读回这一单 order.paid 事件里的 membership 段，没有就返回 nil。
+func orderPaidMembership(t *testing.T, pool *pgxpool.Pool, traceID string) json.RawMessage {
+	t.Helper()
+	var payload []byte
+	if err := pool.QueryRow(context.Background(), `SELECT payload FROM message_outbox
+		WHERE trace_id=$1 AND event_type=$2`, traceID, EventOrderPaid).Scan(&payload); err != nil {
+		t.Fatalf("读 order.paid 载荷: %v", err)
+	}
+	var event map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &event); err != nil {
+		t.Fatalf("order.paid 载荷解不开: %v", err)
+	}
+	return event["membership"]
+}
+
+// TestPostgresOrderPaidCarriesTheMembershipSnapshot 守住下单买会员这条链的下半截。
+//
+// 会员域开通会员、发会员价券，靠的全是 order.paid 里的这一段：它不在，钱收了而会员永远
+// 开不出来——而且**我们这边一切正常**，没有报错、没有重试、没有指标，只有用户回头来问
+// 「我买的会员呢」。所以这一段必须有用例盯着，而不是靠读一遍代码。
+//
+// 同时钉住两件事：写上去了，以及**是原样搬过去的**。事件里若重新拼一次快照（而不是搬
+// order_lines 上那一份），套餐改了价或改了时长就会让用户拿到与下单时不一致的会员——
+// 快照存在订单行上的全部意义就是不让这件事发生。
+func TestPostgresOrderPaidCarriesTheMembershipSnapshot(t *testing.T) {
+	pool := afterSaleIntegrationPool(t)
+	fixture := newSettlePaymentFixture(t, pool)
+	addMembershipLine(t, pool, fixture)
+	repo := NewPostgresRepository(pool, audit.NewRecorder())
+	ctx, traceID := ctxWithTraceID(t, fixture.userID)
+
+	if _, _, err := repo.SettlePayment(ctx, SettlePaymentParams{
+		OrderNo: fixture.orderNo, PaymentNo: "PAY-member", Amount: settlePayable,
+		PaymentMethod: "ums_h5_wechat", Outcome: "payment.succeeded",
+		Fundings:  []FundingLine{{LineType: "ums_h5_wechat", Amount: settlePayable, PaymentNo: "PAY-member"}},
+		RequestID: uuid.NewString(), TraceID: traceID,
+	}); err != nil {
+		t.Fatalf("落单: %v", err)
+	}
+
+	raw := orderPaidMembership(t, pool, traceID)
+	if len(raw) == 0 {
+		t.Fatal("order.paid 里没有 membership 段：会员域收不到套餐，这一单永远不会开通会员")
+	}
+	var got dto.MembershipPlanSnapshot
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("membership 段解不开: %v", err)
+	}
+	var want dto.MembershipPlanSnapshot
+	if err := json.Unmarshal([]byte(settleMembershipSnapshot), &want); err != nil {
+		t.Fatalf("夹具快照解不开: %v", err)
+	}
+	if got != want {
+		t.Fatalf("membership 段与订单行上的快照不一致:\n got %+v\nwant %+v", got, want)
+	}
+	// 少了这几个字段会员域就开不了会员、发不了券，所以单独再说一次——struct 比较已经覆盖，
+	// 但失败时要让人一眼看出是哪一类字段丢了。
+	if got.PlanID == "" || got.MemberPriceCouponTemplateID == "" || got.MemberPriceCouponsPerPeriod == 0 {
+		t.Fatalf("membership 段缺了开通所需的字段: %+v", got)
+	}
+}
+
+// TestPostgresOrderPaidWithoutMembershipHasNoSegment 是上一条的另一半，而且这一半更重要。
+//
+// 没有会员行时**不能**出现空壳的 membership 段：会员域开着 DisallowUnknownFields 且把
+// 空 planId 当坏消息，{} 发出去会让一单普通咖啡订单的事件进死信——用户付了钱，履约停摆。
+// 「没有」的正确表达是这一段根本不存在。
+func TestPostgresOrderPaidWithoutMembershipHasNoSegment(t *testing.T) {
+	pool := afterSaleIntegrationPool(t)
+	fixture := newSettlePaymentFixture(t, pool)
+	repo := NewPostgresRepository(pool, audit.NewRecorder())
+	ctx, traceID := ctxWithTraceID(t, fixture.userID)
+
+	if _, _, err := repo.SettlePayment(ctx, SettlePaymentParams{
+		OrderNo: fixture.orderNo, PaymentNo: "PAY-drink", Amount: settlePayable,
+		PaymentMethod: "ums_h5_wechat", Outcome: "payment.succeeded",
+		Fundings:  []FundingLine{{LineType: "ums_h5_wechat", Amount: settlePayable, PaymentNo: "PAY-drink"}},
+		RequestID: uuid.NewString(), TraceID: traceID,
+	}); err != nil {
+		t.Fatalf("落单: %v", err)
+	}
+
+	raw := orderPaidMembership(t, pool, traceID)
+	if len(raw) > 0 && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		t.Fatalf("没有会员行的订单不该带 membership 段，got %s", raw)
+	}
 }
 
 // settlePaymentLines 读回这张订单上的出资流水行号，按行号排好。
@@ -110,7 +225,7 @@ func TestPostgresSettlePaymentAfterAFailedAttemptKeepsGoing(t *testing.T) {
 
 	failed, _, err := repo.SettlePayment(ctx, SettlePaymentParams{
 		OrderNo: fixture.orderNo, PaymentNo: "PAY-failed-1", Amount: settlePayable,
-		PaymentMethod: model.FundingWechat, Outcome: "payment.failed",
+		PaymentMethod: "ums_h5_wechat", Outcome: "payment.failed",
 		FailureCode: "USER_CANCEL", FailureMessage: "用户取消支付",
 		RequestID: uuid.NewString(), TraceID: uuid.NewString(),
 	})
@@ -124,8 +239,8 @@ func TestPostgresSettlePaymentAfterAFailedAttemptKeepsGoing(t *testing.T) {
 	// 换一种方式再付。修复前这一步会撞 order_payment_lines 的唯一索引。
 	paid, applied, err := repo.SettlePayment(ctx, SettlePaymentParams{
 		OrderNo: fixture.orderNo, PaymentNo: "PAY-success-1", Amount: settlePayable,
-		PaymentMethod: model.FundingCoffeeBean, Outcome: "payment.succeeded",
-		Fundings:  []FundingLine{{LineType: model.FundingCoffeeBean, Amount: settlePayable, PaymentNo: "PAY-success-1"}},
+		PaymentMethod: "coffee_bean", Outcome: "payment.succeeded",
+		Fundings:  []FundingLine{{LineType: "coffee_bean", Amount: settlePayable, PaymentNo: "PAY-success-1"}},
 		RequestID: uuid.NewString(), TraceID: uuid.NewString(),
 	})
 	if err != nil {
@@ -160,7 +275,7 @@ func TestPostgresSettlePaymentNumbersFundingsAfterExistingLines(t *testing.T) {
 
 	if _, _, err := repo.SettlePayment(ctx, SettlePaymentParams{
 		OrderNo: fixture.orderNo, PaymentNo: "PAY-failed-1", Amount: settlePayable,
-		PaymentMethod: model.FundingWechat, Outcome: "payment.failed",
+		PaymentMethod: "ums_h5_wechat", Outcome: "payment.failed",
 		FailureCode: "CHANNEL_ERROR", FailureMessage: "渠道报错",
 		RequestID: uuid.NewString(), TraceID: uuid.NewString(),
 	}); err != nil {
@@ -169,12 +284,12 @@ func TestPostgresSettlePaymentNumbersFundingsAfterExistingLines(t *testing.T) {
 
 	// 一笔豆 + 一笔消费金，合起来正好是应付额。
 	fundings := []FundingLine{
-		{LineType: model.FundingCoffeeBean, Amount: 2000, PaymentNo: "PAY-bean"},
-		{LineType: model.FundingWallet, Amount: settlePayable - 2000, PaymentNo: "PAY-wallet"},
+		{LineType: "coffee_bean", Amount: 2000, PaymentNo: "PAY-bean"},
+		{LineType: "ums_h5_upqr", Amount: settlePayable - 2000, PaymentNo: "PAY-wallet"},
 	}
 	if _, _, err := repo.SettlePayment(ctx, SettlePaymentParams{
 		OrderNo: fixture.orderNo, PaymentNo: "PAY-mixed", Amount: settlePayable,
-		PaymentMethod: model.FundingCoffeeBean, Outcome: "payment.succeeded",
+		PaymentMethod: "coffee_bean", Outcome: "payment.succeeded",
 		Fundings: fundings, RequestID: uuid.NewString(), TraceID: uuid.NewString(),
 	}); err != nil {
 		t.Fatalf("混合支付落单: %v", err)
@@ -188,5 +303,78 @@ func TestPostgresSettlePaymentNumbersFundingsAfterExistingLines(t *testing.T) {
 		if lines[i].lineNo != want {
 			t.Fatalf("第 %d 行行号应为 %d，got %+v", i, want, lines)
 		}
+	}
+}
+
+// TestPostgresSettlePaymentStoresOneMethodValue 钉住「一个值写两处」。
+//
+// orders.payment_method（后台订单列表那一列）与 order_payment_lines.line_type 存的是**同一个
+// 值**：用户实际选的那种支付方式，catalog 的 code（如 ums_h5_alipay）。从前这是两套词表——
+// 订单表存 code，出资行存「出资渠道」，于是支付宝那条路的 line_type 只能是 other，后台把一笔
+// 支付宝单显示成「其他」。那套词表已经退场（见 order/008），两边同值这条不变量值得有用例盯着：
+// 它一旦重新分岔，就又要有一种支付方式找不到档位。
+//
+// 用例刻意**不带 fundings**：那正是订单侧自己补一行的那条路，也就是唯一会把 PaymentMethod
+// 直接当 line_type 插进去的地方。
+func TestPostgresSettlePaymentStoresOneMethodValue(t *testing.T) {
+	pool := afterSaleIntegrationPool(t)
+	fixture := newSettlePaymentFixture(t, pool)
+	repo := NewPostgresRepository(pool, audit.NewRecorder())
+	ctx, _ := ctxWithTraceID(t, fixture.userID)
+
+	if _, _, err := repo.SettlePayment(ctx, SettlePaymentParams{
+		OrderNo: fixture.orderNo, PaymentNo: "PAY-alipay", Amount: settlePayable,
+		PaymentMethod: "ums_h5_alipay",
+		Outcome:       "payment.succeeded",
+		RequestID:     uuid.NewString(), TraceID: uuid.NewString(),
+	}); err != nil {
+		t.Fatalf("落单: %v", err)
+	}
+
+	var stored string
+	if err := pool.QueryRow(ctx, `SELECT payment_method FROM orders WHERE id=$1`, fixture.orderID).Scan(&stored); err != nil {
+		t.Fatalf("读订单: %v", err)
+	}
+	if stored != "ums_h5_alipay" {
+		t.Errorf("orders.payment_method = %q，期望 ums_h5_alipay（后台列表展示的就是这一列）", stored)
+	}
+
+	var lineType string
+	if err := pool.QueryRow(ctx,
+		`SELECT line_type FROM order_payment_lines WHERE order_id=$1 ORDER BY line_no LIMIT 1`,
+		fixture.orderID).Scan(&lineType); err != nil {
+		t.Fatalf("读出资流水: %v", err)
+	}
+	if lineType != stored {
+		t.Errorf("line_type = %q，orders.payment_method = %q，两者应当是同一个值", lineType, stored)
+	}
+}
+
+// TestPostgresSettlePaymentWithoutAMethodIsRejected 钉住「事件没带支付方式」那一格。
+//
+// 从前这里会回落成 `other`（那套词表的兜底值）。今天 `other` 不再是合法值，而更要紧的是那句
+// 话本身：凭空写一个值等于替用户编一句「这笔钱从哪出」。所以这一格为空时整条落单报错——
+// 消息进死信由人来看，而不是让订单带着一笔编造的出资记录变成 paid。
+//
+// 这条路径本该走不到：payments.payment_method 是 NOT NULL。
+func TestPostgresSettlePaymentWithoutAMethodIsRejected(t *testing.T) {
+	pool := afterSaleIntegrationPool(t)
+	fixture := newSettlePaymentFixture(t, pool)
+	repo := NewPostgresRepository(pool, audit.NewRecorder())
+	ctx, _ := ctxWithTraceID(t, fixture.userID)
+
+	if _, _, err := repo.SettlePayment(ctx, SettlePaymentParams{
+		OrderNo: fixture.orderNo, PaymentNo: "PAY-nomethod", Amount: settlePayable,
+		Outcome: "payment.succeeded", RequestID: uuid.NewString(), TraceID: uuid.NewString(),
+	}); err == nil {
+		t.Fatal("事件没带支付方式却落单成功了，期望报错")
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM orders WHERE id=$1`, fixture.orderID).Scan(&status); err != nil {
+		t.Fatalf("读订单: %v", err)
+	}
+	if status != "pending_payment" {
+		t.Errorf("订单状态 = %q，期望仍是 pending_payment（整条事务应当回滚）", status)
 	}
 }

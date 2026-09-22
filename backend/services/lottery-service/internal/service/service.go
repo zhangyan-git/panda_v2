@@ -10,14 +10,14 @@
 //
 // # 这条业务线的形状
 //
-// 订单完成 → account-service 发福卡 → 用户拿福卡参与某一期 → 期次达标或到点 → 开奖 →
+// 订单完成 → account-service 发福卡 → 用户拿福卡参与某一期 → 期次收满门槛 → 开奖 →
 // 中奖记录停在 pending。**领取与核销整块延后**（用户拍板）：中奖记录的数据模型与状态机
 // 按最终形态建全了，但没有领取入口、没有商户端核销、没有奖品兑付（券服务至今没有 gRPC）。
 //
 // # 退款追回：规则已写下，实现不做
 //
 // 「已开奖期次是终局；未开奖期次内的参与在退款成功时冲正 + 回退 participant_count
-// （跌破门槛且未到点则把期次开回 open）」——这条规则写在这里而不是写进代码，因为它要消费
+// （跌破门槛则把 closed 的期次开回 open）」——这条规则写在这里而不是写进代码，因为它要消费
 // order.after_sale.refunded，而那个事件本身还是个未来事件（payment-service 的退款单没做）。
 // **account-service 自己到今天也没有「退款成功后的追回」**，抽奖不该做第一个扣这条线的人。
 // 所以本轮 ConsumerInbox / ConsumerHandler / RABBITMQ_QUEUE 全都不配。
@@ -63,7 +63,7 @@ type Repository interface {
 	GetRoundView(ctx context.Context, id string) (*repository.RoundListRow, error)
 	LiveRound(ctx context.Context, campaignID string) (*model.Round, error)
 	ListRounds(ctx context.Context, q dto.RoundQuery) ([]*repository.RoundListRow, int, error)
-	EnsureLiveRound(ctx context.Context, campaignID string, now time.Time) (*model.Round, error)
+	EnsureLiveRound(ctx context.Context, campaignID string) (*model.Round, error)
 	CancelRound(ctx context.Context, roundID, reason string, actor *string) (*model.Round, error)
 
 	// —— 参与的三段事务 ——
@@ -80,7 +80,7 @@ type Repository interface {
 	DrawRound(ctx context.Context, p repository.DrawParams) (*repository.DrawOutcome, error)
 	GetDraw(ctx context.Context, id string) (*model.Draw, error)
 	FindDrawByRound(ctx context.Context, roundID string) (*model.Draw, error)
-	RoundsAwaitingDraw(ctx context.Context, now time.Time, limit int) ([]string, error)
+	RoundsAwaitingDraw(ctx context.Context, limit int) ([]string, error)
 	GetWin(ctx context.Context, id string) (*model.Win, error)
 	ListWins(ctx context.Context, q dto.WinQuery) ([]*model.Win, int, error)
 	ListWinEvents(ctx context.Context, winID string) ([]*model.WinEvent, error)
@@ -100,27 +100,40 @@ type FortuneCards interface {
 	Balance(ctx context.Context, userID string) (int64, error)
 }
 
+// Stores 是商户域门店事实里本服务用到的那一部分。
+//
+// 抽奖库只存门店 id（见 migrations/lottery/003），所以「这家店存在吗」与「这几家店叫什么」
+// 都要现场问商户域。接口只有两个方法，对应 client.StoreClient 的两个动作；测试传一个能
+// 摆出「门店不存在」与「问不到」两种结果的假的。
+type Stores interface {
+	// Exists 回答「商户域里有没有这家门店」。「不存在」是 (false, nil)，「问不到」是 err。
+	Exists(ctx context.Context, storeID string) (bool, error)
+	// Names 一次解出一页门店的名字，不认识的 id 从 map 里缺席。
+	Names(ctx context.Context, storeIDs []string) (map[string]string, error)
+}
+
 // 请求本身不合法（controller 统一回 400）。
 var (
-	ErrLocationIDRequired   = errors.New("locationId is required")
-	ErrLocationIDInvalid    = errors.New("locationId must be a uuid")
-	ErrLocationNameRequired = errors.New("locationName is required")
-	ErrStatusRequired       = errors.New("status is required")
-	ErrStatusInvalid        = errors.New("status is not one of the allowed values")
+	ErrLocationIDRequired = errors.New("locationId is required")
+	ErrLocationIDInvalid  = errors.New("locationId must be a uuid")
+	ErrStatusRequired     = errors.New("status is required")
+	ErrStatusInvalid      = errors.New("status is not one of the allowed values")
 
-	ErrCampaignIDRequired     = errors.New("campaignId is required")
-	ErrCampaignIDInvalid      = errors.New("campaignId must be a uuid")
-	ErrMachineIDInvalid       = errors.New("machineId must be a uuid when present")
-	ErrCampaignCodeRequired   = errors.New("campaign code is required")
-	ErrCampaignCodeInvalid    = errors.New("campaign code must be 1-16 uppercase letters or digits")
-	ErrCampaignNameRequired   = errors.New("campaign name is required")
-	ErrTargetNotPositive      = errors.New("participantTarget must be positive")
-	ErrCampaignWindowInvalid  = errors.New("endAt must be after startAt")
-	ErrPrizesRequired         = errors.New("at least one prize is required")
-	ErrPrizeKindInvalid       = errors.New("prizeKind is not one of the allowed values")
-	ErrPrizeNameRequired      = errors.New("prize name is required")
-	ErrPrizeQuantityInvalid   = errors.New("prize quantity must be positive")
-	ErrPrizeSortOrderConflict = errors.New("prize sortOrder is duplicated")
+	ErrCampaignIDRequired   = errors.New("campaignId is required")
+	ErrCampaignIDInvalid    = errors.New("campaignId must be a uuid")
+	ErrMachineIDInvalid     = errors.New("machineId must be a uuid when present")
+	ErrCampaignCodeRequired = errors.New("campaign code is required")
+	ErrCampaignCodeInvalid  = errors.New("campaign code must be 1-16 uppercase letters or digits")
+	ErrCampaignNameRequired = errors.New("campaign name is required")
+	ErrTargetNotPositive    = errors.New("participantTarget must be positive")
+	// 奖品。一个活动一个奖品，所以没有「奖池不能为空」这一条——缺名字就等于没给奖品。
+	//
+	// 这里原先还有 ErrPrizesRequired / ErrPrizeKindInvalid / ErrPrizeQuantityInvalid /
+	// ErrPrizeSortOrderConflict 四条，2026-09-15 随 migrations/lottery/005 一起删了：奖池
+	// 只剩一行，类型列没了，名额也恒为 1 不再是入参。
+	ErrPrizeIDInvalid     = errors.New("prize id must be a uuid when present")
+	ErrPrizeNameRequired  = errors.New("prize name is required")
+	ErrPrizeCoverRequired = errors.New("prize cover image is required")
 
 	ErrOrderIDInvalid = errors.New("sourceOrderId must be a uuid")
 	// ErrUserIDRequired：这次请求没有身份。
@@ -160,6 +173,16 @@ var (
 	ErrActivationNotFound = repository.ErrActivationNotFound
 	// ErrLocationAlreadyActivated：这家门店已经开通过。重复点击不是两笔业务。
 	ErrLocationAlreadyActivated = repository.ErrLocationAlreadyActivated
+	// ErrStoreNotFound：商户域里没有这家门店。
+	//
+	// 开通是**每家门店一次**的动作，而这条记录一旦建出来就永远指向一个查无此店的门店 id
+	// （列表页上就是那种「幽灵门店」）。所以在开通前问一次商户域，问出来没有就 404。
+	ErrStoreNotFound = errors.New("the store does not exist")
+	// ErrStoresUnavailable：这次没问出结果（商户域不可达或没接）。
+	//
+	// **与 ErrStoreNotFound 是两个信号**：门店真的不存在是 404，问不到是 503。把问不到
+	// 说成不存在，商户服务抖一下就会让运营反复重试一个其实合法的开通。
+	ErrStoresUnavailable = errors.New("the store directory is not reachable")
 	// ErrCampaignNotFound：活动不存在。
 	ErrCampaignNotFound = repository.ErrCampaignNotFound
 	// ErrCampaignCodeTaken：活动短名被别的活动占了（它是期次号的前缀，全局唯一）。
@@ -170,7 +193,7 @@ var (
 	ErrRoundNotFound = repository.ErrRoundNotFound
 	// ErrRoundAlreadyLive：这个活动已经有一期在跑。
 	ErrRoundAlreadyLive = repository.ErrRoundAlreadyLive
-	// ErrRoundClosed：期次不在收人窗口内。
+	// ErrRoundClosed：期次已经不再收人了（收满转 closed、已开奖、已作废）。
 	//
 	// **它不是故障**：用户在扣卡通路上被开奖抢先了，什么也没得到，卡要原路退回去。
 	ErrRoundClosed = repository.ErrRoundClosed
@@ -227,13 +250,12 @@ var (
 // ValidationErrors 是「请求不合法」这一类错误的全集。放在一处而不是在 controller 里逐个
 // case：新增一条校验就要在 controller 里同步加一个 case，是必然漏掉的写法。
 var ValidationErrors = []error{
-	ErrLocationIDRequired, ErrLocationIDInvalid, ErrLocationNameRequired,
+	ErrLocationIDRequired, ErrLocationIDInvalid,
 	ErrStatusRequired, ErrStatusInvalid,
 	ErrCampaignIDRequired, ErrCampaignIDInvalid, ErrMachineIDInvalid,
 	ErrCampaignCodeRequired, ErrCampaignCodeInvalid,
-	ErrCampaignNameRequired, ErrTargetNotPositive, ErrCampaignWindowInvalid,
-	ErrPrizesRequired, ErrPrizeKindInvalid, ErrPrizeNameRequired, ErrPrizeQuantityInvalid,
-	ErrPrizeSortOrderConflict,
+	ErrCampaignNameRequired, ErrTargetNotPositive,
+	ErrPrizeIDInvalid, ErrPrizeNameRequired, ErrPrizeCoverRequired,
 	ErrOrderIDInvalid,
 	ErrRoundIDRequired, ErrRoundIDInvalid, ErrReasonRequired, ErrReasonTooLong, ErrIdempotencyNeeded,
 }
@@ -259,12 +281,6 @@ const (
 	DefaultPrizeName      = "神秘礼品"
 )
 
-// DefaultCampaignWindow 是内置模板的活动窗口长度。
-//
-// 九十个工作日不是一个有讲究的数，它回答的是一个具体的问题：开通一个门店抽奖而它当场就
-// 结束显然是错的，所以必须有一个兜底的窗口。运营可以在开通后改。
-const DefaultCampaignWindow = 90 * 24 * time.Hour
-
 // MaxReasonLength 是人工开奖 / 作废理由的长度上限，按**字符**算（不是字节）。
 //
 // 中文一个字符三字节，按字节限 200 会让运营在写了一百来个字的时候被莫名其妙地拒绝。
@@ -272,7 +288,9 @@ const MaxReasonLength = 200
 
 // Options 是构造 LotteryService 的可调项。零值等于用默认值。
 type Options struct {
-	// Now 为 nil 时用 time.Now。注入它才能测「到点开奖」、「窗口已过」这类判定而不必真的等。
+	// Now 为 nil 时用 time.Now。注入它是为了让「一次参与发生在什么时候」在测试里可控
+	// （参与时间、开奖事件里的 DrawnAtUnix 都用它），而不是为了等一个截止时间——期次与
+	// 活动都已经没有截止时间了（2026-09-15 去掉）。
 	//
 	// **它流进仓储的那些 Params，也被 SQL 用 NOW() 读**——两者在同一个事务里，相差微秒级。
 	// 之所以不把 SQL 全换成 $n：NOW() 是数据库侧的事实，而调用方手里那个是业务判定的输入，
@@ -304,6 +322,9 @@ type LotteryService struct {
 	// cards 允许为 nil：没接账户域的部署（今天只有测试会这样）参与会**明确失败**
 	// （见 Participate 的第一道检查），不会静默扣不到卡却把参与记成 confirmed。
 	cards FortuneCards
+	// stores 允许为 nil，但两条路的行为不同：开通会**明确失败**（ErrStoresUnavailable）——
+	// 校验跑不了的唯一诚实结论是「不许开通」；名字解析则退化成空名字（见 resolveStoreNames）。
+	stores Stores
 
 	now           func() time.Time
 	deductTimeout time.Duration
@@ -311,7 +332,7 @@ type LotteryService struct {
 }
 
 // New 构造业务层。
-func New(r Repository, cards FortuneCards, options Options) *LotteryService {
+func New(r Repository, cards FortuneCards, stores Stores, options Options) *LotteryService {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -324,6 +345,7 @@ func New(r Repository, cards FortuneCards, options Options) *LotteryService {
 	return &LotteryService{
 		repository:    r,
 		cards:         cards,
+		stores:        stores,
 		now:           options.Now,
 		deductTimeout: options.DeductTimeout,
 		repairAfter:   options.RepairAfter,

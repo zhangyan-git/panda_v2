@@ -4,31 +4,35 @@ import "time"
 
 // ActivateRequest 是「开通门店抽奖」的请求体。
 //
-// LocationName 由后台选择器带上来（它已经在门店下拉里拿到了名字）。不在这里回头去问
-// 商户服务：开通是一个动作，重试它不该因为一次跨服务读失败而失败；而且商户服务改了店名
-// 之后，这条记录仍然应当显示开通那一刻的名字。
+// 请求体里**只有门店 id，没有门店名**：名字是商户域的事实，本库不留（见
+// migrations/lottery/003）。服务端在开通前拿这个 id 问一次商户域「这家店存在吗」，问不出
+// 来就不受理；显示用的名字则在每次读的时候现解（service.resolveStoreNames）。
+//
+// 原先这里有一个 locationName，由后台选择器带上来。去掉它换来的正是那条存在性校验：
+// 受理一个由客户端写过来的名字，等于把「这家店真的存在」的判断权交给了客户端。
 type ActivateRequest struct {
-	LocationID   string `json:"locationId"`
-	LocationName string `json:"locationName"`
-	Remark       string `json:"remark"`
+	LocationID string `json:"locationId"`
+	Remark     string `json:"remark"`
 	// 这两个都是可选的，**两个都不给也成立**：默认活动由内置模板建（名取
 	// service.DefaultCampaignName、门槛取 service.DefaultCampaignTarget，见 service.Activate）。
 	// 运营可以在开通的同一个动作里把它们改成自己要的。
 	//
 	// 分开成两个可空字段而不是一个嵌套对象：后台那个表单就是「开通 + 一个默认活动」
 	// 一屏，嵌套一层只会让前端多拼一次结构。
-	CampaignName      string `json:"campaignName"`
+	CampaignName string `json:"campaignName"`
+	// ParticipantTarget 是第一期（以及之后每一期）的开奖门槛，**数的是参与次数**。
+	//
+	// 原先这里还有一对 startAt / endAt 组成默认活动的窗口，2026-09-15 随活动窗口一起删了：
+	// 一期收满门槛就开奖，没满就一直等着，期次与活动都没有截止时间。
 	ParticipantTarget *int32 `json:"participantTarget"`
-	// 默认活动的窗口。都不给时取「现在起 90 天」——开通一个门店抽奖而它当场就结束
-	// 显然是错的，所以必须有一个兜底的窗口，而不是要求运营每次都填。
-	StartAt *time.Time `json:"startAt"`
-	EndAt   *time.Time `json:"endAt"`
 }
 
 // ActivationResponse 是一条开通记录。
 type ActivationResponse struct {
-	ID           string `json:"id"`
-	LocationID   string `json:"locationId"`
+	ID         string `json:"id"`
+	LocationID string `json:"locationId"`
+	// 门店名是**读这一刻**向商户域解出来的，不是开通时的快照；解不出来时是空串（商户域
+	// 不可达，或那个 id 商户域已经不认识了）。门店的身份是上面那一列 id。
 	LocationName string `json:"locationName"`
 	Status       string `json:"status"`
 	Remark       string `json:"remark"`

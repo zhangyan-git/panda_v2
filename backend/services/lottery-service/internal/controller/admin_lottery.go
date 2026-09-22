@@ -180,7 +180,6 @@ func (c *AdminLotteryController) listActivations(w http.ResponseWriter, r *http.
 	rows, total, err := c.lottery.ListActivations(r.Context(), dto.ActivationQuery{
 		LocationID: strings.TrimSpace(query.Get("locationId")),
 		Status:     strings.TrimSpace(query.Get("status")),
-		Name:       strings.TrimSpace(query.Get("name")),
 		Page:       page,
 		PageSize:   pageSize,
 	})
@@ -199,7 +198,7 @@ func (c *AdminLotteryController) listActivations(w http.ResponseWriter, r *http.
 func (c *AdminLotteryController) activate(w http.ResponseWriter, r *http.Request, actor string) {
 	var body dto.ActivateRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request body")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgInvalidBody)
 		return
 	}
 	row, err := c.lottery.Activate(r.Context(), body, &actor)
@@ -222,7 +221,7 @@ func (c *AdminLotteryController) getActivation(w http.ResponseWriter, r *http.Re
 func (c *AdminLotteryController) updateActivationStatus(w http.ResponseWriter, r *http.Request, actor, id string) {
 	var body dto.UpdateActivationRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request body")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgInvalidBody)
 		return
 	}
 	row, err := c.lottery.UpdateActivationStatus(r.Context(), id, body, &actor)
@@ -275,7 +274,7 @@ func (c *AdminLotteryController) getCampaign(w http.ResponseWriter, r *http.Requ
 func (c *AdminLotteryController) createCampaign(w http.ResponseWriter, r *http.Request, actor string) {
 	var body dto.CampaignRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request body")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgInvalidBody)
 		return
 	}
 	detail, err := c.lottery.CreateCampaign(r.Context(), body, &actor)
@@ -289,7 +288,7 @@ func (c *AdminLotteryController) createCampaign(w http.ResponseWriter, r *http.R
 func (c *AdminLotteryController) updateCampaign(w http.ResponseWriter, r *http.Request, actor, id string) {
 	var body dto.CampaignRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request body")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgInvalidBody)
 		return
 	}
 	detail, err := c.lottery.UpdateCampaign(r.Context(), id, body, &actor)
@@ -305,7 +304,7 @@ func (c *AdminLotteryController) updateCampaign(w http.ResponseWriter, r *http.R
 func (c *AdminLotteryController) setCampaignStatus(w http.ResponseWriter, r *http.Request, actor, id string) {
 	var body dto.UpdateActivationRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request body")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgInvalidBody)
 		return
 	}
 	detail, err := c.lottery.SetCampaignStatus(r.Context(), id, body.Status, &actor)
@@ -322,7 +321,7 @@ func (c *AdminLotteryController) listPrizes(w http.ResponseWriter, r *http.Reque
 		writeLotteryError(w, r, err, "failed to list lottery campaign prizes")
 		return
 	}
-	api.Success(w, prizeResponses(prizes))
+	api.Success(w, prizeListResponse(prizes))
 }
 
 // —— 期次与开奖 ——
@@ -365,7 +364,7 @@ func (c *AdminLotteryController) getRound(w http.ResponseWriter, r *http.Request
 func (c *AdminLotteryController) draw(w http.ResponseWriter, r *http.Request, actor, roundID string) {
 	var body dto.DrawRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request body")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgInvalidBody)
 		return
 	}
 	outcome, err := c.lottery.DrawManually(r.Context(), roundID, body, &actor)
@@ -390,7 +389,7 @@ func (c *AdminLotteryController) draw(w http.ResponseWriter, r *http.Request, ac
 func (c *AdminLotteryController) cancelRound(w http.ResponseWriter, r *http.Request, actor, roundID string) {
 	var body dto.CancelRoundRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request body")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgInvalidBody)
 		return
 	}
 	round, err := c.lottery.CancelRound(r.Context(), roundID, body, &actor)
@@ -419,7 +418,7 @@ func (c *AdminLotteryController) listWins(w http.ResponseWriter, r *http.Request
 	if status != "" && !isKnownWinStatus(status) {
 		// 状态是枚举，写错一个字母会静默返回空列表——调用方会以为「这个状态下没有中奖」，
 		// 而不是「我筛错了」。
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "status is invalid")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgStatusInvalid)
 		return
 	}
 	wins, total, err := c.lottery.ListWins(r.Context(), dto.WinQuery{
@@ -466,7 +465,7 @@ func (c *AdminLotteryController) listParticipations(w http.ResponseWriter, r *ht
 	}
 	status := strings.TrimSpace(query.Get("status"))
 	if status != "" && !isKnownParticipationStatus(status) {
-		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "status is invalid")
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", msgStatusInvalid)
 		return
 	}
 	rows, total, err := c.lottery.ListParticipations(r.Context(), dto.ParticipationQuery{

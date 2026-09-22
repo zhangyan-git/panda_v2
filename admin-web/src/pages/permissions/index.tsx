@@ -18,6 +18,7 @@ import {
   type Permission,
 } from '../../services/iam';
 import { FULL_PAGE_PARAMS } from '../../services/pagination';
+import { requestErrorMessage } from '../../services/requestError';
 
 type PermissionRow = Permission & { isGroup?: boolean; children?: PermissionRow[] };
 
@@ -96,9 +97,15 @@ const PermissionsPage: React.FC = () => {
               key="del"
               title="确认删除该权限？"
               onConfirm={async () => {
-                await deletePermission(row.id);
-                message.success('已删除');
-                actionRef.current?.reload();
+                try {
+                  await deletePermission(row.id);
+                  message.success('已删除');
+                  actionRef.current?.reload();
+                } catch (error) {
+                  // 还有角色绑着这条权限时后端会拒，理由只有后端知道；缺了这个 catch
+                  // 界面上什么都不会发生，看起来像点了没反应。
+                  message.error(requestErrorMessage(error, '删除失败，请稍后重试'));
+                }
               }}
             >
               <Button type="link" size="small" danger icon={<DeleteOutlined />}>
@@ -119,10 +126,29 @@ const PermissionsPage: React.FC = () => {
         columns={columns}
         expandable={{ defaultExpandAllRows: true }}
         scroll={{ x: 1080 }}
-        request={async () => {
+        request={async (params) => {
           // 这一页要全集：权限被聚合成「分组父行 + 权限子行」的树，只取第 1 页
           // 会把后面的分组整组漏掉，而表格看起来仍然正常。
-          const perms = (await listPermissions(FULL_PAGE_PARAMS)).items;
+          //
+          // 筛选**在前端做**，理由与「要全集」是同一条：权限列表接口只认 page / pageSize
+          // （user-service internal/handler/permission.go 的 List 只解析这两个），这一页
+          // 又本来就要拉全量来聚合，没有一条「服务端筛」可接。以前这里干脆不接收 params，
+          // 搜索框填了什么都没发生——那比没有搜索框更糟。四个框都是子串匹配、不区分大小写，
+          // 空着的栏不参与过滤；筛完再聚合，所以不会留下空分组。
+          const text = (value: unknown) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
+          const hit = (keyword: string, value?: string) =>
+            !keyword || String(value ?? '').toLowerCase().includes(keyword);
+          const code = text(params.code);
+          const name = text(params.name);
+          const group = text(params.group);
+          const description = text(params.description);
+          const perms = (await listPermissions(FULL_PAGE_PARAMS)).items.filter(
+            (p) =>
+              hit(code, p.code) &&
+              hit(name, p.name) &&
+              hit(group, p.group) &&
+              hit(description, p.description),
+          );
           // 按 group 聚合成树：分组为父行，权限为子行
           const grouped = new Map<string, Permission[]>();
           perms.forEach((p) => {
@@ -182,13 +208,18 @@ const PermissionsPage: React.FC = () => {
             : undefined
         }
         onFinish={async (values) => {
-          if (editing) {
-            await updatePermission(editing.id, values);
-            message.success('已更新');
-          } else {
-            await createPermission(values);
-            message.success('已创建');
+          try {
+            if (editing) {
+              await updatePermission(editing.id, values);
+            } else {
+              await createPermission(values);
+            }
+          } catch (error) {
+            // 权限码重复一类只有后端判得了；返回 false 让弹窗留着，填过的四个字段不丢。
+            message.error(requestErrorMessage(error, '保存失败，请稍后重试'));
+            return false;
           }
+          message.success(editing ? '已更新' : '已创建');
           actionRef.current?.reload();
           return true;
         }}

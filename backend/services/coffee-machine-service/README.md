@@ -35,7 +35,17 @@ fulfillment-service 直连厂商执行出杯，调用前向本服务取一组只
 ## 现状
 
 已落地：迁移、健康检查（`/livez`、`/readyz`）、后台主数据读接口、内部只读 RPC
-`GetDevice`，以及后台的设备域写路径——厂商／设备／饮品的新增、修改与启停，设备余额调整。
+`GetDevice` / `GetDeviceBySerial` / `GetDeviceDrink`（后两条供设备回调：先按机器序列号取设备，
+再按机器报的饮品编号取那一杯），以及后台的设备域写路径——厂商／设备／饮品的新增、修改与启停，设备余额调整。
+
+内部 RPC 面上还有一个**写口**：`DeductDeviceBalance`（供 order-service 的取货码那条路，
+方案 §四）。它和上面三条读口不是一套东西——没有 HTTP 面、不经过后台那套校验与审计，
+所以它在 proto 里单独说明，装配上也走独立的 `DeviceBalanceService`／仓储。三件事在一个
+事务里：锁设备行、改 `devices.coffee_balance`、追加一条 `type='deduct'` 且金额为负的
+`device_balance_ledger`。幂等靠 `device_balance_ledger_one_per_request`（部分唯一索引，
+只索引 `request_id` 非空的行）：同一个 request_id 第二次进来回 `applied=false` 而不是
+错误——重投是常态，把它当成失败会让一次已经收到钱的取货永远建不出订单。余额不够回
+`FailedPrecondition`，且一个字段都不写。
 
 写接口的权限码有三个：`coffee_machine:read`、`coffee_machine:manage`、
 `coffee_machine:balance`。后两个由身份库迁移 `identity/014_coffee_machine_write.sql` 建出并绑定
@@ -45,7 +55,10 @@ fulfillment-service 直连厂商执行出杯，调用前向本服务取一组只
 
 余额调整属于方案 §11.6 L893 必审清单，审计在同一个业务事务里往本库 `message_outbox` 追加
 一条 `admin.operation.logged`（用 `platform/audit.NewRecorder()`），**不要**新建本地审计表——
-审计落在身份库的 `admin_operation_logs`。`device_balance_ledger` 上有 BEFORE DELETE/UPDATE
+审计落在身份库的 `admin_operation_logs`。取货码那条扣减**不走审计**（它只写流水）：
+那条路上没有操作人——操作人是机器前面那个人，他在本库里没有账号，编一个 actor 出来只会
+让审计里出现一批查无此人的记录。两处共用同一个哨兵错误 `ErrInsufficientBalance`，
+但含义不同：后台那次是管理员填错了数，取货码那次是一个正常的业务拒绝。`device_balance_ledger` 上有 BEFORE DELETE/UPDATE
 触发器，流水只增不改不删；这也意味着有流水的设备在库里删不掉，写集成测试夹具时要留意。
 
 饮品行自带 `device_id`（迁移 `003_drinks_own_device.sql`）：一行饮品就是「某台设备上的一杯」，
@@ -64,7 +77,7 @@ USER_GRPC_ADDR=127.0.0.1:19091 \
 MERCHANT_GRPC_ADDR=127.0.0.1:19093 \
 MERCHANT_INTERNAL_TOKEN='<32 字节以上>' \
 JWT_SECRET='<32 字节以上>' JWT_ISSUER=panda PANDA_ENV=dev \
-go run ./cmd/api
+go run ./cmd
 ```
 
 `USER_GRPC_ADDR` 是必需的：后台每条路由都要按请求去 user-service 取实时授权。

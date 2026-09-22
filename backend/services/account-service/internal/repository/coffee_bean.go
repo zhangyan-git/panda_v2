@@ -237,7 +237,7 @@ func (r *PostgresRepository) ConsumeBeans(ctx context.Context, params BeanConsum
 	return result, nil
 }
 
-// BeanReverseParams 是一次退款冲正：售后审核通过，把这一单扣掉的豆还回去。
+// BeanReverseParams 是一次退款冲正：这一单的退款成功了，把扣掉的豆还回去。
 //
 // Amount 是这一次要还回去的金额（正数，单位分）。与福卡的 Reverse 按被冲正那笔**原样
 // 反向**不同，这里允许只冲一部分——部分退款（先退加购行、再退整单）是常态，所以金额由
@@ -267,7 +267,7 @@ type BeanReverseParams struct {
 // 有一处算错了。这里报错而不是静默钳制——欠退比错退更容易被忽略。
 //
 // **「这条售后冲过了吗」必须在上限判定之前问**，次序在这里是有后果的：一条
-// order.after_sale.reviewed 重投进来时（relay 是 at-least-once，重投是常态，不是异常），
+// order.after_sale.refunded 重投进来时（relay 是 at-least-once，重投是常态，不是异常），
 // 若先算剩余可冲额，一笔已经全额冲回的扣减算出来的剩余是 0，于是这次重投会撞成
 // ErrReverseUncovered——调用方看到的是一次失败，把这条本该结束的事件一路重试到死信，
 // 而这笔账其实早就结清了。与 applyBeanEntry 里那条「幂等查在余额判定之前」是同一条规则。
@@ -301,7 +301,7 @@ func (r *PostgresRepository) ReverseBeans(ctx context.Context, params BeanRevers
 
 		// FOR UPDATE 锁的是**那笔扣减**，锁到本条事务结束。下面那句「已经冲回过多少」是按
 		// 它反查出来的，而它一旦被读出来就该是这整段判断的一个快照：没有这把锁，两条针对
-		// 同一张订单的冲正（两条不同的售后单同时被审核通过）读到的已冲回额都是同一个旧值，
+		// 同一张订单的冲正（两条不同的售后单同时退款成功）读到的已冲回额都是同一个旧值，
 		// 各自都觉得自己没超，于是合起来退掉超过扣减额的钱——余额只增不减，没有任何约束
 		// 拦得住，也不会有报错。
 		//

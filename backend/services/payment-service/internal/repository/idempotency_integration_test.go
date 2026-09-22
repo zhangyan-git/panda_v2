@@ -48,10 +48,10 @@ func newStaleAttemptFixture(t *testing.T, pool *pgxpool.Pool, status string) *st
 	}
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `INSERT INTO payments
-		(id, payment_no, order_no, user_id, amount, funding_type, status, request_id, expires_at)
+		(id, payment_no, order_no, user_id, amount, payment_method, status, request_id, expires_at)
 		VALUES ($1,$2,$3,$4,1980,$5,$6,$7, NOW() + INTERVAL '10 minutes')`,
 		fixture.paymentID, fixture.paymentNo, fixture.orderNo, uuid.NewString(),
-		model.FundingCoffeeBean, status, fixture.requestID); err != nil {
+		"coffee_bean", status, fixture.requestID); err != nil {
 		t.Fatalf("insert payment: %v", err)
 	}
 	// 幂等行要比 IdempotencyRecoveryWindow 旧，否则回的是「还在处理中」而不是回收。窗口比对的
@@ -87,7 +87,7 @@ func beginPaymentProbe(t *testing.T, repo *PostgresRepository, requestID, hash s
 		OrderNo:     "ORD-IDEM-" + uuid.NewString(),
 		UserID:      uuid.NewString(),
 		Amount:      1980,
-		FundingType: model.FundingCoffeeBean,
+		Method:      "coffee_bean",
 		Subject:     "probe",
 		RequestID:   requestID,
 		RequestHash: hash,

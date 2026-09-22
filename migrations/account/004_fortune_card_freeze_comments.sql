@@ -2,6 +2,8 @@
 
 COMMENT ON COLUMN fortune_card_accounts.frozen_balance IS '退款冻结中的福卡张数；可用张数 = balance - frozen_balance，不落库。冻结不是账变，它改的是「可用」，balance 与流水都不动';
 
+-- 本行与下面 status 那一行的文案已被 007 覆盖：003 时点的结局只有 released 一种，退款失败解冻
+-- 与退款成功追回是 007 补上的。留在这里的是这一轮写下它时的事实。
 COMMENT ON TABLE fortune_card_freezes IS '退款申请期间的福卡冻结，一张售后单一行；冻的是「可用」不是余额，驳回或用户撤销后解冻，退款成功后的追回是下一轮的事';
 COMMENT ON COLUMN fortune_card_freezes.user_id IS '冻结归属的账户，指向本库的 fortune_card_accounts；账户行在该用户第一次收到福卡或第一次被冻结时懒创建';
 COMMENT ON COLUMN fortune_card_freezes.after_sale_no IS '售后单号，跨库值引用（售后单在 order 库）；幂等键，同一条申请事件重投多少次都只记一行';

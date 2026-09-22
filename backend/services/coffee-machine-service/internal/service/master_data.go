@@ -3,6 +3,7 @@ package service
 
 import (
 	"context"
+	"strings"
 
 	"github.com/panda-dev/panda-v2/backend/services/coffee-machine-service/internal/dto"
 	"github.com/panda-dev/panda-v2/backend/services/coffee-machine-service/internal/model"
@@ -37,6 +38,21 @@ func (s *MasterDataService) GetDevice(ctx context.Context, id string) (*model.De
 	return s.master.GetDevice(ctx, id)
 }
 
+// GetDeviceBySerial 按机器序列号返回一台设备；序列号为空时返回
+// ErrDeviceSerialRequired，不存在时返回 repository.ErrDeviceNotFound。
+//
+// 空串在这里挡掉，不下到 SQL：devices.serial_unique 是 text 列，空串查下去只会得到一次
+// 空结果，调用方会把「没给序列号」读成「这台机器不存在」——一句填漏的参数被报成一台
+// 不存在的设备，是最难查的那种错。trim 与写路径一致（buildDevice 落库前也先 trim），
+// 否则「 AB 」会查不到库里那台「AB」。
+func (s *MasterDataService) GetDeviceBySerial(ctx context.Context, serialUnique string) (*model.Device, error) {
+	serialUnique = strings.TrimSpace(serialUnique)
+	if serialUnique == "" {
+		return nil, ErrDeviceSerialRequired
+	}
+	return s.master.GetDeviceBySerial(ctx, serialUnique)
+}
+
 func (s *MasterDataService) ListDevices(ctx context.Context, q dto.DeviceQuery) ([]*model.Device, int64, error) {
 	q.Page, q.PageSize = normalizePage(q.Page, q.PageSize)
 	return s.master.ListDevices(ctx, repository.DeviceFilter{
@@ -62,6 +78,46 @@ func (s *MasterDataService) ListDrinks(ctx context.Context, q dto.DrinkQuery) ([
 		Page:           q.Page,
 		PageSize:       q.PageSize,
 	})
+}
+
+// GetDeviceDrink 按机器报的饮品编号返回那台设备上的那一杯；deviceID 或 drinkCode 为空时
+// 分别返回 ErrDrinkLookupDeviceRequired / ErrDrinkLookupCodeRequired，库中没有时返回
+// repository.ErrDrinkNotFound。
+//
+// 编号同时比 product_num 与 origin_id（仓储那一层做）：它落在哪一列取决于这家厂商当初
+// 的同步来源，调用方不该知道这件事，也不该为了这件事去翻一份菜单再自己找。
+//
+// **不按 status 过滤**：饮品已下架也得匹配上。钱已经在机器上收过了，这时回 NotFound
+// 等于这笔钱在库里没有任何对应的饮品记录——那比「卖了一杯已下架的饮品」严重得多。
+//
+// 两个参数都先 trim 再判空、再查，与写路径（buildDevice / buildDrink）口径一致。
+func (s *MasterDataService) GetDeviceDrink(ctx context.Context, deviceID, drinkCode string) (*model.Drink, error) {
+	deviceID = strings.TrimSpace(deviceID)
+	drinkCode = strings.TrimSpace(drinkCode)
+	if deviceID == "" {
+		return nil, ErrDrinkLookupDeviceRequired
+	}
+	if drinkCode == "" {
+		return nil, ErrDrinkLookupCodeRequired
+	}
+	return s.master.GetDeviceDrink(ctx, deviceID, drinkCode)
+}
+
+// GetDrink 按我们的 uuid 返回一杯饮品；id 为空时返回 ErrDrinkIDRequired，库中没有时返回
+// repository.ErrDrinkNotFound。
+//
+// 空串在进 SQL 之前挡掉，理由与上面那条同源但后果更贵：这一条的调用方是 order-service
+// 下单，把「没给 id」读成「这杯不在目录里」，用户看到的是一句「该饮品已下架」——一次填漏
+// 的参数被报成一次业务拒绝，排查时两边都觉得自己没错。
+//
+// **不按 status 过滤**：调用方要判「这杯还卖不卖」，而那个判断的依据就是 status 本身。
+// 见仓储实现上的说明。
+func (s *MasterDataService) GetDrink(ctx context.Context, id string) (*model.Drink, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, ErrDrinkIDRequired
+	}
+	return s.master.GetDrink(ctx, id)
 }
 
 func (s *MasterDataService) ListDeviceDrinks(ctx context.Context, deviceID string) ([]*model.Drink, error) {

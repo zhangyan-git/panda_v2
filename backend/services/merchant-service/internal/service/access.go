@@ -59,6 +59,15 @@ func (s *MerchantAccessService) FindStore(ctx context.Context, id string) (*mode
 	return s.stores.FindByID(ctx, id)
 }
 
+// StoreIDsByScope 把一个商户账号的数据范围展开成一组点位 id。
+//
+// 展开放在商户服务而不是各消费方，是因为只有这里知道「品牌档」在这张表上意味着什么。
+// 下游的设备表与订单表都只持有 store_id，拿到一组平板 id 就能过滤，不必各自重新
+// 解释一次范围语义——那种重复解释正是三处实现慢慢分叉的起点。
+func (s *MerchantAccessService) StoreIDsByScope(ctx context.Context, merchantID, scopeType, scopeID string) ([]string, error) {
+	return s.stores.FindIDsByScope(ctx, merchantID, scopeType, scopeID)
+}
+
 // ScopeNames resolves brand and store ids to display names. It backs the scope
 // column of a merchant account listing, which used to come from a join the
 // identity database can no longer make. Missing ids are simply absent from the

@@ -41,6 +41,17 @@ var (
 	// 不允许「原价 0、会员价 5 元」这种只填了一半的行。
 	ErrDrinkPriceInvalid = errors.New("原价为 0 时，会员价与提货码价也必须为 0")
 
+	// ErrDrinkLookupDeviceRequired / ErrDrinkLookupCodeRequired 是设备回调取饮品
+	// （gRPC GetDeviceDrink）的两个查询参数：机器只报设备 uuid 与饮品编号，缺一个都定位
+	// 不到那一杯。和上面那批写路径的校验一样，空串在进 SQL 之前挡掉——不然它会变成一次
+	// 「查不到」，而调用方会把「没给编号」读成「这杯不在库里」，那时钱已经收过了。
+	ErrDrinkLookupDeviceRequired = errors.New("device_id 不能为空")
+	ErrDrinkLookupCodeRequired   = errors.New("drink_code 不能为空")
+	// ErrDrinkIDRequired 是按主键取饮品（gRPC GetDrink）的参数校验。与上面两个同一条
+	// 理由，但后果更贵：这一条的调用方是 order-service 下单，把「没给 id」读成「这杯不在
+	// 目录里」，用户看到的是一句「该饮品已下架」——一次填漏的参数被报成一次业务拒绝。
+	ErrDrinkIDRequired = errors.New("drink_id 不能为空")
+
 	ErrManufacturerStatusInvalid = errors.New("厂商状态只能为 active 或 disabled")
 	ErrDeviceStatusInvalid       = errors.New("设备状态只能为 active 或 disabled")
 	ErrDrinkStatusInvalid        = errors.New("饮品状态只能为 on_shelf 或 off_shelf")
@@ -72,6 +83,7 @@ var ValidationErrors = []error{
 	ErrDrinkNameRequired,
 	ErrDrinkDeviceRequired, ErrDrinkDeviceInvalid, ErrDrinkTypeInvalid,
 	ErrPriceNegative, ErrDrinkPriceInvalid,
+	ErrDrinkLookupDeviceRequired, ErrDrinkLookupCodeRequired,
 	ErrManufacturerStatusInvalid, ErrDeviceStatusInvalid, ErrDrinkStatusInvalid,
 	ErrBalanceAmountZero, ErrBalanceRequestIDRequired,
 	ErrStoreNotFound, ErrStoreDisabled,

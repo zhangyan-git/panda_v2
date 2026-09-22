@@ -14,9 +14,11 @@ import (
 // RequestSummary / ResponseSummary 是**脱敏后**的摘要：不放签名原文、密钥、完整卡号与
 // 身份证（方案 11.5），只放能定位这一笔的键（商户单号、渠道单号、金额、返回码）。
 type PaymentProviderCall struct {
-	ID        string  `db:"id"`
-	ChannelID *string `db:"channel_id"`
-	Provider  string  `db:"provider"`
+	ID string `db:"id"`
+	// Provider 是这条流水打给哪条渠道（渠道名，如 `ums`）。它从前还有一个指向
+	// payment_channels 的 channel_id，那一列随那张表一起删了——两者说的是同一件事，
+	// 而渠道名字本来就写在报文里，不再需要一个 id 去指。
+	Provider string `db:"provider"`
 	// create / query / close / refund / query_refund / agreement_sign / agreement_charge /
 	// agreement_terminate / reconcile。
 	Operation string `db:"operation"`
@@ -52,10 +54,36 @@ const (
 )
 
 // 渠道调用操作类型，与 payment_provider_calls.operation 的 CHECK 逐字一致。
-// 本轮只用到 CallOperationCreate。
+//
+// 这里只列**代码里真有写路径**的那几个，不是把 CHECK 抄全：迁移里还有一个 reconcile 值，
+// 而对账这件事整个系统都还没有（见 provider.Operation 的注释）。给它留一个没有调用方的常量，
+// 会让「对账做了没有」在读代码时看起来是「做了」。
 const (
 	CallOperationCreate = "create"
+	// CallOperationQuery：回渠道问一件事。它今天有两个调用方——支付单的主动查单，以及
+	// **查签约协议**（`papay/querycontract`）。签约那边没有单独的 operation 值：CHECK 里
+	// 没有 agreement_query，而这一行靠 agreement_no 就能定死是哪一份协议。
 	CallOperationQuery  = "query"
 	CallOperationClose  = "close"
 	CallOperationRefund = "refund"
+	// CallOperationQueryRefund：查一笔退款在渠道那边的状态。退款那条路的
+	// PROCESSING / UNKNOWN 只有它能给出结论（见 provider.OperationQueryRefund）。
+	CallOperationQueryRefund = "query_refund"
+	// CallOperationAgreementSign：一次签约的签名计算。
+	//
+	// 它记的是**我们这边算出了签约参数**这件事，不是一次出网调用——纯签约由客户端跳到
+	// 渠道的签约页完成（见 wechatpay 的包注释）。所以这一行的 http_status / duration_ms
+	// 是空的、attempt_no 恒为 1：它没有「发了几次」可言。
+	CallOperationAgreementSign = "agreement_sign"
+	// CallOperationAgreementCharge：一次代扣扣款（微信的 `pay/pappayapply`）。
+	//
+	// **预扣费通知不单独记一行**：它没有结果要回给我们（单向告知），而且每一次预扣费通知都
+	// 紧跟着一次扣款尝试——单独记一行会让「这一期问过渠道几次」这个数变成两倍。它的成败写在
+	// 扣款那一行的 response_summary 的 preNotify 那一段里（见 wechatpay 的 Provider.preNotify）。
+	CallOperationAgreementCharge = "agreement_charge"
+	// CallOperationAgreementTerminate：一次解约（微信的 `papay/deletecontract`）。
+	//
+	// 它有两种来路，同记一个值：用户在小程序点「关闭自动续费」，以及运营在后台取消订阅。
+	// 两条路都是「我们主动去撤这份授权」，流水上分得开的是 request_id 与 trace_id。
+	CallOperationAgreementTerminate = "agreement_terminate"
 )

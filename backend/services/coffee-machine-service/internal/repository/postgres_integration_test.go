@@ -190,6 +190,33 @@ func TestGetDeviceReportsMissingAsNotFound(t *testing.T) {
 	}
 }
 
+// TestGetDeviceBySerialFindsTheRowTheMachineKnows 是设备回调建单（方案 §四）的第一步：
+// 机器只报序列号，我们要把它换成库里那一行，门店与状态都挂在那行上。
+func TestGetDeviceBySerialFindsTheRowTheMachineKnows(t *testing.T) {
+	pool := integrationPool(t)
+	repo := NewPostgresRepository(pool)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	deviceID := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+
+	device, err := repo.GetDeviceBySerial(ctx, "it-"+deviceID)
+	if err != nil {
+		t.Fatalf("get device by serial: %v", err)
+	}
+	if device.ID != deviceID {
+		t.Fatalf("id = %q, want %q", device.ID, deviceID)
+	}
+	if device.SerialUnique != "it-"+deviceID {
+		t.Fatalf("serial_unique = %q, want the serial that was inserted", device.SerialUnique)
+	}
+
+	// 没登记过的序列号要回 ErrDeviceNotFound，而不是一台零值设备：调用方靠这个把
+	// 「这台机器没接入」和「读到了但字段空着」分开。
+	if _, err := repo.GetDeviceBySerial(ctx, "it-"+uuid.NewString()); !errors.Is(err, ErrDeviceNotFound) {
+		t.Fatalf("err = %v, want ErrDeviceNotFound", err)
+	}
+}
+
 func TestListDevicesFiltersAndPages(t *testing.T) {
 	pool := integrationPool(t)
 	repo := NewPostgresRepository(pool)
@@ -307,12 +334,12 @@ func TestListDeviceDrinksReportsUnknownDevice(t *testing.T) {
 	}
 }
 
-// TestListDevicesFiltersByStoreIDsAndKeyword 覆盖筛选栏新增的两项。
+// TestListDevicesFiltersByStoreIDsAndKeyword 覆盖筛选栏的两项。
 //
-// 门店是多选，所以这里必须同时钉住两件事：选了多个门店时是 OR（不是只认第一个），
-// 以及**一个都不选时不过滤**——后者才是真正容易写错的地方，pgx 把 nil 切片编码成
-// NULL，cardinality(NULL) 是 NULL 而不是 0，少一个 coalesce 就会让「没选门店」
-// 把整张表筛空，而列表空着看起来和「确实没有设备」一模一样。
+// 门店的多选语义在这里被钉死：选了多个是并集（不是只认第一个），**nil 不过滤而空切片
+// 命中零行**。后两者是这条谓词的全部要害，而它们只差一次手写：两个调用方要的正好相反，
+// 后台没选门店要的是全量，商户账号一个点位都没授权要的是没有。把空切片也读成「不过滤」
+// 就是让前者顺带放开了后者。
 func TestListDevicesFiltersByStoreIDsAndKeyword(t *testing.T) {
 	pool := integrationPool(t)
 	repo := NewPostgresRepository(pool)
@@ -340,21 +367,24 @@ func TestListDevicesFiltersByStoreIDsAndKeyword(t *testing.T) {
 		t.Fatalf("只选一个门店却返回了 %d 行", total)
 	}
 
-	// 空切片与 nil 都必须表示「不过滤」。nil 那条正是上面注释里说的坑。
-	for _, tc := range []struct {
-		name  string
-		store []string
-	}{
-		{"nil 切片", nil},
-		{"空切片", []string{}},
-	} {
-		_, total, err := repo.ListDevices(ctx, DeviceFilter{StoreIDs: tc.store, Page: 1, PageSize: 100})
-		if err != nil {
-			t.Fatalf("list with %s: %v", tc.name, err)
-		}
-		if total < 3 {
-			t.Fatalf("%s 把列表筛成了 %d 行，want 至少三台夹具设备", tc.name, total)
-		}
+	// nil（后台没选门店）不过滤：pgx 把 nil 切片编码成 NULL，谓词判的就是这个 NULL。
+	// 这一条守住的是后台行为一字未变。
+	all, total, err := repo.ListDevices(ctx, DeviceFilter{StoreIDs: nil, Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list with a nil filter: %v", err)
+	}
+	if total < 3 || len(all) < 3 {
+		t.Fatalf("nil 门店条件把列表筛成了 %d 行，want 至少三台夹具设备", total)
+	}
+
+	// 空切片（商户账号一个点位都没授权）命中零行，total 与列表都必须是 0：只要有一个
+	// 不是 0，就说明过滤只作用在了其中一条查询上。
+	none, total, err := repo.ListDevices(ctx, DeviceFilter{StoreIDs: []string{}, Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("list with an empty scope: %v", err)
+	}
+	if total != 0 || len(none) != 0 {
+		t.Fatalf("空范围应命中零行，得到 total = %d, len = %d", total, len(none))
 	}
 
 	// 取 A 序列号中间的一段做模糊匹配。序列号是 "it-"+uuid，这 8 位十六进制只会出现在
@@ -498,5 +528,163 @@ func TestListDrinksFiltersByManufacturer(t *testing.T) {
 	}
 	if drinks[0].OriginID != "it-origin-"+drinkID {
 		t.Fatalf("origin_id = %q, want the value that was inserted", drinks[0].OriginID)
+	}
+}
+
+// codedDrinkFixture 插一行带编号与上下架状态的饮品并注册清理。admin_integration_test.go
+// 里那个 drinkFixture 只填名字，编号两列留默认空串——设备回调那条路要按编号找人，
+// 所以这里单独一个：deviceID 为 nil 表示这行还没挂设备（003 允许的遗留行）。
+func codedDrinkFixture(t *testing.T, pool *pgxpool.Pool, deviceID *string, manufacturerID, productNum, originID, status string) string {
+	t.Helper()
+	drinkID := uuid.NewString()
+	_, err := pool.Exec(context.Background(), `INSERT INTO drinks(id, device_id, manufacturer_id, product_name, origin_id, product_num, price, status)
+		VALUES($1, $2, $3, $4, $5, $6, 1500, $7)`,
+		drinkID, deviceID, manufacturerID, "集成测试饮品", originID, productNum, status)
+	if err != nil {
+		t.Fatalf("insert drink: %v", err)
+	}
+	cleanupFixture(t, pool, `DELETE FROM drinks WHERE id = $1`, drinkID)
+	return drinkID
+}
+
+// TestGetDeviceDrinkFindsTheCodeTheMachineReports 是设备回调建单（方案 §四）的第二步：
+// 机器报的编号落在哪一列由当初的同步来源决定，两列都要命中；而已经收过钱的那一杯，
+// 不能因为下架就变成「查不到」。
+func TestGetDeviceDrinkFindsTheCodeTheMachineReports(t *testing.T) {
+	pool := integrationPool(t)
+	repo := NewPostgresRepository(pool)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	deviceID := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+	otherDeviceID := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+
+	// 同步来源之一：编号落在 product_num，而且这杯已经下架。
+	byProductNum := codedDrinkFixture(t, pool, &deviceID, manufacturerID, "1001", "", "off_shelf")
+	// 另一种来源：编号落在 origin_id。
+	byOrigin := codedDrinkFixture(t, pool, &deviceID, manufacturerID, "", "2002", "on_shelf")
+	// 同一个编号在别的设备上也有一行：设备维度不能串。
+	codedDrinkFixture(t, pool, &otherDeviceID, manufacturerID, "1001", "", "on_shelf")
+
+	drink, err := repo.GetDeviceDrink(ctx, deviceID, "1001")
+	if err != nil {
+		t.Fatalf("get device drink by product_num: %v", err)
+	}
+	if drink.ID != byProductNum {
+		t.Fatalf("id = %q, want the row whose product_num matches (%q)", drink.ID, byProductNum)
+	}
+	// 不按 status 过滤：下架也认，钱已经在机器上收过了。
+	if drink.Status != "off_shelf" {
+		t.Fatalf("status = %q, want the off_shelf row to match too", drink.Status)
+	}
+
+	drink, err = repo.GetDeviceDrink(ctx, deviceID, "2002")
+	if err != nil {
+		t.Fatalf("get device drink by origin_id: %v", err)
+	}
+	if drink.ID != byOrigin {
+		t.Fatalf("id = %q, want the row whose origin_id matches (%q)", drink.ID, byOrigin)
+	}
+
+	// 别的设备上的同一编号不算数：查询是按设备定位的。
+	if _, err := repo.GetDeviceDrink(ctx, otherDeviceID, "2002"); !errors.Is(err, ErrDrinkNotFound) {
+		t.Fatalf("err = %v, want ErrDrinkNotFound for a code that lives on another device", err)
+	}
+	if _, err := repo.GetDeviceDrink(ctx, deviceID, "no-such-code"); !errors.Is(err, ErrDrinkNotFound) {
+		t.Fatalf("err = %v, want ErrDrinkNotFound", err)
+	}
+}
+
+// TestGetDrinkReadsTheRowByPrimaryKey 是小程序下单定价（order-service 那条路）的第一步：
+// 调用方手里只有我们的 uuid，按它取一行。
+//
+// 与上面那条**不是同一个查询的两副面孔**：那一条按设备 + 机器报的编号定位，这一条按主键。
+// 它同样**不筛 status**：这一杯现在卖不卖是订单域该判的事（钱收没收到是那边的事实），
+// 咖啡机域只如实把 status 回出去。
+func TestGetDrinkReadsTheRowByPrimaryKey(t *testing.T) {
+	pool := integrationPool(t)
+	repo := NewPostgresRepository(pool)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	deviceID := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+
+	drinkID := codedDrinkFixture(t, pool, &deviceID, manufacturerID, "3003", "", "off_shelf")
+	// 另一台设备上的一行：按主键取不该被设备维度影响，取谁是谁。
+	otherDeviceID := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+	otherDrinkID := codedDrinkFixture(t, pool, &otherDeviceID, manufacturerID, "4004", "", "on_shelf")
+
+	drink, err := repo.GetDrink(ctx, drinkID)
+	if err != nil {
+		t.Fatalf("get drink: %v", err)
+	}
+	if drink.ID != drinkID || drink.ProductNum != "3003" {
+		t.Fatalf("id/product_num = %q/%q, want %q/3003", drink.ID, drink.ProductNum, drinkID)
+	}
+	// 下架的那一行照样取得到，status 原样带回来。
+	if drink.Status != "off_shelf" {
+		t.Fatalf("status = %q, want off_shelf（这一条不按 status 过滤）", drink.Status)
+	}
+	if drink.DeviceID == nil || *drink.DeviceID != deviceID {
+		t.Fatalf("device_id = %v, want %q（下单要靠它判「这杯在不在那台设备上」）", drink.DeviceID, deviceID)
+	}
+
+	other, err := repo.GetDrink(ctx, otherDrinkID)
+	if err != nil {
+		t.Fatalf("get the other device's drink: %v", err)
+	}
+	if other.DeviceID == nil || *other.DeviceID != otherDeviceID {
+		t.Fatalf("device_id = %v, want %q", other.DeviceID, otherDeviceID)
+	}
+
+	// 目录里没有这个 id：与「编号在这台机器上查不到」是同一个哨兵——对调用方来说都是
+	// 「你给的这个标识在我这儿找不到那一杯」。
+	if _, err := repo.GetDrink(ctx, uuid.NewString()); !errors.Is(err, ErrDrinkNotFound) {
+		t.Fatalf("err = %v, want ErrDrinkNotFound", err)
+	}
+}
+
+// TestListDrinksScopesToADeviceAndKeepsUnassignedRowsApart 盯的是 003 之后 drinks 的两类行：
+// 挂在设备上的，和还没挂设备的（device_id 为 NULL）。按设备过滤只该给出前者，不过滤才是
+// 两类都在——把两者写成同一个结果，设备回调建单就会拿到别的机器上的饮品。
+func TestListDrinksScopesToADeviceAndKeepsUnassignedRowsApart(t *testing.T) {
+	pool := integrationPool(t)
+	repo := NewPostgresRepository(pool)
+	ctx := context.Background()
+	manufacturerID := manufacturerFixture(t, pool)
+	deviceID := deviceFixture(t, pool, manufacturerID, "active", nil, nil)
+
+	mineID := uuid.NewString()
+	_, err := pool.Exec(ctx, `INSERT INTO drinks(id, device_id, manufacturer_id, product_name, origin_id, price)
+		VALUES($1, $2, $3, $4, $5, 1500)`,
+		mineID, deviceID, manufacturerID, "集成测试饮品·本机", "it-origin-"+mineID)
+	if err != nil {
+		t.Fatalf("insert drink on the device: %v", err)
+	}
+	cleanupFixture(t, pool, `DELETE FROM drinks WHERE id = $1`, mineID)
+
+	// 遗留行：003 的注释说明库里可能还有没挂设备的饮品，过滤与不过滤的差别就出在它身上。
+	orphanID := uuid.NewString()
+	_, err = pool.Exec(ctx, `INSERT INTO drinks(id, manufacturer_id, product_name, origin_id, price)
+		VALUES($1, $2, $3, $4, 1500)`,
+		orphanID, manufacturerID, "集成测试饮品·未挂设备", "it-origin-"+orphanID)
+	if err != nil {
+		t.Fatalf("insert unassigned drink: %v", err)
+	}
+	cleanupFixture(t, pool, `DELETE FROM drinks WHERE id = $1`, orphanID)
+
+	drinks, total, err := repo.ListDrinks(ctx, DrinkFilter{DeviceID: deviceID, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("list drinks by device: %v", err)
+	}
+	if total != 1 || len(drinks) != 1 || drinks[0].ID != mineID {
+		t.Fatalf("total = %d, len = %d; want only the drink on this device", total, len(drinks))
+	}
+
+	// 不过滤设备时按厂商收窄到本次夹具，两类行都该在。
+	all, allTotal, err := repo.ListDrinks(ctx, DrinkFilter{ManufacturerID: manufacturerID, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("list drinks by manufacturer: %v", err)
+	}
+	if allTotal != 2 || len(all) != 2 {
+		t.Fatalf("total = %d, len = %d; want both the assigned and the unassigned row", allTotal, len(all))
 	}
 }

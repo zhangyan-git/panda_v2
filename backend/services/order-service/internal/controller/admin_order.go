@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -44,6 +45,15 @@ func (c *AdminOrderController) Orders(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.list(w, r)
+	// 补单：这个分支**必须**排在下面对 {id} 的兜底之前。两条路径的形状一样（/v1/admin/orders/
+	// 后面跟一段），而 mux 那边登记的顺序也照这个来（见 routes.RegisterAdmin）——落到兜底里
+	// 的话它会被当成一个叫 "pickup-repairs" 的订单 id，而那个 id 查出来是一句「不是 uuid」。
+	case rest == "pickup-repairs":
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		c.repairPickupOrder(w, r)
 	case strings.HasSuffix(rest, "/cancel"):
 		if r.Method != http.MethodPost {
 			http.NotFound(w, r)
@@ -80,7 +90,11 @@ func (c *AdminOrderController) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source := strings.TrimSpace(query.Get("source"))
-	if source != "" && source != model.SourceMiniapp && source != model.SourceScreenQR {
+	// 判据用 model.IsOrderSource 而不是在这里列一遍取值：这份白名单**漏过一次**——后台的
+	// 来源下拉里一直摆着「设备下单」（device 是 005 加的），而这里只认到 003 那两个，
+	// 于是选中「设备下单」就回 400，看起来像「这个来源没有订单」。列在这里的每多一个取值，
+	// 就多一次漏掉的机会；词表的全集在 model 那边，与库上的 CHECK 逐字对齐。
+	if source != "" && !model.IsOrderSource(source) {
 		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "source is invalid")
 		return
 	}
@@ -193,6 +207,65 @@ func (c *AdminOrderController) complete(w http.ResponseWriter, r *http.Request, 
 		"orderId": result.OrderID,
 		"status":  result.Status,
 	})
+}
+
+// repairPickupOrder 补建一张取货码订单：把「钱扣了、单没建出来」的那一单补出来。
+//
+// # 它是一个运维入口，**这个前端上没有按钮**
+//
+// 与设备余额那条后台调整接口同一个形状（coffee-machine-service 的
+// POST /v1/admin/coffee-machines/devices/{id}/balance）：路由挂了、权限码加了，但后台页面
+// 不提供入口。
+// 理由也一样——这不是一个「操作员日常点得到」的动作，而是出事后有人拿着对方单号来补一次。
+// 真要给它做一个页面，那张页面必须先把「怎么判断这一单该补」讲清楚，而那是运维手册的事。
+//
+// # 取货码那一格传空串是有意的
+//
+// 补的是钱已经扣过的单：扣减撞上同一个 request_id 时直接短路回当初那一笔，不需要验证码
+// （见咖啡机域的 DeductDeviceBalance）。而空码本身过不了那台设备的校验（没配过码的设备
+// 一律拒绝、配过码的设备空串对不上），所以这条接口**不可能引起一次新的扣款**——它只会把
+// 已经扣过的单补出来。副作用是一个很清楚的信号：回「取货码不对」意味着这笔钱从来没扣过，
+// 那一单不该补（见下面那个分支）。
+//
+// # 它的幂等是自己带来的
+//
+// 重复补同一单不会建出第二张：建单那一步按对方单号命中既有单，返回 created=false。所以
+// 这个按钮点两次是安全的——这也是它敢只用一个「补」字命名而不要一个确认参数的原因。
+func (c *AdminOrderController) repairPickupOrder(w http.ResponseWriter, r *http.Request) {
+	var body dto.PickupRepairRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request body")
+		return
+	}
+	result, err := c.orders.CreatePickupOrder(r.Context(), service.CreatePickupOrderInput{
+		ThirdPartyOrderNo: body.ThirdPartyOrderNo,
+		DeviceSerial:      body.DeviceSerial,
+		DrinkCode:         body.DrinkCode,
+		// 空码是这条路的一部分，见上面的说明。**不 trim、不判空**：判空会在这里就拒掉一次
+		// 本该成功的补单，而「这个码是空的」在持有那一列的那一侧有确定结论。
+		PickupPassword: "",
+		Remark:         body.Remark,
+	})
+	switch {
+	case err == nil:
+		api.Success(w, map[string]any{
+			"orderId": result.OrderID,
+			"orderNo": result.OrderNo,
+			// created=false：这张单早就建好了（可能是上一次补成的，也可能是合作方自己重投
+			// 建出来的）。它**不是失败**——调用方要的是「这一单在库里」，那就是。
+			"created": result.Created,
+		})
+	case errors.Is(err, service.ErrDeviceBalancePasswordRejected):
+		// 空码被拒 = 这个 request_id 在设备余额流水上没有对应的扣减，也就是说**这笔钱从来
+		// 没扣过**。这不是一次「码填错了」，而是「这一单不该补」。回一个说得出话的码与文案，
+		// 而不是让取货码那条路的原话（「取货码不对」）出现在一个没有取货码的请求上。
+		api.Error(w, http.StatusConflict, "NOT_CHARGED", err.Error())
+	case errors.Is(err, service.ErrThirdPartyOrderNoTaken):
+		// 这个单号属于另一类设备单（刷卡机那条）。补不了，也不该补——两张单的钱来源不同。
+		api.Error(w, http.StatusConflict, "ORDER_NO_TAKEN", err.Error())
+	default:
+		writeOrderError(w, err, "failed to repair pickup order")
+	}
 }
 
 // parseLinePresence 解析「有没有某类行」这类三态筛选参数：不传 = 不筛，true/1 = 要有，

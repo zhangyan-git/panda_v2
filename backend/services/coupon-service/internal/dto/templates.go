@@ -14,6 +14,11 @@ type CouponTemplateQuery struct {
 	Name        string
 	Status      string
 	AuditStatus string
+	// 按券类型筛，取 coupon_types.code —— 与 UserCouponQuery.CouponTypeCode 同一个词，
+	// 界面上那两处下拉给的都是编码。**不按 id 筛**：调用方（会员套餐表单要挑
+	// MEMBERSHIP_PRICE_EXPERIENCE 的模板）手里只有编码，拿 id 得先去查一次类型列表，
+	// 而那个接口要 coupon:type:manage —— 只有券读权限的人会看到空下拉。
+	CouponTypeCode string
 }
 
 // CouponTemplateResponse 是优惠券模板对外的 JSON 形态。model 只带 db tag，

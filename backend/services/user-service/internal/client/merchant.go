@@ -164,6 +164,33 @@ func (c *MerchantGRPCClient) ScopeNames(ctx context.Context, brandIDs, storeIDs 
 	return resp.GetBrandNames(), resp.GetStoreNames(), nil
 }
 
+// ListStoreIDs expands a merchant account's data scope into its authorized
+// store set. A bad scope type is a caller bug and the peer says so with
+// InvalidArgument; it travels up unchanged rather than being flattened into an
+// empty set, because "this account may see nothing" and "this request cannot be
+// answered" must not look the same at the call site.
+func (c *MerchantGRPCClient) ListStoreIDs(ctx context.Context, merchantID, scopeType, scopeID string) ([]string, error) {
+	if err := validateID(merchantID); err != nil {
+		return nil, err
+	}
+	if scopeID != "" {
+		if err := validateID(scopeID); err != nil {
+			return nil, err
+		}
+	}
+	ctx, cancel := c.call(ctx)
+	defer cancel()
+	resp, err := c.merchants.ListStoreIDs(ctx, &merchantv1.ListStoreIDsRequest{
+		MerchantId: merchantID,
+		ScopeType:  scopeType,
+		ScopeId:    scopeID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetStoreIds(), nil
+}
+
 func (c *MerchantGRPCClient) FindStoreMerchantID(ctx context.Context, id string) (string, error) {
 	if err := validateID(id); err != nil {
 		return "", err

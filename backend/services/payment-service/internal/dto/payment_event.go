@@ -41,10 +41,17 @@ type PaymentEventPayload struct {
 	// Amount 单位为分。order-service 必须拿它和订单的 payable_amount 对一遍：对不上就
 	// 不落单，而不是信它——一个错的事件把订单标成已支付，比一次失败难查得多。
 	Amount int64 `json:"amount"`
-	// PaymentMethod 取 payments.funding_type，落到 orders.payment_method 上用于列表
-	// 展示与对账归类。
+	// PaymentMethod 取 payments.payment_method：用户实际选的那一种支付方式，值是 catalog
+	// 里的 code（如 `ums_h5_alipay`）。order-service 拿它同时落两处——orders.payment_method
+	// 供后台展示，以及订单侧那一行出资流水的 line_type。
+	//
+	// **只有这一个值**。从前这里还发一个 fundingType（出资渠道词表 wechat/unionpay/
+	// coffee_bean/wallet/other），下游只能靠它写 line_type，于是加一种支付方式要同时在两套
+	// 词表里找档位——支付宝在词表里没有档，只能落 `other`，后台把一笔支付宝单显示成「其他」。
+	// 那套词表连同 payments.funding_type 一列已经退场（见 payment/012），五处 line_type 全部
+	// 存这个 code。要判「这笔钱走不走渠道」，看的是这种方式有没有渠道，不是看词表值。
 	PaymentMethod string `json:"paymentMethod"`
-	// Fundings 是逐笔出资分摊。为空时 order-service 按「单笔、渠道 = PaymentMethod、
+	// Fundings 是逐笔出资分摊。为空时 order-service 按「单笔、方式 = PaymentMethod、
 	// 金额 = Amount」补一行；本轮永远是恰好一行（渠道出资），混合出资要等 account-service。
 	Fundings []PaymentFunding `json:"fundings"`
 	// ProviderTransactionID 是渠道侧交易号，落到订单侧的支付流水上供反查渠道。
@@ -59,6 +66,7 @@ type PaymentEventPayload struct {
 
 // PaymentFunding 是一笔出资：渠道支付，或者账户余额（咖啡豆）。
 type PaymentFunding struct {
+	// LineType 是这笔出资的支付方式 code，与外层 PaymentMethod 同一套值。
 	LineType  string `json:"lineType"`
 	Amount    int64  `json:"amount"`
 	PaymentNo string `json:"paymentNo"`

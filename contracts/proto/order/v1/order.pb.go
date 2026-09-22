@@ -10,6 +10,7 @@ import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
+	sync "sync"
 	unsafe "unsafe"
 )
 
@@ -20,20 +21,894 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type CreateDeviceOrderRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 对方单号，幂等键。**非空**，为空回 InvalidArgument。
+	ThirdPartyOrderNo string `protobuf:"bytes,1,opt,name=third_party_order_no,json=thirdPartyOrderNo,proto3" json:"third_party_order_no,omitempty"`
+	// 设备序列号（coffee-machine-service 的 devices.serial_unique）。**非空**。
+	//
+	// 门店与设备 uuid 都由这一条推出来，**请求里没有让调用方直接给 store_id 的字段**：
+	// 门店来自设备，不来自请求——设备是「这台机器属于哪个点位」的唯一来源。收调用方填的
+	// store_id 等于让订单挂在一个设备并不在的点位上，而那是最难查的一类脏数据
+	// （见 order-service 的 resolveDevice）。
+	DeviceSerial string `protobuf:"bytes,2,opt,name=device_serial,json=deviceSerial,proto3" json:"device_serial,omitempty"`
+	// 设备报的饮品编号。**不是我们的 uuid**——机器不可能知道我们的主键。
+	//
+	// 这个编号怎么变成我们那一行饮品，**不在这里规定**：它落在 drinks 的哪一列取决于这家
+	// 厂商当初的同步来源，那是饮品库的布局知识，归 coffee-machine-service。本服务把它原样
+	// 交给 GetDeviceDrink(device_id, drink_code)，由那边一次查一条。
+	//
+	// 所以本服务**不要**自己去列菜单再按编号猜列匹配：那既把对方的布局知识抄了过来，
+	// 也躲不过列表分页——机器上饮品一多就会静默匹配不到，而那时钱已经收过了。
+	DrinkCode string `protobuf:"bytes,3,opt,name=drink_code,json=drinkCode,proto3" json:"drink_code,omitempty"`
+	// 设备上报的成交金额，单位**分**。为 0 时回退到饮品目录价（照老系统）。
+	// 详见上面「金额由调用方给，且不校验」。
+	Amount int64 `protobuf:"varint,4,opt,name=amount,proto3" json:"amount,omitempty"`
+	// 设备上报的出饮结果：false=出杯成功，true=出饮失败。
+	//
+	// 失败时订单照样建（钱收了），但履约状态标成 failed 留人工——老系统标的是
+	// make_drink_status=dead 并明确「后台重试任务不会补发出杯指令」。V2 的 order_lines
+	// 不存任务状态（履约细节归 fulfillment-service），订单这一层的汇总就是
+	// orders.fulfillment_status，它本来就有 failed 这个取值。
+	BrewFailed bool `protobuf:"varint,5,opt,name=brew_failed,json=brewFailed,proto3" json:"brew_failed,omitempty"`
+	// 备注，可空。会拼在「设备刷卡购买」之后。
+	Remark        string `protobuf:"bytes,6,opt,name=remark,proto3" json:"remark,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateDeviceOrderRequest) Reset() {
+	*x = CreateDeviceOrderRequest{}
+	mi := &file_order_v1_order_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateDeviceOrderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateDeviceOrderRequest) ProtoMessage() {}
+
+func (x *CreateDeviceOrderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_order_v1_order_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateDeviceOrderRequest.ProtoReflect.Descriptor instead.
+func (*CreateDeviceOrderRequest) Descriptor() ([]byte, []int) {
+	return file_order_v1_order_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *CreateDeviceOrderRequest) GetThirdPartyOrderNo() string {
+	if x != nil {
+		return x.ThirdPartyOrderNo
+	}
+	return ""
+}
+
+func (x *CreateDeviceOrderRequest) GetDeviceSerial() string {
+	if x != nil {
+		return x.DeviceSerial
+	}
+	return ""
+}
+
+func (x *CreateDeviceOrderRequest) GetDrinkCode() string {
+	if x != nil {
+		return x.DrinkCode
+	}
+	return ""
+}
+
+func (x *CreateDeviceOrderRequest) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *CreateDeviceOrderRequest) GetBrewFailed() bool {
+	if x != nil {
+		return x.BrewFailed
+	}
+	return false
+}
+
+func (x *CreateDeviceOrderRequest) GetRemark() string {
+	if x != nil {
+		return x.Remark
+	}
+	return ""
+}
+
+type CreateDeviceOrderResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	OrderId string                 `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	OrderNo string                 `protobuf:"bytes,2,opt,name=order_no,json=orderNo,proto3" json:"order_no,omitempty"`
+	// true=这一次真的建了单；false=幂等命中，返回的是既有那张单。
+	//
+	// 调用方要能区分这两者：建单成功与「对方重投了一次」在日志里是完全不同的两件事，
+	// 而如果它们都回一个空响应，运维就只能看到一串 200。
+	Created       bool `protobuf:"varint,3,opt,name=created,proto3" json:"created,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateDeviceOrderResponse) Reset() {
+	*x = CreateDeviceOrderResponse{}
+	mi := &file_order_v1_order_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateDeviceOrderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateDeviceOrderResponse) ProtoMessage() {}
+
+func (x *CreateDeviceOrderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_order_v1_order_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateDeviceOrderResponse.ProtoReflect.Descriptor instead.
+func (*CreateDeviceOrderResponse) Descriptor() ([]byte, []int) {
+	return file_order_v1_order_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *CreateDeviceOrderResponse) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *CreateDeviceOrderResponse) GetOrderNo() string {
+	if x != nil {
+		return x.OrderNo
+	}
+	return ""
+}
+
+func (x *CreateDeviceOrderResponse) GetCreated() bool {
+	if x != nil {
+		return x.Created
+	}
+	return false
+}
+
+type CreatePickupOrderRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 对方单号，**这条路唯一的幂等键**。非空，为空回 InvalidArgument。
+	//
+	// 它同时是余额流水上的 request_id 与订单上的 third_party_order_no（见 service 的说明：
+	// 一个键两个身份，拆开就等于把重投防不住）。所以**不接受空值**：
+	// device_balance_ledger_one_per_request 只索引 request_id 非空的行，空串会绕过它。
+	ThirdPartyOrderNo string `protobuf:"bytes,1,opt,name=third_party_order_no,json=thirdPartyOrderNo,proto3" json:"third_party_order_no,omitempty"`
+	// 设备序列号（coffee-machine-service 的 devices.serial_unique）。**非空**。
+	// 余额扣的是这台设备，点位也是从它推出来的，请求里没有 store_id。
+	DeviceSerial string `protobuf:"bytes,2,opt,name=device_serial,json=deviceSerial,proto3" json:"device_serial,omitempty"`
+	// 设备报的饮品编号，**不是我们的 uuid**。**非空**。
+	// 认哪一杯与它的价格都由咖啡机域查一条决定（GetDeviceDrink），与刷卡机那条完全一样。
+	DrinkCode string `protobuf:"bytes,3,opt,name=drink_code,json=drinkCode,proto3" json:"drink_code,omitempty"`
+	// 顾客在机器上敲的那个取货码。
+	//
+	// **原样转下去，本服务不比对、不 trim、不判空**：要不要放行由持有那一列的服务说了算
+	// （coffee-machine-service 在扣减事务里、与设备行同一把锁之内比）。把比对抄到这里会多出
+	// 一个 TOCTOU 窗口（读码与扣钱之间码可能被改），也会让「码对不对」与「钱够不够」变成
+	// 两次各自成立的判断——而那两件事必须在同一个事务里一次定下来。
+	PickupPassword string `protobuf:"bytes,4,opt,name=pickup_password,json=pickupPassword,proto3" json:"pickup_password,omitempty"`
+	// 备注，可空。会拼在「取货码购买」之后。
+	Remark        string `protobuf:"bytes,5,opt,name=remark,proto3" json:"remark,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreatePickupOrderRequest) Reset() {
+	*x = CreatePickupOrderRequest{}
+	mi := &file_order_v1_order_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreatePickupOrderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreatePickupOrderRequest) ProtoMessage() {}
+
+func (x *CreatePickupOrderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_order_v1_order_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreatePickupOrderRequest.ProtoReflect.Descriptor instead.
+func (*CreatePickupOrderRequest) Descriptor() ([]byte, []int) {
+	return file_order_v1_order_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *CreatePickupOrderRequest) GetThirdPartyOrderNo() string {
+	if x != nil {
+		return x.ThirdPartyOrderNo
+	}
+	return ""
+}
+
+func (x *CreatePickupOrderRequest) GetDeviceSerial() string {
+	if x != nil {
+		return x.DeviceSerial
+	}
+	return ""
+}
+
+func (x *CreatePickupOrderRequest) GetDrinkCode() string {
+	if x != nil {
+		return x.DrinkCode
+	}
+	return ""
+}
+
+func (x *CreatePickupOrderRequest) GetPickupPassword() string {
+	if x != nil {
+		return x.PickupPassword
+	}
+	return ""
+}
+
+func (x *CreatePickupOrderRequest) GetRemark() string {
+	if x != nil {
+		return x.Remark
+	}
+	return ""
+}
+
+type CreatePickupOrderResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	OrderId string                 `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	OrderNo string                 `protobuf:"bytes,2,opt,name=order_no,json=orderNo,proto3" json:"order_no,omitempty"`
+	// true=这一次真的建了单；false=幂等命中（被扣过、也被建过）。
+	//
+	// 一次重投要求这两件事**同时**是幂等的：扣减按 request_id 命中（coffee-machine-service
+	// 回 applied=false），建单按对方单号命中。任一环节单独幂等都不够。
+	Created       bool `protobuf:"varint,3,opt,name=created,proto3" json:"created,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreatePickupOrderResponse) Reset() {
+	*x = CreatePickupOrderResponse{}
+	mi := &file_order_v1_order_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreatePickupOrderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreatePickupOrderResponse) ProtoMessage() {}
+
+func (x *CreatePickupOrderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_order_v1_order_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreatePickupOrderResponse.ProtoReflect.Descriptor instead.
+func (*CreatePickupOrderResponse) Descriptor() ([]byte, []int) {
+	return file_order_v1_order_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CreatePickupOrderResponse) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *CreatePickupOrderResponse) GetOrderNo() string {
+	if x != nil {
+		return x.OrderNo
+	}
+	return ""
+}
+
+func (x *CreatePickupOrderResponse) GetCreated() bool {
+	if x != nil {
+		return x.Created
+	}
+	return false
+}
+
+// MembershipPlanSnapshot 是会员行上那份套餐快照的形状，与
+// order-service 的 dto.MembershipPlanSnapshot **逐字同构**（同一个结构编出来的 JSON 要能直接
+// 落进 order_lines.membership_plan_snapshot）。
+//
+// 刻意做成一个嵌套消息而不是十个平铺字段：这样它在 proto 这一层就是一个整体，加一个字段时
+// 不会漏掉某一条调用路。
+type MembershipPlanSnapshot struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// PlanID 是套餐的值引用（订单行不建外键，会员库里才有）。PlanCode / PlanName 是成交
+	// 当时的副本，套餐改名不影响历史订单。
+	PlanId   string `protobuf:"bytes,1,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
+	PlanCode string `protobuf:"bytes,2,opt,name=plan_code,json=planCode,proto3" json:"plan_code,omitempty"`
+	PlanName string `protobuf:"bytes,3,opt,name=plan_name,json=planName,proto3" json:"plan_name,omitempty"`
+	// price_cents 是这一期实付的套餐价（分）。它同时是会员行上 original_unit_price 的来源。
+	PriceCents int64 `protobuf:"varint,4,opt,name=price_cents,json=priceCents,proto3" json:"price_cents,omitempty"`
+	// period / period_count 是这一期买到的时长（连续包月 = month/1）。续期按日历加。
+	Period      string `protobuf:"bytes,5,opt,name=period,proto3" json:"period,omitempty"`
+	PeriodCount int32  `protobuf:"varint,6,opt,name=period_count,json=periodCount,proto3" json:"period_count,omitempty"`
+	// auto_renew 是套餐层面的「这个产品要签代扣」，**不是**用户那个开关（那个在会员域自己身上）。
+	// 续费这条路上它恒为 true：这一单存在的原因本身就是一个开着的代扣。
+	AutoRenew bool `protobuf:"varint,7,opt,name=auto_renew,json=autoRenew,proto3" json:"auto_renew,omitempty"`
+	// 会员价的来路快照：auto 自动享，coupon 靠发券；发几张、用哪个模板看后两列
+	// （只有 coupon 模式有值）。**下游按这份快照发券**——代扣续期发的就是这批券。
+	MemberPriceMode             string `protobuf:"bytes,8,opt,name=member_price_mode,json=memberPriceMode,proto3" json:"member_price_mode,omitempty"`
+	MemberPriceCouponTemplateId string `protobuf:"bytes,9,opt,name=member_price_coupon_template_id,json=memberPriceCouponTemplateId,proto3" json:"member_price_coupon_template_id,omitempty"`
+	MemberPriceCouponsPerPeriod int32  `protobuf:"varint,10,opt,name=member_price_coupons_per_period,json=memberPriceCouponsPerPeriod,proto3" json:"member_price_coupons_per_period,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
+}
+
+func (x *MembershipPlanSnapshot) Reset() {
+	*x = MembershipPlanSnapshot{}
+	mi := &file_order_v1_order_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MembershipPlanSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MembershipPlanSnapshot) ProtoMessage() {}
+
+func (x *MembershipPlanSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_order_v1_order_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MembershipPlanSnapshot.ProtoReflect.Descriptor instead.
+func (*MembershipPlanSnapshot) Descriptor() ([]byte, []int) {
+	return file_order_v1_order_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *MembershipPlanSnapshot) GetPlanId() string {
+	if x != nil {
+		return x.PlanId
+	}
+	return ""
+}
+
+func (x *MembershipPlanSnapshot) GetPlanCode() string {
+	if x != nil {
+		return x.PlanCode
+	}
+	return ""
+}
+
+func (x *MembershipPlanSnapshot) GetPlanName() string {
+	if x != nil {
+		return x.PlanName
+	}
+	return ""
+}
+
+func (x *MembershipPlanSnapshot) GetPriceCents() int64 {
+	if x != nil {
+		return x.PriceCents
+	}
+	return 0
+}
+
+func (x *MembershipPlanSnapshot) GetPeriod() string {
+	if x != nil {
+		return x.Period
+	}
+	return ""
+}
+
+func (x *MembershipPlanSnapshot) GetPeriodCount() int32 {
+	if x != nil {
+		return x.PeriodCount
+	}
+	return 0
+}
+
+func (x *MembershipPlanSnapshot) GetAutoRenew() bool {
+	if x != nil {
+		return x.AutoRenew
+	}
+	return false
+}
+
+func (x *MembershipPlanSnapshot) GetMemberPriceMode() string {
+	if x != nil {
+		return x.MemberPriceMode
+	}
+	return ""
+}
+
+func (x *MembershipPlanSnapshot) GetMemberPriceCouponTemplateId() string {
+	if x != nil {
+		return x.MemberPriceCouponTemplateId
+	}
+	return ""
+}
+
+func (x *MembershipPlanSnapshot) GetMemberPriceCouponsPerPeriod() int32 {
+	if x != nil {
+		return x.MemberPriceCouponsPerPeriod
+	}
+	return 0
+}
+
+type CreateRenewalOrderRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 渠道流水号（payment_agreement_charges.provider_transaction_id），幂等键。**非空**，
+	// 为空回 InvalidArgument。传空串等于放弃幂等：重投会变成第二张单，而钱只收了一次。
+	ThirdPartyOrderNo string `protobuf:"bytes,1,opt,name=third_party_order_no,json=thirdPartyOrderNo,proto3" json:"third_party_order_no,omitempty"`
+	// 下单用户（user-service 的用户 ID）。**非空**——与设备单相反，这一单有主人。
+	UserId string `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// 这一期的实付金额（分）。**权威来自调用方**（订阅行上冻结的 price_cents），本服务不核对。
+	Amount int64 `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	// 签约时冻结的套餐快照。**整份由调用方给全**，理由见 rpc 的说明。
+	Plan *MembershipPlanSnapshot `protobuf:"bytes,4,opt,name=plan,proto3" json:"plan,omitempty"`
+	// 会员 ID（memberships.id），可空。填了会把这一单挂到那条会员上，后台从会员看订单查得到。
+	// 「可空」只是因为它是**值引用**、不是这条路成立的条件。
+	MembershipId string `protobuf:"bytes,5,opt,name=membership_id,json=membershipId,proto3" json:"membership_id,omitempty"`
+	// 备注，可空。会拼在「会员续费扣款」之后。
+	Remark        string `protobuf:"bytes,6,opt,name=remark,proto3" json:"remark,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateRenewalOrderRequest) Reset() {
+	*x = CreateRenewalOrderRequest{}
+	mi := &file_order_v1_order_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateRenewalOrderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateRenewalOrderRequest) ProtoMessage() {}
+
+func (x *CreateRenewalOrderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_order_v1_order_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateRenewalOrderRequest.ProtoReflect.Descriptor instead.
+func (*CreateRenewalOrderRequest) Descriptor() ([]byte, []int) {
+	return file_order_v1_order_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CreateRenewalOrderRequest) GetThirdPartyOrderNo() string {
+	if x != nil {
+		return x.ThirdPartyOrderNo
+	}
+	return ""
+}
+
+func (x *CreateRenewalOrderRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *CreateRenewalOrderRequest) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *CreateRenewalOrderRequest) GetPlan() *MembershipPlanSnapshot {
+	if x != nil {
+		return x.Plan
+	}
+	return nil
+}
+
+func (x *CreateRenewalOrderRequest) GetMembershipId() string {
+	if x != nil {
+		return x.MembershipId
+	}
+	return ""
+}
+
+func (x *CreateRenewalOrderRequest) GetRemark() string {
+	if x != nil {
+		return x.Remark
+	}
+	return ""
+}
+
+type CreateRenewalOrderResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	OrderId string                 `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	OrderNo string                 `protobuf:"bytes,2,opt,name=order_no,json=orderNo,proto3" json:"order_no,omitempty"`
+	// true=这一次真的建了单；false=幂等命中，返回的是既有那张单。
+	//
+	// 调用方**必须**看这一位：它要在同一个事务里把 order_id 写进自己的续费流水（见
+	// membership_changes.order_id），而重投时它拿到的是同一张单的 id，不是一张新单。
+	Created       bool `protobuf:"varint,3,opt,name=created,proto3" json:"created,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateRenewalOrderResponse) Reset() {
+	*x = CreateRenewalOrderResponse{}
+	mi := &file_order_v1_order_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateRenewalOrderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateRenewalOrderResponse) ProtoMessage() {}
+
+func (x *CreateRenewalOrderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_order_v1_order_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateRenewalOrderResponse.ProtoReflect.Descriptor instead.
+func (*CreateRenewalOrderResponse) Descriptor() ([]byte, []int) {
+	return file_order_v1_order_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CreateRenewalOrderResponse) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *CreateRenewalOrderResponse) GetOrderNo() string {
+	if x != nil {
+		return x.OrderNo
+	}
+	return ""
+}
+
+func (x *CreateRenewalOrderResponse) GetCreated() bool {
+	if x != nil {
+		return x.Created
+	}
+	return false
+}
+
+type GetOrderRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 订单 ID（orders.id）。**非空**，为空或不是 uuid 回 InvalidArgument；
+	// 查不到回 NotFound。
+	OrderId       string `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetOrderRequest) Reset() {
+	*x = GetOrderRequest{}
+	mi := &file_order_v1_order_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetOrderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetOrderRequest) ProtoMessage() {}
+
+func (x *GetOrderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_order_v1_order_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetOrderRequest.ProtoReflect.Descriptor instead.
+func (*GetOrderRequest) Descriptor() ([]byte, []int) {
+	return file_order_v1_order_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *GetOrderRequest) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+type GetOrderResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	OrderId string                 `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	OrderNo string                 `protobuf:"bytes,2,opt,name=order_no,json=orderNo,proto3" json:"order_no,omitempty"`
+	UserId  string                 `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// 下单来源（miniapp / screen_qr / device / renewal），取值同 orders_source_check。
+	Source string `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	// 订单主状态（pending_payment / paid / ...），取值同 orders_status_check。
+	Status string `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	// 实付金额（分）。未支付时是 0。
+	PaidAmount int64 `protobuf:"varint,6,opt,name=paid_amount,json=paidAmount,proto3" json:"paid_amount,omitempty"`
+	// 支付方式：payment-service 支付目录里的 code（card_pay / pickup_code / wechat_papay ...）。
+	PaymentMethod string `protobuf:"bytes,7,opt,name=payment_method,json=paymentMethod,proto3" json:"payment_method,omitempty"`
+	// payment_no 是本服务库里那份支付单号的值引用。**不是渠道流水号**，理由见 rpc 的说明。
+	// 设备单与续费单这一格为空串（那两条路上没有支付单）。
+	PaymentNo string `protobuf:"bytes,8,opt,name=payment_no,json=paymentNo,proto3" json:"payment_no,omitempty"`
+	// paid_at 是 RFC3339（UTC）。未支付时为空串。
+	PaidAt        string `protobuf:"bytes,9,opt,name=paid_at,json=paidAt,proto3" json:"paid_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetOrderResponse) Reset() {
+	*x = GetOrderResponse{}
+	mi := &file_order_v1_order_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetOrderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetOrderResponse) ProtoMessage() {}
+
+func (x *GetOrderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_order_v1_order_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetOrderResponse.ProtoReflect.Descriptor instead.
+func (*GetOrderResponse) Descriptor() ([]byte, []int) {
+	return file_order_v1_order_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GetOrderResponse) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *GetOrderResponse) GetOrderNo() string {
+	if x != nil {
+		return x.OrderNo
+	}
+	return ""
+}
+
+func (x *GetOrderResponse) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *GetOrderResponse) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *GetOrderResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *GetOrderResponse) GetPaidAmount() int64 {
+	if x != nil {
+		return x.PaidAmount
+	}
+	return 0
+}
+
+func (x *GetOrderResponse) GetPaymentMethod() string {
+	if x != nil {
+		return x.PaymentMethod
+	}
+	return ""
+}
+
+func (x *GetOrderResponse) GetPaymentNo() string {
+	if x != nil {
+		return x.PaymentNo
+	}
+	return ""
+}
+
+func (x *GetOrderResponse) GetPaidAt() string {
+	if x != nil {
+		return x.PaidAt
+	}
+	return ""
+}
+
 var File_order_v1_order_proto protoreflect.FileDescriptor
 
 const file_order_v1_order_proto_rawDesc = "" +
 	"\n" +
-	"\x14order/v1/order.proto\x12\x0epanda.order.v12\x0e\n" +
-	"\fOrderServiceB8Z6github.com/panda-dev/panda-v2/contracts/proto/order/v1b\x06proto3"
+	"\x14order/v1/order.proto\x12\x0epanda.order.v1\"\xe0\x01\n" +
+	"\x18CreateDeviceOrderRequest\x12/\n" +
+	"\x14third_party_order_no\x18\x01 \x01(\tR\x11thirdPartyOrderNo\x12#\n" +
+	"\rdevice_serial\x18\x02 \x01(\tR\fdeviceSerial\x12\x1d\n" +
+	"\n" +
+	"drink_code\x18\x03 \x01(\tR\tdrinkCode\x12\x16\n" +
+	"\x06amount\x18\x04 \x01(\x03R\x06amount\x12\x1f\n" +
+	"\vbrew_failed\x18\x05 \x01(\bR\n" +
+	"brewFailed\x12\x16\n" +
+	"\x06remark\x18\x06 \x01(\tR\x06remark\"k\n" +
+	"\x19CreateDeviceOrderResponse\x12\x19\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\x12\x19\n" +
+	"\border_no\x18\x02 \x01(\tR\aorderNo\x12\x18\n" +
+	"\acreated\x18\x03 \x01(\bR\acreated\"\xd0\x01\n" +
+	"\x18CreatePickupOrderRequest\x12/\n" +
+	"\x14third_party_order_no\x18\x01 \x01(\tR\x11thirdPartyOrderNo\x12#\n" +
+	"\rdevice_serial\x18\x02 \x01(\tR\fdeviceSerial\x12\x1d\n" +
+	"\n" +
+	"drink_code\x18\x03 \x01(\tR\tdrinkCode\x12'\n" +
+	"\x0fpickup_password\x18\x04 \x01(\tR\x0epickupPassword\x12\x16\n" +
+	"\x06remark\x18\x05 \x01(\tR\x06remark\"k\n" +
+	"\x19CreatePickupOrderResponse\x12\x19\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\x12\x19\n" +
+	"\border_no\x18\x02 \x01(\tR\aorderNo\x12\x18\n" +
+	"\acreated\x18\x03 \x01(\bR\acreated\"\x9e\x03\n" +
+	"\x16MembershipPlanSnapshot\x12\x17\n" +
+	"\aplan_id\x18\x01 \x01(\tR\x06planId\x12\x1b\n" +
+	"\tplan_code\x18\x02 \x01(\tR\bplanCode\x12\x1b\n" +
+	"\tplan_name\x18\x03 \x01(\tR\bplanName\x12\x1f\n" +
+	"\vprice_cents\x18\x04 \x01(\x03R\n" +
+	"priceCents\x12\x16\n" +
+	"\x06period\x18\x05 \x01(\tR\x06period\x12!\n" +
+	"\fperiod_count\x18\x06 \x01(\x05R\vperiodCount\x12\x1d\n" +
+	"\n" +
+	"auto_renew\x18\a \x01(\bR\tautoRenew\x12*\n" +
+	"\x11member_price_mode\x18\b \x01(\tR\x0fmemberPriceMode\x12D\n" +
+	"\x1fmember_price_coupon_template_id\x18\t \x01(\tR\x1bmemberPriceCouponTemplateId\x12D\n" +
+	"\x1fmember_price_coupons_per_period\x18\n" +
+	" \x01(\x05R\x1bmemberPriceCouponsPerPeriod\"\xf6\x01\n" +
+	"\x19CreateRenewalOrderRequest\x12/\n" +
+	"\x14third_party_order_no\x18\x01 \x01(\tR\x11thirdPartyOrderNo\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\x03R\x06amount\x12:\n" +
+	"\x04plan\x18\x04 \x01(\v2&.panda.order.v1.MembershipPlanSnapshotR\x04plan\x12#\n" +
+	"\rmembership_id\x18\x05 \x01(\tR\fmembershipId\x12\x16\n" +
+	"\x06remark\x18\x06 \x01(\tR\x06remark\"l\n" +
+	"\x1aCreateRenewalOrderResponse\x12\x19\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\x12\x19\n" +
+	"\border_no\x18\x02 \x01(\tR\aorderNo\x12\x18\n" +
+	"\acreated\x18\x03 \x01(\bR\acreated\",\n" +
+	"\x0fGetOrderRequest\x12\x19\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\"\x91\x02\n" +
+	"\x10GetOrderResponse\x12\x19\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\x12\x19\n" +
+	"\border_no\x18\x02 \x01(\tR\aorderNo\x12\x17\n" +
+	"\auser_id\x18\x03 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06source\x18\x04 \x01(\tR\x06source\x12\x16\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\x12\x1f\n" +
+	"\vpaid_amount\x18\x06 \x01(\x03R\n" +
+	"paidAmount\x12%\n" +
+	"\x0epayment_method\x18\a \x01(\tR\rpaymentMethod\x12\x1d\n" +
+	"\n" +
+	"payment_no\x18\b \x01(\tR\tpaymentNo\x12\x17\n" +
+	"\apaid_at\x18\t \x01(\tR\x06paidAt2\x9e\x03\n" +
+	"\fOrderService\x12h\n" +
+	"\x11CreateDeviceOrder\x12(.panda.order.v1.CreateDeviceOrderRequest\x1a).panda.order.v1.CreateDeviceOrderResponse\x12h\n" +
+	"\x11CreatePickupOrder\x12(.panda.order.v1.CreatePickupOrderRequest\x1a).panda.order.v1.CreatePickupOrderResponse\x12k\n" +
+	"\x12CreateRenewalOrder\x12).panda.order.v1.CreateRenewalOrderRequest\x1a*.panda.order.v1.CreateRenewalOrderResponse\x12M\n" +
+	"\bGetOrder\x12\x1f.panda.order.v1.GetOrderRequest\x1a .panda.order.v1.GetOrderResponseB8Z6github.com/panda-dev/panda-v2/contracts/proto/order/v1b\x06proto3"
 
-var file_order_v1_order_proto_goTypes = []any{}
+var (
+	file_order_v1_order_proto_rawDescOnce sync.Once
+	file_order_v1_order_proto_rawDescData []byte
+)
+
+func file_order_v1_order_proto_rawDescGZIP() []byte {
+	file_order_v1_order_proto_rawDescOnce.Do(func() {
+		file_order_v1_order_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_order_v1_order_proto_rawDesc), len(file_order_v1_order_proto_rawDesc)))
+	})
+	return file_order_v1_order_proto_rawDescData
+}
+
+var file_order_v1_order_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_order_v1_order_proto_goTypes = []any{
+	(*CreateDeviceOrderRequest)(nil),   // 0: panda.order.v1.CreateDeviceOrderRequest
+	(*CreateDeviceOrderResponse)(nil),  // 1: panda.order.v1.CreateDeviceOrderResponse
+	(*CreatePickupOrderRequest)(nil),   // 2: panda.order.v1.CreatePickupOrderRequest
+	(*CreatePickupOrderResponse)(nil),  // 3: panda.order.v1.CreatePickupOrderResponse
+	(*MembershipPlanSnapshot)(nil),     // 4: panda.order.v1.MembershipPlanSnapshot
+	(*CreateRenewalOrderRequest)(nil),  // 5: panda.order.v1.CreateRenewalOrderRequest
+	(*CreateRenewalOrderResponse)(nil), // 6: panda.order.v1.CreateRenewalOrderResponse
+	(*GetOrderRequest)(nil),            // 7: panda.order.v1.GetOrderRequest
+	(*GetOrderResponse)(nil),           // 8: panda.order.v1.GetOrderResponse
+}
 var file_order_v1_order_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	4, // 0: panda.order.v1.CreateRenewalOrderRequest.plan:type_name -> panda.order.v1.MembershipPlanSnapshot
+	0, // 1: panda.order.v1.OrderService.CreateDeviceOrder:input_type -> panda.order.v1.CreateDeviceOrderRequest
+	2, // 2: panda.order.v1.OrderService.CreatePickupOrder:input_type -> panda.order.v1.CreatePickupOrderRequest
+	5, // 3: panda.order.v1.OrderService.CreateRenewalOrder:input_type -> panda.order.v1.CreateRenewalOrderRequest
+	7, // 4: panda.order.v1.OrderService.GetOrder:input_type -> panda.order.v1.GetOrderRequest
+	1, // 5: panda.order.v1.OrderService.CreateDeviceOrder:output_type -> panda.order.v1.CreateDeviceOrderResponse
+	3, // 6: panda.order.v1.OrderService.CreatePickupOrder:output_type -> panda.order.v1.CreatePickupOrderResponse
+	6, // 7: panda.order.v1.OrderService.CreateRenewalOrder:output_type -> panda.order.v1.CreateRenewalOrderResponse
+	8, // 8: panda.order.v1.OrderService.GetOrder:output_type -> panda.order.v1.GetOrderResponse
+	5, // [5:9] is the sub-list for method output_type
+	1, // [1:5] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_order_v1_order_proto_init() }
@@ -47,12 +922,13 @@ func file_order_v1_order_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_order_v1_order_proto_rawDesc), len(file_order_v1_order_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   0,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_order_v1_order_proto_goTypes,
 		DependencyIndexes: file_order_v1_order_proto_depIdxs,
+		MessageInfos:      file_order_v1_order_proto_msgTypes,
 	}.Build()
 	File_order_v1_order_proto = out.File
 	file_order_v1_order_proto_goTypes = nil

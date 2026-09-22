@@ -2,8 +2,11 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/panda-dev/panda-v2/backend/platform/audit"
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/model"
@@ -109,7 +112,7 @@ func (r *pgAdminUserRepo) Create(ctx context.Context, u *model.AdminUser) error 
 		u.Name, u.Email, u.Status,
 		u.CreatedAt, u.UpdatedAt,
 	); err != nil {
-		return err
+		return adminUserWriteError(err)
 	}
 	if err := r.audit.Record(ctx, tx, audit.Entry{
 		Module: "users", Action: "create", Operation: "新增管理员",
@@ -151,6 +154,24 @@ func (r *pgAdminUserRepo) UpdateStatus(ctx context.Context, id, status string) e
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// adminUserWriteError 把库里的唯一键冲突翻译成 model 的哨兵错误，其它错误原样返回。
+// 不翻译的话 SQLSTATE 和约束名会一路冒到响应里，既暴露表结构，调用方也没法分支
+// ——后台看到的是「创建失败 500」，而真正的原因只是一次重名。
+func adminUserWriteError(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return err
+	}
+	switch pgErr.ConstraintName {
+	case "admin_users_username_key":
+		return fmt.Errorf("%w: %w", model.ErrAdminUsernameTaken, err)
+	case "admin_users_email_key":
+		return fmt.Errorf("%w: %w", model.ErrAdminEmailTaken, err)
+	default:
+		return err
+	}
 }
 
 func scanAdminUser(row pgx.Row) (*model.AdminUser, error) {

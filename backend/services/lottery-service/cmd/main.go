@@ -12,7 +12,8 @@
 //
 // 后台一棵树（/v1/admin/lottery/...，认证 → 平台账号闸门 → 实时授权 → 权限码）、小程序
 // 一棵树（/v1/miniapp/lottery/...，只套认证）。**没有入向 gRPC**，理由写在 internal/rpc/doc.go
-// ——它是唯一一个只出向、不入向的服务。有一条出向的同步调用：扣福卡。
+// ——它是唯一一个只出向、不入向的服务。有两条出向的同步调用：扣福卡（account-service），
+// 以及问门店（merchant-service：开通前查存在性、读列表时解名字）。
 //
 // # 本轮不做的
 //
@@ -53,6 +54,8 @@ const (
 	accountServiceDialTimeout = 5 * time.Second
 	// userServiceDialTimeout 同理，这条连接给后台的实时鉴权查询用。
 	userServiceDialTimeout = 5 * time.Second
+	// merchantServiceDialTimeout 同理，这条连接给「门店存在吗」「这几家店叫什么」用。
+	merchantServiceDialTimeout = 5 * time.Second
 	// authorizationTimeout 限制单次实时鉴权查询，不是缓存 TTL：每个后台请求都重新查一次
 	// 调用方的授权。
 	authorizationTimeout = 5 * time.Second
@@ -105,10 +108,23 @@ func main() {
 	// account-service 那边 auth.RequireService 认的也是它。
 	cards := client.NewFortuneCardClient(accountConn, cfg.MerchantInternalToken)
 
+	// 商户域也是同步依赖，但它只在两条路上：开通前问一次「这家店存在吗」（问不到就不受理），
+	// 以及每次读列表时解一页门店名（解不到只让名字空着，见 service.resolveStoreNames）。
+	// 门店名不落库（migrations/lottery/003），所以这条连接不是可选的装饰。
+	merchantConn, err := platformclient.Dial(context.Background(), "merchant-service", cfg.MerchantGRPCAddress, merchantServiceDialTimeout, reg)
+	if err != nil {
+		log.Fatalf("lottery-service: dial merchant-service: %v", err)
+	}
+	defer merchantConn.Close()
+	stores, err := client.NewStoreClient(merchantConn, cfg.MerchantInternalToken, merchantServiceDialTimeout)
+	if err != nil {
+		log.Fatalf("lottery-service: init store client: %v", err)
+	}
+
 	// 仓储带 recorder：开奖与作废是人工介入用户资产归属的动作（方案 §11.6 的人工干预必审
 	// 清单），要留痕。参与与回调不需要——那是用户自己的操作。
 	lotteryRepo := repository.NewPostgresRepository(pool.Pool(), audit.NewRecorder())
-	lotteryService := service.New(lotteryRepo, cards, service.Options{})
+	lotteryService := service.New(lotteryRepo, cards, stores, service.Options{})
 
 	adminLottery := controller.NewAdminLotteryController(lotteryService)
 	miniappLottery := controller.NewMiniAppLotteryController(lotteryService)

@@ -27,7 +27,9 @@ func (m *issueBatchMock) IssueCoupons(context.Context, string, string, string, d
 
 type couponMock struct{}
 
-func (couponMock) Redeem(context.Context, string, string) (*model.UserCoupon, error) { return nil, nil }
+func (couponMock) Redeem(context.Context, string, string, string) (*model.UserCoupon, error) {
+	return nil, nil
+}
 
 type idemMock struct {
 	key *model.IdempotencyKey

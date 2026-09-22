@@ -50,6 +50,102 @@ describe('server-driven layout', () => {
   });
 });
 
+// 侧栏同时点亮两项的根因在 ProLayout 那一侧：它按 path 做**前缀**匹配，且默认把全部命中项
+// 都当成选中项（`getMatchMenu(pathname, menuData, true)`）。`/orders` 因此既命中「订单列表」
+// 也命中「咖啡订单」，两个同级菜单一起变灰。这一组把「只留最深的那一个」钉住，顺带钉住详情页
+// 与目录节点两种边界。
+//
+// 样本用的是**库里真有的**一对同级菜单：目录「订单管理」下的 /orders 与 /orders/coffee
+// （/orders/cup-sleeve、/orders/membership 也是同一形状）。支付域原来也有一对
+// （/payments 与 /payments/methods），那一页删掉之后样本换到这里。
+const ordersMenu = [
+  { id: 'ord-dir', parentId: '', name: '订单管理', path: '', icon: '', sort: 1 },
+  { id: 'ord-list', parentId: 'ord-dir', name: '订单列表', path: '/orders', icon: '', sort: 1 },
+  { id: 'ord-coffee', parentId: 'ord-dir', name: '咖啡订单', path: '/orders/coffee', icon: '', sort: 2 },
+];
+
+describe('sidebar selection', () => {
+  const at = (pathname: string, nodes: any[] = ordersMenu) => {
+    (history as any).location = { pathname };
+    return layout({ initialState: { menus: nodes } }).selectedKeys;
+  };
+
+  it('lights only the deeper entry when one path is a prefix of another', () => {
+    expect(at('/orders/coffee')).toEqual(['ord-coffee']);
+  });
+
+  it('falls back to the list entry on its own page and on detail pages', () => {
+    expect(at('/orders')).toEqual(['ord-list']);
+    expect(at('/orders/ORD20260918120000000001')).toEqual(['ord-list']);
+  });
+
+  it('lights nothing for a directory node or an unknown path', () => {
+    expect(at('/orders', [{ ...ordersMenu[0] }])).toEqual([]);
+    expect(at('/not-in-the-menu')).toEqual([]);
+  });
+
+  it('finds a nested entry regardless of depth', () => {
+    const nested = [{ ...ordersMenu[0], children: ordersMenu.slice(1) }];
+    expect(at('/orders/coffee', nested as any)).toEqual(['ord-coffee']);
+  });
+
+  // react-router 的路由匹配默认不区分大小写（caseSensitive: false），敲 /ORDERS/COFFEE
+  // 页面照常渲染。点亮如果按大小写敏感来，就会出现「页面出来了、侧栏一个都不亮」。
+  it('matches regardless of case, like the router does', () => {
+    expect(at('/ORDERS/COFFEE')).toEqual(['ord-coffee']);
+    expect(at('/Orders')).toEqual(['ord-list']);
+  });
+});
+
+// 面包屑与侧栏点亮是同一套前缀匹配的两种表现。ProLayout 默认按 URL 段切（`/orders` 与
+// `/orders/coffee`），于是把**同级**的「订单列表」当成「咖啡订单」的父级。这一组钉住
+// 「按菜单树的 parentId 拼」，顺带钉住目录不出链接、详情页回落、以及没有父级时不出面包屑。
+describe('breadcrumb', () => {
+  const crumbs = (pathname: string, nodes: any[] = ordersMenu) => {
+    (history as any).location = { pathname };
+    const render = layout({ initialState: { menus: nodes } }).breadcrumbRender as (items: any[]) => any[];
+    return render([]);
+  };
+  const titles = (pathname: string, nodes: any[] = ordersMenu) => crumbs(pathname, nodes).map((i) => i.title);
+
+  it('follows the menu tree instead of the URL segments', () => {
+    // 按 URL 段切的话这一条会变成「订单列表 / 咖啡订单」——把同级当成了父级。
+    expect(titles('/orders/coffee')).toEqual(['订单管理', '咖啡订单']);
+  });
+
+  it('keeps a genuine parent-child pair as a trail', () => {
+    // 目录行的 path 是空串，与库里那八个目录一致；这条真层级靠 parentId 拼出来的
+    const coupons = [
+      { id: 'cpn', parentId: '', name: '优惠券管理', path: '', icon: '', sort: 1 },
+      { id: 'cpn-types', parentId: 'cpn', name: '优惠券类型', path: '/coupons/types', icon: '', sort: 1 },
+    ];
+    expect(titles('/coupons/types', coupons)).toEqual(['优惠券管理', '优惠券类型']);
+  });
+
+  it('links ancestors but not the current page, and never links a directory', () => {
+    expect(crumbs('/orders/coffee').map((i) => i.linkPath)).toEqual([undefined, '/orders/coffee']);
+  });
+
+  it('falls back to the list entry on detail pages', () => {
+    expect(titles('/orders/ORD20260918120000000001')).toEqual(['订单管理', '订单列表']);
+  });
+
+  it('yields a single crumb for a top-level page, which ProLayout then hides', () => {
+    // 只有一项时 ProLayout 的 breadcrumbProps.minLength（默认 2）会把整条藏掉，
+    // 所以「概览」这种没有父级的页面保持今天的样子：不显示面包屑。
+    const dashboard = [{ id: 'dash', parentId: '', name: '概览', path: '/dashboard', icon: '', sort: 0 }];
+    expect(titles('/dashboard', dashboard)).toEqual(['概览']);
+  });
+
+  it('renders nothing when no menu entry matches the path', () => {
+    expect(crumbs('/not-in-the-menu')).toEqual([]);
+  });
+
+  it('matches regardless of case, like the router does', () => {
+    expect(titles('/ORDERS/COFFEE')).toEqual(['订单管理', '咖啡订单']);
+  });
+});
+
 // 后端信封是 {success, data, errorCode, errorMessage, showType}。解包处曾经读的是
 // body.message —— 那个字段根本不存在，于是后端所有措辞过的中文提示（「图片不能超过
 // 10MB」「仅支持图片格式」）统统被吞成「请求失败」。这组用例把字段名钉死。

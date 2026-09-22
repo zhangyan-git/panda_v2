@@ -23,9 +23,10 @@ type ActivationQuery struct {
 	LocationID string
 	// enabled / disabled，空表示不筛。
 	Status string
-	// 门店名的模糊匹配（运营按店名找）。刻意不做成「模糊搜 location_id」——UUID 前缀
-	// 匹配没有意义，想按 id 找就精确贴 id。
-	Name string
+	// **没有按门店名搜这一项**（2026-09-15 去掉）：名字不落库了（见
+	// migrations/lottery/003），而这张表的其他列里没有任何一列能表达「门店名含某几个字」。
+	// 后台的门店筛选换成了从门店下拉里选一家（传 LocationID，走上面那条等值比较），所以这里
+	// 没有留下一个半功能的模糊搜——留着它会返回一张空表，看起来像「确实没有」。
 	Page int
 	// PageSize 见 MaxPageSize。
 	PageSize int

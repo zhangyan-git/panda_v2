@@ -27,6 +27,11 @@ func (s *OrderService) HandlePaymentEvent(ctx context.Context, event messaging.E
 	switch event.EventType {
 	case dto.EventPaymentSucceeded, dto.EventPaymentFailed:
 		// 认识的事件，继续。
+	case dto.EventPaymentRefundSucceeded, dto.EventPaymentRefundFailed:
+		// 退款走自己的解码与推进（见 refund.go 的 HandleRefundEvent）。**在这里就分出去**，
+		// 而不是往下走完了再用 if 拐一下：那两条事件的载荷是另一个结构体，共用一条解码路径
+		// 只会让 DisallowUnknownFields 报出的字段名对不上真正出问题的那条消息。
+		return s.HandleRefundEvent(ctx, event)
 	default:
 		return nil
 	}
@@ -46,9 +51,10 @@ func (s *OrderService) HandlePaymentEvent(ctx context.Context, event messaging.E
 	}
 
 	params := repository.SettlePaymentParams{
-		OrderNo:               orderNo,
-		PaymentNo:             strings.TrimSpace(payload.PaymentNo),
-		Amount:                payload.Amount,
+		OrderNo:   orderNo,
+		PaymentNo: strings.TrimSpace(payload.PaymentNo),
+		Amount:    payload.Amount,
+		// 一个值写两处：orders.payment_method 与 order_payment_lines.line_type。
 		PaymentMethod:         strings.TrimSpace(payload.PaymentMethod),
 		ProviderTransactionID: strings.TrimSpace(payload.ProviderTransactionID),
 		RequestID:             event.EventID,

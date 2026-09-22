@@ -1,7 +1,6 @@
 import {
   ModalForm,
   PageContainer,
-  ProFormDateTimePicker,
   ProFormDigit,
   ProFormSelect,
   ProFormText,
@@ -12,7 +11,6 @@ import type { ActionType, ProColumns } from '@ant-design/pro-components';
 import { history, useAccess } from '@umijs/max';
 import { Button, message, Popconfirm, Tag, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
-import { toRFC3339 } from '../../../services/datetime';
 import { enumMeta, searchOptions } from '../../../services/labels';
 import {
   activateLocation,
@@ -59,7 +57,6 @@ type ActivateForm = {
   locationId: string;
   campaignName?: string;
   participantTarget?: number;
-  window?: [unknown, unknown];
   remark?: string;
 };
 
@@ -67,11 +64,34 @@ export default function LotteryActivationsPage() {
   const access = useAccess();
   const actionRef = useRef<ActionType>();
   const [stores, setStores] = useState<Store[]>([]);
+  // 已经开通过的门店 id。开通表单的下拉要把它们剔掉：列一个点下去必然 409 的选项，等于
+  // 让人把表单填完再看一句「这家门店已经开通了抽奖」。
+  const [activatedLocations, setActivatedLocations] = useState<string[]>([]);
   // 开通弹窗的开合。开通只有一个动作，不像别的页面要区分「新建 / 编辑」，所以用布尔量
   // 而不是「正在编辑的那一行」。
   const [activating, setActivating] = useState(false);
   // 正在停用 / 启用哪一行（串行化那一下点击，避免连点发出两个相反的请求）。
   const [switching, setSwitching] = useState<string>();
+
+  /**
+   * 拉一遍开通记录，只为拿它们的 locationId（开通表单要拿它做排除法）。
+   *
+   * 用 FULL_PAGE_PARAMS 一次要 200 条：这条集合是「一家门店最多一条」（`UNIQUE(location_id)`），
+   * 与品牌 / 门店同一量级，正是 services/pagination.ts 里那个 200 的适用场景。
+   *
+   * **它不是闸门，只是提前挡一道**：真超过 200 家门店时这里会漏掉几条，下拉里于是会多出
+   * 几个已开通的选项——点下去由后端的 409 接着，弹一句「这家门店已经开通了抽奖」。真正的
+   * 唯一性在数据库的 `UNIQUE(location_id)` 上，这里错了也只是多一次往返。
+   */
+  const refreshActivated = async () => {
+    try {
+      const { items } = await listActivations(FULL_PAGE_PARAMS);
+      setActivatedLocations(items.map((item) => item.locationId));
+    } catch {
+      // 读不到就**不筛**：退回「把门店全列出来」，让 409 去挡。反过来（筛成空）更糟——
+      // 空下拉看起来像「没有门店可以开通」，而那是另一件事。
+    }
+  };
 
   useEffect(() => {
     void (async () => {
@@ -79,16 +99,32 @@ export default function LotteryActivationsPage() {
         const { items } = await listStores(FULL_PAGE_PARAMS);
         setStores(items);
       } catch {
-        // 忽略：门店列表要 admin:stores:view，只有抽奖权限的人不一定有。取不到就退回
-        // 「填门店 ID」——开通表单的候选为空时会有另一条输入路径（见下面的 ProFormSelect）。
+        // 忽略：门店列表要 admin:stores:view，只有抽奖权限的人不一定有。取不到时开通
+        // 表单的候选为空，占位符会说明是哪一种取不到（见下面的 ProFormSelect）。
       }
     })();
+    void refreshActivated();
   }, []);
 
   const storeOptions = stores.map((store) => ({
     label: `${store.name}（${store.city || '—'}）`,
     value: store.id,
   }));
+
+  // 开通表单的候选：**只列还没开通的门店**。
+  //
+  // 与上面 storeOptions 是两个列表、两种用途：表格的筛选框要能筛**任意**门店（包括已开通
+  // 的，运营就是想看那家店现在什么情况），而开通表单不该给出一个注定失败的选项。
+  const activatableOptions = storeOptions.filter(
+    (option) => !activatedLocations.includes(option.value),
+  );
+
+  // 三种空法说三句不同的话：没有门店数据 / 门店都开完了 / 可以选。
+  const activatablePlaceholder = stores.length
+    ? activatableOptions.length
+      ? '选择要开通抽奖的门店'
+      : '所有门店都已开通抽奖'
+    : '门店列表读不到，请确认有门店查看权限';
 
   /**
    * 停用 / 启用。两个方向共用一次请求（后端是同一个 POST /status），但确认文案不一样：
@@ -109,23 +145,30 @@ export default function LotteryActivationsPage() {
 
   const columns: ProColumns<Activation>[] = [
     {
-      // 搜索发出去的键是 `name`（后端按门店名做模糊匹配），表格里显示的是接口自带的
-      // locationName。**两者不是同一个字段**：开通记录上存的是开通那一刻的名字快照，
-      // 商户后来改了店名它也不会变（见 dto.ActivateRequest 的说明）。
+      // 筛选是**从门店下拉里选一家**，传 locationId 走后端那条等值比较；表格里显示接口
+      // 自带的 locationName。
+      //
+      // 这里原先是一个按门店名的模糊搜索（发 `name`）。换成下拉是因为名字不落库了
+      // （migrations/lottery/003）：开通记录上只存门店 id，名字是每次读的时候向商户域现解
+      // 的，SQL 里没有一列能做 `ILIKE`；而商户域的 gRPC 也没有「按名字查门店」——ListStores
+      // 只收 merchantId，ResolveScopeNames 只收 id。所以「按名字搜」和「显示当前店名」只能
+      // 留一件，留的是后者，前者换成从上面那份门店列表里选。
+      //
+      // 门店列表读不到时（只有抽奖权限、没有 admin:stores:view）这个下拉是空的，那是**看得
+      // 出来的降级**：运营看到的是「选不了店」，而不是自己敲的名字静默匹配不上。
       title: '门店',
-      dataIndex: 'name',
+      dataIndex: 'locationId',
+      valueType: 'select',
       ellipsis: true,
       width: 180,
-      fieldProps: { placeholder: '店名关键词' },
+      fieldProps: {
+        options: storeOptions,
+        showSearch: true,
+        // 按 label（店名「城市」）过滤，而不是按 value（uuid）——照 uuid 搜等于没得搜。
+        optionFilterProp: 'label',
+        placeholder: storeOptions.length ? '选择门店' : '门店列表读不到，请确认有门店查看权限',
+      },
       render: (_, row) => dash(row.locationName),
-    },
-    {
-      // 门店 ID 只用于搜索：uuid 上的等值比较，不做前缀匹配（那没有意义）。表格里已经有
-      // 店名了，再摆一列 uuid 只会把表拉宽。
-      title: '门店 ID',
-      dataIndex: 'locationId',
-      hideInTable: true,
-      fieldProps: { placeholder: '完整门店 ID' },
     },
     {
       title: '状态',
@@ -161,7 +204,7 @@ export default function LotteryActivationsPage() {
       width: 80,
     },
     {
-      // 这一格是这一页存在的理由：运营最想知道的是「这家店现在第几期、还差几个人」。
+      // 这一格是这一页存在的理由：运营最想知道的是「这家店现在第几期、还差几次」。
       // 摆在这里就不必「点进活动再点进期次」两步。
       title: '进行中的期次',
       dataIndex: 'liveRoundNo',
@@ -275,9 +318,10 @@ export default function LotteryActivationsPage() {
           const query: ActivationQuery = {
             page: params.current,
             pageSize: params.pageSize,
+            // 门店筛的是 locationId（门店下拉选出来的那一个），不是名字：名字不落库，
+            // 后端也没有按名字搜这条路（见上面那一列的说明）。
             locationId: exact(params.locationId),
             status: exact(params.status) as ActivationQuery['status'],
-            name: exact(params.name),
           };
           const result = await listActivations(query);
           return { data: result.items, total: result.total, success: true };
@@ -295,17 +339,13 @@ export default function LotteryActivationsPage() {
         onOpenChange={setActivating}
         modalProps={{ destroyOnClose: true }}
         onFinish={async (values) => {
-          const store = stores.find((item) => item.id === values.locationId);
-          const window = (values.window ?? []) as unknown[];
           const payload: ActivateInput = {
             locationId: values.locationId,
-            // 门店名由这里带上去（选择器本来就有）。**不写空串**：服务端不回头问商户服务，
-            // 空名字就是真的一直空着。
-            locationName: store?.name ?? '',
+            // **不再带门店名**：服务端只收 id，名字由它在每次读的时候向商户域现解
+            // （见 dto.ActivateRequest）。服务端还会拿这个 id 问一次门店存不存在——
+            // 问不出来就回 404/503，所以门店下拉里选得出的店一定是真的。
             campaignName: values.campaignName?.trim() || undefined,
             participantTarget: values.participantTarget,
-            startAt: toRFC3339(window[0]),
-            endAt: toRFC3339(window[1]),
             remark: values.remark?.trim() || undefined,
           };
           try {
@@ -318,6 +358,8 @@ export default function LotteryActivationsPage() {
           }
           message.success('已开通，默认活动与第一期已建出');
           actionRef.current?.reload();
+          // 刚开通的这家要立刻从候选里消失，否则再点开一次弹窗它还在，看起来像没成功。
+          void refreshActivated();
           return true;
         }}
       >
@@ -327,14 +369,15 @@ export default function LotteryActivationsPage() {
           开通后这家店立刻开始收参与。下面的活动名与门槛会建在
           <Typography.Text strong>默认活动</Typography.Text>和
           <Typography.Text strong>第一期</Typography.Text>上，
-          留空则用内置模板（活动名取「门店抽奖」、门槛 30 人、窗口从现在起 90 天，
+          留空则用内置模板（活动名取「门店抽奖」、门槛 30 次，
           奖品是 1 份「神秘礼品」）。这几个默认值在服务端（service.Activate），
           改那里就要改这里——写成别的数字比不写还糟。
         </Typography.Paragraph>
+        {/* 候选是 activatableOptions（已开通的门店不在里面），不是表格筛选用那份全量列表。 */}
         <ProFormSelect
           name="locationId"
           label="门店"
-          options={storeOptions}
+          options={activatableOptions}
           showSearch
           rules={[{ required: true, message: '请选择门店' }]}
           fieldProps={{
@@ -342,7 +385,7 @@ export default function LotteryActivationsPage() {
               String(option?.label ?? '')
                 .toLowerCase()
                 .includes(input.toLowerCase()),
-            placeholder: stores.length ? '选择要开通抽奖的门店' : '门店列表读不到，请确认有门店查看权限',
+            placeholder: activatablePlaceholder,
           }}
         />
         <ProFormText
@@ -354,17 +397,11 @@ export default function LotteryActivationsPage() {
         <ProFormDigit
           name="participantTarget"
           label="参与门槛"
-          tooltip="第一期收满这么多人就停止收人并开奖。之后的每一期默认也用它，但每期可以不同。"
+          tooltip="第一期收满这么多次参与就停止收人并开奖；同一个人可以参与多次。之后的每一期默认也用它，但每期可以不同。"
           min={1}
           max={100000}
           fieldProps={{ precision: 0 }}
           placeholder="留空用 30"
-        />
-        <ProFormDateTimePicker
-          name="window"
-          label="活动窗口"
-          tooltip="整场活动的起止时间，期次在这个区间里滚动。留空为现在起 90 天。"
-          fieldProps={{ style: { width: '100%' } }}
         />
         <ProFormTextArea
           name="remark"

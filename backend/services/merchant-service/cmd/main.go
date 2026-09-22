@@ -79,8 +79,10 @@ func main() {
 	storeRepo := repository.NewStoreRepository(pool.Pool(), recorder)
 	adminMerchantService := service.NewAdminMerchantService(merchantRepo, users)
 	adminMerchant := handler.NewAdminMerchantHandler(adminMerchantService)
-	adminBrand := handler.NewAdminBrandHandler(service.NewAdminBrandService(brandRepo, merchantRepo, repository.NewBrandAuditRepository(pool.Pool()), users))
-	adminStore := handler.NewAdminStoreHandler(service.NewAdminStoreService(storeRepo, brandRepo, merchantRepo, repository.NewStoreAuditRepository(pool.Pool()), users))
+	// 实体的写入与它的待审核记录必须同一次提交，事务边界由 service 掌握。
+	tx := repository.NewTransactor(pool.Pool())
+	adminBrand := handler.NewAdminBrandHandler(service.NewAdminBrandService(brandRepo, merchantRepo, repository.NewBrandAuditRepository(pool.Pool()), users, tx))
+	adminStore := handler.NewAdminStoreHandler(service.NewAdminStoreService(storeRepo, brandRepo, merchantRepo, repository.NewStoreAuditRepository(pool.Pool()), users, tx))
 	access := service.NewMerchantAccessService(merchantRepo, brandRepo, storeRepo)
 
 	// access token 24 小时：管理端要求「登录一次管一天」，不再让操作到一半被踢回
@@ -95,6 +97,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("merchant-service: init live authorization: %v", err)
 	}
+	// 商户域的实时取权走同一个 user-service 连接，但落在另一个服务上：
+	// AdminAccessService 回答角色与权限码，MerchantAccessService 回答数据范围。
+	// 两者都每请求现取、都不缓存。
+	merchantAuthorizer, err := handler.NewMerchantAuthorizer(userv1.NewMerchantAccessServiceClient(conn), authorizationTimeout)
+	if err != nil {
+		log.Fatalf("merchant-service: init merchant data scope: %v", err)
+	}
+	merchantStore := handler.NewMerchantStoreHandler(service.NewMerchantStoreService(storeRepo))
 
 	// 缺 OSS 配置是一个自洽的状态，不是启动失败：上传接口照常注册，只是每个
 	// 请求都回 503 并点名缺哪个变量，其余接口完全不受影响。所以这里记一条日志、
@@ -114,6 +124,7 @@ func main() {
 		Outbox: messaging.NewPostgreSQL(pool.Pool()),
 		HTTPRoutes: func(s *runtime.HTTPRouter) {
 			handler.Register(s, adminMerchant, adminBrand, adminStore, adminUpload, jwtService, authorizer)
+			handler.RegisterMerchant(s, merchantStore, jwtService, merchantAuthorizer)
 		},
 		GRPCRoutes: func(s *kgrpc.Server) {
 			merchantv1.RegisterMerchantServiceServer(s, rpc.NewMerchantService(adminMerchantService, access))

@@ -6,13 +6,20 @@ package dto
 //
 //   - 付款人身份（微信小程序支付要的 openid）：渠道需要它时那个值必须来自身份服务，
 //     不能来自请求体——让客户端自称 openid 等于把「用谁的身份发起支付」交给调用方。
-//     user-service 那边现在还没有把 openid 交出来的入口，所以本轮没有任何渠道拿得到它。
+//     订单服务在发起支付时自己去问身份域（user-service 的 GetWechatIdentity），
+//     取不到时不会静默降级成一次没有身份的发起。
 //   - 商品描述、渠道附加数据：支付侧按渠道规则拼，订单号它已经拿到了。
 //
 // 幂等号也不在请求体里：它是「这一次提交」的标识，不是支付的内容，所以走
 // Idempotency-Key 请求头（与下单、申请退款同一条约定）。
 type PayOrderRequest struct {
-	PaymentMethodID string `json:"paymentMethodId"`
+	// PaymentMethod 是用户选的支付方式 **code**（payment-service 目录里的常量，
+	// 如 `coffee_bean` / `ums_miniapp_wechat`）。
+	//
+	// 字段名从 paymentMethodId 改过来是**一次真实的语义变更**：它从前是 payment_methods
+	// 那一行的 uuid，支付方式收成代码里的常量之后不再是数据行。名字留着 id 而里面装 code，
+	// 调用方读文档时会以为那是一个可以 JOIN 回去的键——所以两边一起改了。
+	PaymentMethod string `json:"paymentMethod"`
 }
 
 // PayAction 是一次发起支付的结果，字段与 payment-service 的 gRPC 契约一一对应。

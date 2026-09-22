@@ -66,9 +66,13 @@ COMMENT ON COLUMN coupon_redemptions.redemption_method IS '核销方式：platfo
 COMMENT ON COLUMN coupon_redemptions.store_id IS '核销门店 ID，属于商户服务时仅作跨库值引用';
 COMMENT ON COLUMN coupon_redemptions.employee_id IS '核销员工 ID，属于身份服务时仅作跨库值引用';
 COMMENT ON COLUMN coupon_redemptions.order_id IS '关联订单 ID，属于订单服务时仅作跨库值引用';
-COMMENT ON COLUMN coupon_redemptions.amount_before IS '核销前订单金额，单位为元';
-COMMENT ON COLUMN coupon_redemptions.discount_amount IS '本次优惠金额，单位为元';
-COMMENT ON COLUMN coupon_redemptions.amount_after IS '核销后应付金额，单位为元';
+-- 下面三个金额列目前没有写入方：唯一的核销写入路径（coupon-service 的
+-- internal/repository/postgres.go 里那条 INSERT INTO coupon_redemptions）只写
+-- user_coupon_id、template_id、request_id、redemption_method、status、completed_at，
+-- 这三列恒为 NULL。单位由 005_money_cents.sql 在本文件之后重发为「分」。
+COMMENT ON COLUMN coupon_redemptions.amount_before IS '核销前订单金额，单位为元；暂无写入方，恒为 NULL';
+COMMENT ON COLUMN coupon_redemptions.discount_amount IS '本次优惠金额，单位为元；暂无写入方，恒为 NULL';
+COMMENT ON COLUMN coupon_redemptions.amount_after IS '核销后应付金额，单位为元；暂无写入方，恒为 NULL';
 COMMENT ON COLUMN coupon_redemptions.status IS '核销状态：succeeded=成功，rejected=拒绝，reversed=已反转';
 
 COMMENT ON TABLE coupon_state_transitions IS '优惠券领域状态变更审计记录';
@@ -83,7 +87,9 @@ COMMENT ON COLUMN coupon_state_transitions.metadata IS '状态变化附加信息
 COMMENT ON TABLE coupon_inventory_ledger IS '优惠券库存变动流水及对账记录';
 COMMENT ON COLUMN coupon_inventory_ledger.template_id IS '优惠券模板 ID';
 COMMENT ON COLUMN coupon_inventory_ledger.batch_id IS '发行批次 ID';
-COMMENT ON COLUMN coupon_inventory_ledger.reference_type IS '关联业务类型，例如 claim、redeem、refund、adjust';
+-- 代码里写进去的只有 admin_issue（coupon-service 的 postgres.go，后台发券那条 IssueCoupons
+-- 路径）；本行原来举的 claim、redeem、refund、adjust 四个词一处都没写过。
+COMMENT ON COLUMN coupon_inventory_ledger.reference_type IS '关联业务类型，当前只写 admin_issue（后台发券）';
 COMMENT ON COLUMN coupon_inventory_ledger.reference_id IS '关联业务记录 ID';
 COMMENT ON COLUMN coupon_inventory_ledger.quantity IS '库存变动数量，正负号表示增加或减少';
 COMMENT ON COLUMN coupon_inventory_ledger.operation IS '库存操作：reserve=预留，issue=发行，release=释放，expire=过期，adjust=调整';

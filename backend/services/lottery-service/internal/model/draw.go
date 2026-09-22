@@ -17,7 +17,7 @@ type Draw struct {
 	CampaignID string `db:"campaign_id"`
 	// auto / manual。与 Trigger 由 CHECK 绑成同一件事：manual ⇔ trigger='manual'。
 	Mode string `db:"mode"`
-	// threshold / deadline / manual，见 Round 那边的常量。
+	// threshold / manual，见 Round 那边的常量，与列的 CHECK 逐字一致。
 	Trigger string `db:"trigger"`
 	// 算中奖名单用的算法标识。换算法时改这个值——已开出的奖因此仍然可以按当时的算法
 	// 复盘，而不是被新算法重新解释一遍。

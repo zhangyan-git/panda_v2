@@ -61,6 +61,52 @@ func (f *merchantAuthAccess) FindName(_ context.Context, id string) (string, err
 	return f.name, f.nameErr
 }
 
+// merchantAuthResources 内存版 MerchantResourceAccess：本文件只覆盖 Me 会用到的两件事
+// ——范围展开与范围名称。品牌/门店归属查询属于账号管理路径，这里不实现（嵌接口即可，
+// 真被调到会 panic，正好说明用例走错了路）。
+type merchantAuthResources struct {
+	service.MerchantResourceAccess
+	storeIDs   []string
+	listErr    error
+	listCalls  int
+	brandNames map[string]string
+	storeNames map[string]string
+	namesErr   error
+	namesCalls int
+}
+
+func (f *merchantAuthResources) ListStoreIDs(_ context.Context, _, _, _ string) ([]string, error) {
+	f.listCalls++
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.storeIDs, nil
+}
+
+func (f *merchantAuthResources) ScopeNames(_ context.Context, brandIDs, storeIDs []string) (map[string]string, map[string]string, error) {
+	f.namesCalls++
+	if f.namesErr != nil {
+		return nil, nil, f.namesErr
+	}
+	pick := func(names map[string]string, ids []string) map[string]string {
+		out := map[string]string{}
+		for _, id := range ids {
+			if name, ok := names[id]; ok {
+				out[id] = name
+			}
+		}
+		return out
+	}
+	return pick(f.brandNames, brandIDs), pick(f.storeNames, storeIDs), nil
+}
+
+// merchantHandler 按生产的装配方式搭一条链路：范围解析与账号查询共用同一个仓储，
+// 与 main.go 一致——Me 的两半必须看着同一行账号数据。
+func merchantHandler(users *merchantAuthUsers, access *merchantAuthAccess, resources *merchantAuthResources, jwtSvc *auth.Service) *MerchantAuthHandler {
+	authSvc := service.NewMerchantAuthService(users, access, jwtSvc)
+	return NewMerchantAuthHandler(authSvc, service.NewMerchantAccessService(users, authSvc, resources))
+}
+
 func TestMerchantMeFailClosed(t *testing.T) {
 	identity := &auth.Identity{Subject: "user", UserID: "user", Tenant: "merchant"}
 	active := &model.MerchantUser{ID: "user", MerchantID: "merchant", Status: "active"}
@@ -113,7 +159,8 @@ func TestMerchantMeFailClosed(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			users := &merchantAuthUsers{user: tt.user, err: tt.profileErr}
 			access := &merchantAuthAccess{status: tt.status, statusErr: tt.statusErr, name: tt.merchantName, nameErr: tt.nameErr}
-			h := NewMerchantAuthHandler(service.NewMerchantAuthService(users, access, nil))
+			resources := &merchantAuthResources{}
+			h := merchantHandler(users, access, resources, nil)
 			r := httptest.NewRequest(http.MethodGet, "/v1/merchant/users/me", nil)
 			if tt.identity != nil {
 				r = r.WithContext(auth.WithIdentity(r.Context(), *tt.identity))
@@ -134,6 +181,11 @@ func TestMerchantMeFailClosed(t *testing.T) {
 			if len(users.profileIDs) != tt.profileCalls || len(access.statusIDs) != tt.statusCalls || len(access.nameIDs) != tt.nameCalls || len(users.touchIDs) != 0 {
 				t.Fatalf("unexpected calls: users=%+v access=%+v", users, access)
 			}
+			// 表里每一条都在走到范围解析之前就拒绝了。范围展开要多查一次 merchant-service，
+			// 不该在一条注定失败的请求上发生。
+			if resources.listCalls != 0 {
+				t.Fatalf("失败请求不应解析数据范围, got %d", resources.listCalls)
+			}
 			for _, id := range append(access.statusIDs, access.nameIDs...) {
 				if id != "merchant" {
 					t.Fatalf("lookup used wrong merchant %q", id)
@@ -148,7 +200,8 @@ func TestMerchantMeRechecksSameIdentityAndPreservesResponse(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			users := &merchantAuthUsers{user: &model.MerchantUser{ID: "user", MerchantID: "merchant", Username: "alice", Name: "Alice", Email: "alice@example.test", Status: "active"}}
 			access := &merchantAuthAccess{status: "active", name: "Coffee"}
-			h := NewMerchantAuthHandler(service.NewMerchantAuthService(users, access, nil))
+			resources := &merchantAuthResources{}
+			h := merchantHandler(users, access, resources, nil)
 			r := httptest.NewRequest(http.MethodGet, "/v1/merchant/users/me", nil)
 			r = r.WithContext(auth.WithIdentity(r.Context(), auth.Identity{Subject: "user", UserID: "user", Tenant: "merchant", IsSuper: true}))
 			w := httptest.NewRecorder()
@@ -160,7 +213,8 @@ func TestMerchantMeRechecksSameIdentityAndPreservesResponse(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 				t.Fatal(err)
 			}
-			want := map[string]string{"id": "user", "username": "alice", "name": "Alice", "email": "alice@example.test", "merchantId": "merchant", "merchantName": "Coffee"}
+			// 商户档没有范围目标：scopeName 由前端配文案，服务端留空。
+			want := map[string]string{"id": "user", "username": "alice", "name": "Alice", "email": "alice@example.test", "merchantId": "merchant", "merchantName": "Coffee", "scopeType": "merchant", "scopeId": "", "scopeName": ""}
 			if w.Code != 200 || !got.Success || !reflect.DeepEqual(got.Data, want) {
 				t.Fatalf("incompatible response: status=%d body=%s", w.Code, w.Body)
 			}
@@ -184,6 +238,112 @@ func TestMerchantMeRechecksSameIdentityAndPreservesResponse(t *testing.T) {
 			}
 			if w.Code != wantStatus || !reflect.DeepEqual(users.profileIDs, []string{"user", "user"}) || len(access.statusIDs) != wantStatusCalls || len(access.nameIDs) != 1 {
 				t.Fatalf("live check failed: status=%d users=%+v access=%+v", w.Code, users, access)
+			}
+		})
+	}
+}
+
+// Me 回显的数据范围必须就是列表接口真正会用的那个边界。给不出来时整条请求失败，
+// 而不是少回两列——少回两列在界面上读作「没有范围」，而事实是「不知道范围」。
+func TestMerchantMeReportsTheResolvedScope(t *testing.T) {
+	active := &model.MerchantUser{ID: "user", MerchantID: "merchant", Username: "alice", Status: "active"}
+	for _, tt := range []struct {
+		name        string
+		scopeType   string
+		scopeID     string
+		resources   *merchantAuthResources
+		wantStatus  int
+		wantMessage string
+		wantScope   map[string]string
+		wantNames   int
+		wantExpand  int
+	}{
+		{
+			name: "merchant tier", scopeType: "merchant", scopeID: "ignored",
+			resources:  &merchantAuthResources{storeIDs: []string{"s1", "s2"}},
+			wantScope:  map[string]string{"scopeType": "merchant", "scopeId": "", "scopeName": ""},
+			wantExpand: 1,
+		},
+		{
+			name: "brand tier", scopeType: "brand", scopeID: "b1",
+			resources:  &merchantAuthResources{storeIDs: []string{"s1"}, brandNames: map[string]string{"b1": "一号品牌"}},
+			wantScope:  map[string]string{"scopeType": "brand", "scopeId": "b1", "scopeName": "一号品牌"},
+			wantNames:  1,
+			wantExpand: 1,
+		},
+		{
+			name: "store tier", scopeType: "store", scopeID: "s2",
+			resources:  &merchantAuthResources{storeIDs: []string{"s2"}, storeNames: map[string]string{"s2": "二号门店"}},
+			wantScope:  map[string]string{"scopeType": "store", "scopeId": "s2", "scopeName": "二号门店"},
+			wantNames:  1,
+			wantExpand: 1,
+		},
+		{
+			// 范围目标在授权之后被删了：那是展示数据，不该把一次登录态查询变成错误。
+			name: "deleted target", scopeType: "brand", scopeID: "gone",
+			resources:  &merchantAuthResources{storeIDs: []string{}},
+			wantScope:  map[string]string{"scopeType": "brand", "scopeId": "gone", "scopeName": ""},
+			wantNames:  1,
+			wantExpand: 1,
+		},
+		{
+			name: "expansion unavailable", scopeType: "brand", scopeID: "b1",
+			resources:   &merchantAuthResources{listErr: errors.New("merchant service unavailable")},
+			wantStatus:  503,
+			wantMessage: "数据范围暂不可用",
+			wantExpand:  1,
+		},
+		{
+			name: "scope names unavailable", scopeType: "store", scopeID: "s1",
+			resources:   &merchantAuthResources{storeIDs: []string{"s1"}, namesErr: context.DeadlineExceeded},
+			wantStatus:  503,
+			wantMessage: "数据范围暂不可用",
+			wantNames:   1,
+			wantExpand:  1,
+		},
+		{
+			name: "unreadable scope type", scopeType: "region", scopeID: "r1",
+			resources:   &merchantAuthResources{},
+			wantStatus:  503,
+			wantMessage: "数据范围无法识别",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			user := *active
+			user.ScopeType, user.ScopeID = tt.scopeType, tt.scopeID
+			users := &merchantAuthUsers{user: &user}
+			access := &merchantAuthAccess{status: "active", name: "Coffee"}
+			h := merchantHandler(users, access, tt.resources, nil)
+			r := httptest.NewRequest(http.MethodGet, "/v1/merchant/users/me", nil)
+			r = r.WithContext(auth.WithIdentity(r.Context(), auth.Identity{Subject: "user", UserID: "user", Tenant: "merchant"}))
+
+			w := httptest.NewRecorder()
+			h.Me(w, r)
+			var got struct {
+				Success bool              `json:"success"`
+				Data    map[string]string `json:"data"`
+				Error   string            `json:"errorMessage"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if tt.resources.listCalls != tt.wantExpand || tt.resources.namesCalls != tt.wantNames {
+				t.Fatalf("范围展开调用=%d want %d, 名称解析调用=%d want %d",
+					tt.resources.listCalls, tt.wantExpand, tt.resources.namesCalls, tt.wantNames)
+			}
+			if tt.wantStatus != 0 {
+				if w.Code != tt.wantStatus || got.Error != tt.wantMessage {
+					t.Fatalf("status=%d body=%s", w.Code, w.Body)
+				}
+				return
+			}
+			if w.Code != 200 || !got.Success {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body)
+			}
+			for key, want := range tt.wantScope {
+				if got.Data[key] != want {
+					t.Fatalf("%s=%q want %q", key, got.Data[key], want)
+				}
 			}
 		})
 	}
@@ -225,7 +385,7 @@ func TestMerchantLoginCompatibility(t *testing.T) {
 				users.user = nil
 			}
 			access := &merchantAuthAccess{status: tt.merchantStatus, statusErr: tt.statusErr}
-			h := NewMerchantAuthHandler(service.NewMerchantAuthService(users, access, jwtSvc))
+			h := merchantHandler(users, access, &merchantAuthResources{}, jwtSvc)
 			password := tt.password
 			if password == "" {
 				password = "correct-password"
@@ -273,7 +433,10 @@ func TestMerchantLoginCompatibility(t *testing.T) {
 					t.Fatalf("incompatible claims: %+v", claims)
 				}
 			}
-			if !reflect.DeepEqual(users.touchIDs, []string{"user"}) || !reflect.DeepEqual(users.touchIPs, []string{r.RemoteAddr}) {
+			// 这条断言以前钉的是 r.RemoteAddr（"192.0.2.1:1234"），也就是把
+			// 「端口 + 网关地址」当成了期望值。写进 last_login_ip 的应当是登录
+			// 客户端的地址，与 C 端两条登录路径同口径：loginIP(r) → 去掉端口。
+			if !reflect.DeepEqual(users.touchIDs, []string{"user"}) || !reflect.DeepEqual(users.touchIPs, []string{"192.0.2.1"}) {
 				t.Fatalf("login audit changed: %+v", users)
 			}
 		})
