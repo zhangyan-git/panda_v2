@@ -118,6 +118,28 @@ func validateTemplate(t *model.CouponTemplate) bool {
 	if t.RedemptionType == "external_code" && t.ExternalUseMethod == nil {
 		return false
 	}
+	// 有效期窗口：也是那条跨列 CHECK 的等值翻译（001_coupon_core.sql:69-70）。
+	//
+	// fixed 档的三件事一件都不能少——必须同时给起止、止必须晚于起、不能带天数；relative
+	// 档反过来，起止必须都空、天数必须为正。少了这一段，一个直接调接口的调用方拿到的又是
+	// 500（约束失败），而它本来只是一句 400 就能说清的事。**「止早于起」是最常见的那一格**：
+	// 后台那两个时间选择器填反了不会有人拦，直到发券那一刻才炸。
+	//
+	// 注意这里判的是「窗口形状」，不是「窗口还没过期」——过期窗口能不能发券是发券那一刻
+	// 的事（见 repository/grant.go 里那条判断），模板本身仍然是合法的。
+	if t.ValidityMode == "fixed" {
+		if t.ValidFrom == nil || t.ValidTo == nil || t.ValidDays != nil {
+			return false
+		}
+		if !t.ValidTo.After(*t.ValidFrom) {
+			return false
+		}
+	} else if t.ValidFrom != nil || t.ValidTo != nil {
+		return false
+	}
+	if t.ValidityMode == "relative" && (t.ValidDays == nil || *t.ValidDays <= 0) {
+		return false
+	}
 	return true
 }
 func (s *CouponService) templateRepo() (repository.CouponTemplateRepository, error) {

@@ -26,6 +26,14 @@ var ErrCouponNotRedeemable = errors.New("coupon is not redeemable")
 // ErrIdempotencyInProgress 表示相同幂等键仍处于处理中，不能将其当作成功响应返回。
 var ErrIdempotencyInProgress = errors.New("idempotency operation is still processing")
 
+// ErrIdempotencyConflict 表示同一个幂等键带着**不同的请求体**又来了。
+//
+// 与 ErrIdempotencyInProgress 分开：那个是「再等等」，这个是「这个键已经用在别的事上了」。
+// service 层那个同名的哨兵就是它（见 service.ErrIdempotencyConflict 的别名），两处必须是
+// 同一个值——否则并发走到仓储这一层报出来的冲突会被 controller 判成未知错误，回 500 而不是
+// 409，调用方看到的是「服务端故障」，实际原因是他自己拿同一个键换了请求体。
+var ErrIdempotencyConflict = errors.New("idempotency key request hash conflict")
+
 // BatchRepository 提供批次库存的原子操作。
 type BatchRepository interface {
 	ReserveInventory(ctx context.Context, batchID string, quantity int64) error
@@ -297,7 +305,9 @@ func requestHash(value any) string {
 }
 
 func beginIdempotentOperation(ctx context.Context, tx pgx.Tx, scope, key, hash, resourceType, resourceID string) ([]byte, bool, error) {
-	result, err := tx.Exec(ctx, `INSERT INTO coupon_idempotency_keys(scope,idempotency_key,request_hash,resource_type,resource_id,status) VALUES($1,$2,$3,$4,$5,'processing') ON CONFLICT (scope,idempotency_key) DO NOTHING`, scope, key, hash, resourceType, resourceID)
+	// resource_id 用 NULLIF 落空串：发券那条路要等批次建出来才知道它指向谁（末尾那条 UPDATE
+	// 补上），调用时只能给空串，而空串不是合法的 uuid。
+	result, err := tx.Exec(ctx, `INSERT INTO coupon_idempotency_keys(scope,idempotency_key,request_hash,resource_type,resource_id,status) VALUES($1,$2,$3,$4,NULLIF($5,'')::uuid,'processing') ON CONFLICT (scope,idempotency_key) DO NOTHING`, scope, key, hash, resourceType, resourceID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -312,7 +322,7 @@ func beginIdempotentOperation(ctx context.Context, tx pgx.Tx, scope, key, hash, 
 		return nil, false, err
 	}
 	if existingHash != hash {
-		return nil, false, errors.New("idempotency key request hash conflict")
+		return nil, false, ErrIdempotencyConflict
 	}
 	if status == "succeeded" {
 		return response, true, nil
@@ -326,7 +336,7 @@ func beginIdempotentOperation(ctx context.Context, tx pgx.Tx, scope, key, hash, 
 		if _, err := tx.Exec(ctx, `DELETE FROM coupon_idempotency_keys WHERE scope=$1 AND idempotency_key=$2`, scope, key); err != nil {
 			return nil, false, err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO coupon_idempotency_keys(scope,idempotency_key,request_hash,resource_type,resource_id,status) VALUES($1,$2,$3,$4,$5,'processing')`, scope, key, hash, resourceType, resourceID); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO coupon_idempotency_keys(scope,idempotency_key,request_hash,resource_type,resource_id,status) VALUES($1,$2,$3,$4,NULLIF($5,'')::uuid,'processing')`, scope, key, hash, resourceType, resourceID); err != nil {
 			return nil, false, err
 		}
 		return nil, false, nil

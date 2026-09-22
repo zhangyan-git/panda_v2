@@ -12,11 +12,12 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/coupon-service/internal/dto"
 )
 
-// ErrTemplateUnavailable 表示要发的那张券模板不存在、已停用或还没审核通过。
+// ErrTemplateUnavailable 表示要发的那张券模板不存在、已停用、还没审核通过，或有效期窗口已经过去。
 //
 // 它只出在**系统发券**（会员价券、活动券）那条路上：模板是运营在后台配的，配错了不会因为
 // 重投就变对，所以消费方看见它应当记一条日志然后 ack——一直重投只会把队列堵到死信。
-// 后台人工发放那条路不走它：那条路的调用方就在屏幕前面，原始的「查不到」原样回给他更有用。
+// 后台人工发放那条路不走它：那条路的调用方就在屏幕前面，原始的「查不到」原样回给他更有用
+// （但「窗口已经关了」是共用的这一条，它也得回给屏幕前面的人，见 controller 那处映射）。
 var ErrTemplateUnavailable = errors.New("coupon template is not available for issuing")
 
 // issueSpec 是一次发券的全部差异点。
@@ -167,24 +168,27 @@ func (r *postgresRepository) issue(ctx context.Context, spec issueSpec) (*dto.Is
 		return nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-	var existingHash string
-	var existingResponse []byte
-	err = tx.QueryRow(ctx, `SELECT request_hash,response FROM coupon_idempotency_keys WHERE scope=$1 AND idempotency_key=$2 FOR UPDATE`, spec.scope, spec.key).Scan(&existingHash, &existingResponse)
-	if err == nil {
-		if existingHash != spec.hash {
-			return nil, errors.New("idempotency key request hash conflict")
-		}
+	// 幂等键走 beginIdempotentOperation，与核销、撤销是同一条协议：先 ON CONFLICT DO NOTHING
+	// 写，写不进去再回读判「回放 / 摘要冲突 / 还在处理中」。
+	//
+	// 这里原来是「先 SELECT … FOR UPDATE，查不到就 INSERT」。**查不到就没有行可锁**——两个
+	// 同键的并发请求会双双走到 INSERT，后到的那个撞上 UNIQUE(scope,idempotency_key)，把一次
+	// 本该回放上一次响应的重放变成 500。service 层那次 Find 预检挡不住这一格：两个请求都在
+	// 对方写库之前查完了。顺带补齐的还有两件事：处理中的键不再被当成空响应回放，卡住超过
+	// 15 分钟的旧行会被回收（见 beginIdempotentOperation）。
+	//
+	// resource_id 留空：它要等批次建出来才知道，由这个函数末尾那条 UPDATE 补上
+	// （NULLIF 把空串落成 NULL，与 INSERT coupon_batches 里 created_by 的写法一致）。
+	response, replayed, err := beginIdempotentOperation(ctx, tx, spec.scope, spec.key, spec.hash, "coupon_batch", "")
+	if err != nil {
+		return nil, err
+	}
+	if replayed {
 		var out dto.IssueCouponsResponse
-		if err := json.Unmarshal(existingResponse, &out); err != nil {
+		if err := json.Unmarshal(response, &out); err != nil {
 			return nil, err
 		}
 		return &out, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO coupon_idempotency_keys(scope,idempotency_key,request_hash,resource_type,status) VALUES($1,$2,$3,'coupon_batch','processing')`, spec.scope, spec.key, spec.hash); err != nil {
-		return nil, err
 	}
 	var templateID, typeCode string
 	var face, minPurchase int64
@@ -196,6 +200,16 @@ func (r *postgresRepository) issue(ctx context.Context, spec issueSpec) (*dto.Is
 	err = tx.QueryRow(ctx, `SELECT t.id, ct.code, t.face_value,t.min_purchase_amount,t.redemption_type,t.validity_mode,t.valid_from,t.valid_to,t.valid_days,t.total_quantity FROM coupon_templates t JOIN coupon_types ct ON ct.id=t.coupon_type_id WHERE t.id=$1 AND t.status='active' AND t.audit_status='approved' FOR UPDATE`, spec.templateID).Scan(&templateID, &typeCode, &face, &minPurchase, &redemptionType, &validityMode, &validFrom, &validTo, &validDays, &total)
 	if err != nil {
 		return nil, err
+	}
+	// 窗口已经关了的模板不能再发。fixed 档的每一张券都抄模板这一个窗口，窗口在发之前就关掉的
+	// 话，发出去的券**一落地就是过期的**：用户账上多一张永远用不了的券，模板的发行量与库存
+	// 流水却照扣，而且没有任何一步会报错——这是最坏的那一类错（静默、不可逆）。
+	//
+	// 判据只对 fixed 档成立：relative 档的窗口是发券这一刻按 valid_days 算出来的，不存在
+	// 「已经关了」。这不是「暂时发不出去」（库存不够那种可以补），是配置错了，所以与模板
+	// 停用、没审核共用同一个错误值：消费方看见它应当记日志后 ack，一直重投只会堵住队列。
+	if validityMode == "fixed" && validTo != nil && !validTo.After(time.Now()) {
+		return nil, ErrTemplateUnavailable
 	}
 	quantity := int64(len(spec.userIDs) * spec.quantityPerUser)
 	if quantity > total {
@@ -264,7 +278,11 @@ func (r *postgresRepository) issue(ctx context.Context, spec issueSpec) (*dto.Is
 	if _, err = tx.Exec(ctx, `INSERT INTO coupon_inventory_ledger(template_id,batch_id,reference_type,reference_id,quantity,operation,request_id) VALUES($1,$2,$3,$4,$5,'issue',$6)`, templateID, batchID, spec.referenceType, referenceID, quantity, spec.key); err != nil {
 		return nil, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO coupon_state_transitions(aggregate_type,aggregate_id,from_status,to_status,reason,request_id,metadata) VALUES('batch',$1,'','active',$2,$3,$4)`, batchID, spec.reason, spec.key, payload); err != nil {
+	// to_status 必须是那一行**真实落的**状态：批次是一次发完的（建行时 issued_quantity 就等于
+	// total_quantity），所以它生下来就是 'exhausted'，从来没有经历过 'active'。这里原来记的是
+	// 'active'，等于在流水上写了一次没发生过的迁移——按这张表重建批次历史的人会得到一份与
+	// coupon_batches 对不上的账，而那正是这张只增不改的表存在的理由。
+	if _, err = tx.Exec(ctx, `INSERT INTO coupon_state_transitions(aggregate_type,aggregate_id,from_status,to_status,reason,request_id,metadata) VALUES('batch',$1,'','exhausted',$2,$3,$4)`, batchID, spec.reason, spec.key, payload); err != nil {
 		return nil, err
 	}
 	// 审计只给后台人工发放写：发券是这个服务里最不可逆的一步（券一旦落到用户账上，收回来只能

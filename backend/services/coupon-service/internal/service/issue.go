@@ -15,7 +15,10 @@ import (
 
 var (
 	ErrInvalidIssueRequest = errors.New("invalid coupon issue request")
-	ErrIdempotencyConflict = errors.New("idempotency key request hash conflict")
+	// ErrIdempotencyConflict 就是仓储那一个，不另起一个同义的值：并发那一格是在仓储里判出来的
+	// （见 beginIdempotentOperation），两处如果不是同一个值，controller 只认得这一层，仓储报的
+	// 冲突就会掉进 default 变成 500。
+	ErrIdempotencyConflict = repository.ErrIdempotencyConflict
 )
 
 type IssueResult = dto.IssueCouponsResponse

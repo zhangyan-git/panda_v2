@@ -319,6 +319,11 @@ func (c *AdminCouponController) Issue(w http.ResponseWriter, r *http.Request) {
 			api.Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 		case errors.Is(err, service.ErrIdempotencyConflict):
 			api.Error(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", err.Error())
+		// 模板不存在 / 已停用 / 没审过 / 有效期窗口已经过去：都是**配置问题**，重试不会变对。
+		// 回 409 让屏幕前面的人知道该去改模板，而不是一句 failed to issue coupons 的 500——
+		// 那句话看不出该改哪里。
+		case errors.Is(err, repository.ErrTemplateUnavailable):
+			api.Error(w, http.StatusConflict, "TEMPLATE_UNAVAILABLE", err.Error())
 		default:
 			api.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to issue coupons")
 		}

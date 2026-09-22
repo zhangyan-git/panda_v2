@@ -2,6 +2,7 @@ package service
 
 import (
 	"testing"
+	"time"
 
 	"github.com/panda-dev/panda-v2/backend/services/coupon-service/internal/model"
 )
@@ -20,10 +21,13 @@ import (
 
 func template(overrides func(t *model.CouponTemplate)) *model.CouponTemplate {
 	t := &model.CouponTemplate{
-		CouponTypeID:   "ctype-1",
-		Name:           "满减券",
-		TotalQuantity:  10,
-		ValidityMode:   "relative",
+		CouponTypeID:  "ctype-1",
+		Name:          "满减券",
+		TotalQuantity: 10,
+		ValidityMode:  "relative",
+		// relative 档必须带正的天数（001 那条 CHECK）。这个夹具原先没给，**它是插不进库的**——
+		// 只因为校验里当时没有这一条才一直是绿的。
+		ValidDays:      intPtr(30),
 		ClaimLimitMode: "once_ever",
 		RedemptionType: "platform",
 	}
@@ -92,6 +96,53 @@ func TestValidateTemplateClaimPeriodIsPairedWithMode(t *testing.T) {
 			t.ClaimPeriodQuantity = intPtr(1)
 		})) {
 			t.Errorf("%s 却带着周期张数：应当被拒", mode)
+		}
+	}
+}
+
+// 有效期窗口那一组。这三件事在库里是一条跨列 CHECK（001_coupon_core.sql:69-70），
+// 校验里没有的话，接口拿到的是 500（一句 Postgres 的行话）而不是 400。
+func TestValidateTemplateValidityWindowMatchesMode(t *testing.T) {
+	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+
+	if !validateTemplate(template(func(t *model.CouponTemplate) {
+		t.ValidityMode = "fixed"
+		t.ValidDays = nil
+		t.ValidFrom, t.ValidTo = &from, &to
+	})) {
+		t.Error("fixed 档给全了起止：应当通过")
+	}
+
+	for _, tt := range []struct {
+		name string
+		mut  func(t *model.CouponTemplate)
+	}{
+		{"fixed 没有结束时间", func(t *model.CouponTemplate) {
+			t.ValidityMode, t.ValidDays, t.ValidFrom = "fixed", nil, &from
+		}},
+		{"fixed 没有开始时间", func(t *model.CouponTemplate) {
+			t.ValidityMode, t.ValidDays, t.ValidTo = "fixed", nil, &to
+		}},
+		// 后台那两个时间选择器填反了不会有人拦，直到发券那一刻才炸——这是最常见的一格。
+		{"fixed 止早于起", func(t *model.CouponTemplate) {
+			t.ValidityMode, t.ValidDays, t.ValidFrom, t.ValidTo = "fixed", nil, &to, &from
+		}},
+		{"fixed 止等于起", func(t *model.CouponTemplate) {
+			t.ValidityMode, t.ValidDays, t.ValidFrom, t.ValidTo = "fixed", nil, &from, &from
+		}},
+		{"fixed 还带着天数", func(t *model.CouponTemplate) {
+			t.ValidityMode, t.ValidFrom, t.ValidTo = "fixed", &from, &to
+		}},
+		{"relative 没有天数", func(t *model.CouponTemplate) { t.ValidDays = nil }},
+		{"relative 天数为 0", func(t *model.CouponTemplate) { t.ValidDays = intPtr(0) }},
+		{"relative 天数为负", func(t *model.CouponTemplate) { t.ValidDays = intPtr(-1) }},
+		// 从 fixed 切到 relative 时表单残留的正是这两个值（与上面周期那一组同一种残留）。
+		{"relative 却带着起止", func(t *model.CouponTemplate) { t.ValidFrom = &from }},
+		{"relative 却带着结束时间", func(t *model.CouponTemplate) { t.ValidTo = &to }},
+	} {
+		if validateTemplate(template(tt.mut)) {
+			t.Errorf("%s：应当被拒", tt.name)
 		}
 	}
 }
