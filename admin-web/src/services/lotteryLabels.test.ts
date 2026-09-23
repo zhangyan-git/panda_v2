@@ -19,7 +19,7 @@ import {
  * 而不是「有没有文案」。前者能在后端加码时失败，后者只在漏写文案时失败——而多出来的
  * 那个码才是常见的。
  *
- * 这些集合来自 lottery-service 的 model 常量，也就是 migrations/lottery/001_lottery_core.sql
+ * 这些集合来自 lottery-service 的 model 常量，也就是 migrations/lottery
  * 的 CHECK 约束。逐一对着那份迁移核过，所以**迁移里加了码而这里没跟，这一份会红**。
  */
 describe('抽奖枚举文案表', () => {
@@ -56,8 +56,8 @@ describe('抽奖枚举文案表', () => {
     ]);
   });
 
-  // 这里原先还有一条「覆盖 prize_kind 的四个取值」。prize_kind 那一列 2026-09-15 随
-  // migrations/lottery/005 删了（类型从落地起就只存不消费），文案表跟着删——不是改值。
+  // 这里原先还有一条「覆盖 prize_kind 的四个取值」。2026-09-15 起库里没有 prize_kind
+  // 那一列（类型从落地起就只存不消费），文案表跟着删——不是改值。
 
   it('覆盖 lottery_wins.status 的六个取值', () => {
     // 本轮只有 pending 可达，其余五个是最终状态机的一部分——登记它们是为了下一轮加核销时

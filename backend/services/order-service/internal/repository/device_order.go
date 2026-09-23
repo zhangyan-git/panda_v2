@@ -148,7 +148,7 @@ func (r *PostgresRepository) CreateDeviceOrder(ctx context.Context, p CreateDevi
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	// user_id 显式写 NULL：设备单没有用户（order/005）。
+	// user_id 显式写 NULL：设备单没有用户（migrations/order）。
 	// scene_token / membership_id / membership_snapshot / fortune_cards_* 都写这一档的
 	// 空值：设备单上没有屏幕选品会话，也没有会员与福卡承诺。写出来而不是靠 DEFAULT，
 	// 因为 INSERT 里每一列都写了值——不写的列才会走 DEFAULT。
@@ -177,7 +177,8 @@ func (r *PostgresRepository) CreateDeviceOrder(ctx context.Context, p CreateDevi
 		}
 		// 不是同一类设备单就不是「你这一次的幂等命中」，见上面的说明。这一格用 payment_method
 		// 而不是 source 判：两条路的 source 都是 device，单号空间共享的也正是这两条路之间的
-		// 事（source 分不开它们，payment_method 正是为此而分的，见 003 的两条路各自那段注释）。
+		// 事（source 分不开它们，payment_method 正是为此而分的，
+		// 见 migrations/order 里 orders.payment_method 的列注释）。
 		if existingMethod != p.PaymentMethod {
 			return nil, false, fmt.Errorf("%w: third party order no %q belongs to a %s order",
 				ErrThirdPartyOrderNoTaken, p.ThirdPartyOrderNo, existingMethod)

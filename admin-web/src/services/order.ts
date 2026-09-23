@@ -35,7 +35,8 @@ export type FulfillmentStatus =
 /**
  * orders.source：这张单从哪儿来的。
  *
- * 四个取值与 order/005 + order/009 放宽后的 orders_source_check 逐字对应，也就是与
+ * 四个取值与 orders_source_check 逐字对应（它今天有 miniapp / screen_qr / device / renewal
+ * 四个取值），也就是与
  * orderLabels 的 ORDER_SOURCE 表一一对应——改一处要同批改两处，否则筛选下拉里能选、
  * 类型上却传不出去（或者反过来：取值合法但列表上退回显示原始码）。
  */
@@ -106,7 +107,7 @@ export type OrderSummary = {
    * 取杯号：这一单饮品行那个短号。没付成功或没有饮品行时为 null。
    *
    * 列表带上它是因为客服最常被问的就是「我的号是多少」；详情里同一份值也从行上给了一次。
-   * 用户侧叫取杯号，取杯口屏幕上叫取杯码，是同一个值——不是凭据（见 order/004）。
+   * 用户侧叫取杯号，取杯口屏幕上叫取杯码，是同一个值——不是凭据（见 migrations/order）。
    */
   pickupCode: string | null;
   createdAt: string;
@@ -152,7 +153,7 @@ export type OrderLine = {
  * payment-service 查），所以这里既没有这个字段，页面也不该去找。
  *
  * `lineType` 是**支付方式的 code**，与这张订单上的 `paymentMethod` 是同一个值——出资渠道
- * 那套词表已经退场（migrations/order/008），所以它不再是一个能穷举的联合类型，中文名走
+ * 那套词表已经退场，所以它不再是一个能穷举的联合类型，中文名走
  * services/paymentMethodLabels。
  */
 export type OrderPaymentLine = {

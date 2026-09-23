@@ -112,7 +112,7 @@ type FortuneCardEntry struct {
 }
 
 // BaseGrantKey / BonusGrantKey / DrawKey / ReverseKey 是 entry_key 的三种形状，
-// 与 migrations/account/001 的列注释是同一套说法。
+// 与 migrations/account 的列注释是同一套说法。
 //
 // 它们必须全局唯一（那把唯一索引是幂等性的全部依据），所以订单与抽奖的 ID 直接进键：
 // 这两类 ID 是 UUID，不会在两个用户之间撞。重投一条 order.completed、重试一次扣减，

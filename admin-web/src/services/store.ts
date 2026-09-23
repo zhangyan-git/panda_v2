@@ -22,7 +22,7 @@ export type Store = {
   provinceCode: string;
   cityCode: string;
   districtCode: string;
-  // 订货系统的客户三列（merchant/004）。两个编码是跟供应商、DMS 对账的业务键，
+  // 订货系统的客户三列（migrations/merchant）。两个编码是跟供应商、DMS 对账的业务键，
   // 库上各有「空串不参与」的部分唯一索引——空串表示还没编码，重复的非空编码会被拒。
   customerCode: string;
   dmsCode: string;
@@ -89,7 +89,7 @@ export async function listStores(
 }
 
 // 这里原来有一个 getStore(id)：它是**出库单详情**用来把 store_id 换店名的。订货/库存域
-// 2026-09-22 整体删除（见 migrations/identity/036）之后，全仓再没有调用点——门店详情页本来
+// 2026-09-22 整体删除之后，全仓再没有调用点——门店详情页本来
 // 就在列表行上直接跳 `/stores/:id`，不需要再查一次。留着它是等着下一个人以为有页面在用。
 
 export async function createStore(data: StoreInput) {

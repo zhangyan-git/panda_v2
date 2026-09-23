@@ -9,7 +9,7 @@ import "time"
 // 开奖是进程内 worker。但表跟着库一起建好了——服务订阅者落地时不用再补一次迁移。留着
 // 不用的代价是一张空表，不留的代价是加订阅者时要动 schema。
 //
-// 将来要接的第一条事件是 order.after_sale.refunded（见 migrations/lottery/001 的边界
+// 将来要接的第一条事件是 order.after_sale.refunded（见 migrations/lottery 的边界
 // 说明与 service 包注释里那条已经写下的规则）。
 type MessageInbox struct {
 	EventID     string     `db:"event_id"`

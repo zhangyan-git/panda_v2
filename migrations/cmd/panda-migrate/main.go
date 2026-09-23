@@ -10,25 +10,29 @@
 // DB_MIGRATE_ON_START is enabled; this command exists for the steps that must
 // stay an explicit operator decision.
 //
-// adopt is one of those steps. A database built before the split already has the
-// schema the set describes — for the part of its history that predates the
-// split — but has no rows in schema_migrations naming those files, and the early
-// migrations use bare CREATE TABLE that cannot be replayed. adopt records every
-// version up to and including THROUGH as applied without running it, then runs
-// whatever follows. It is the only way to bring a pre-split database (or, for the
-// identity set, the freshly created merchant database) under the runner.
+// adopt is one of those steps. A database that predates these sets — the
+// hand-applied single-database chain, or one of the two databases split out of
+// it — already has the schema a set describes, but has no rows in
+// schema_migrations naming that set's files, and the early migrations use bare
+// CREATE TABLE that cannot be replayed. adopt records every version up to and
+// including THROUGH as applied without running it, then runs whatever follows.
+// It is the only way to bring such a database under the runner.
 //
 // THROUGH must be a file name from the set, e.g.
 //
-//	panda-migrate -database "$USER_DATABASE_URL" adopt identity 003_message_outbox_inbox.sql
+//	panda-migrate -database "$USER_DATABASE_URL" adopt identity 001_identity.sql
+//
+// That records the identity DDL as already satisfied, and Apply then runs the one
+// file after it, 002_identity_seed.sql. Each set holds a single file — identity,
+// coupon and membership hold a second for their seed data — so THROUGH is almost
+// always the set's first file. adopt can no longer stop at an arbitrary point
+// inside a set's history, because that history is no longer a series of files.
 //
 // -baseline-only stops after recording the baseline and applies nothing, for the
-// case where what follows THROUGH must not run yet. The split has exactly one
-// such step: identity/004_split_cleanup.sql drops the merchant tables, so it may
-// only run once merchant-service is confirmed to be serving from its own
-// database. The operator records the baseline ahead of the switchover, and runs
-// `apply identity` afterwards. Recorded versions do not expire, so splitting
-// adopt in two is the same operation with a checkpoint in the middle.
+// case where what follows THROUGH must not run yet: with THROUGH at the set's
+// first file that means "record the schema now, run the seed later". Recorded
+// versions do not expire, so splitting adopt in two is the same operation with a
+// checkpoint in the middle.
 //
 // -database is required and is deliberately not read from the environment: this
 // command runs DDL, and there is no safe default for which database that hits.
@@ -104,7 +108,7 @@ func run() error {
 	case "adopt":
 		if len(args) != 3 {
 			flag.Usage()
-			return errors.New("adopt needs the version it adopts through, e.g. 003_message_outbox_inbox.sql")
+			return errors.New("adopt needs the version it adopts through, e.g. 001_identity.sql")
 		}
 		return adopt(ctx, pool, set, args[2], *baselineOnly)
 	default:

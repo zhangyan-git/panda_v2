@@ -27,7 +27,7 @@ func bonusGrantKey(orderID, campaignID string) string {
 
 // fortuneCardSnapshot 是 orders.fortune_card_snapshot 期望的形状。
 //
-// 形状只在 migrations/order/001 那一列的注释里写着（"基础赠送 + 各加购活动的加赠"），
+// 形状只在 migrations/order 那一列的注释里写着（"基础赠送 + 各加购活动的加赠"），
 // 没有任何写路径产生它——它是调用方给的 JSON。所以下面每一处解析都必须按「可能不是
 // 这个形状」来写，而不是按「它就是」来写。
 type fortuneCardSnapshot struct {

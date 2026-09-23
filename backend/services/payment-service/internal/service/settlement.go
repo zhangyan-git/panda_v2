@@ -37,7 +37,7 @@ func (s *PaymentService) buildSettlementPlan(ctx context.Context, in CreateReque
 	rule, err := s.repository.FindSettlementRule(ctx, repository.SettlementRuleQuery{
 		BizType: in.BizType,
 		// 渠道名而不是渠道行的 uuid：接收方账户按渠道登记（settlement_accounts.provider），
-		// 而那个值今天就是这个名字（见 009 迁移）。
+		// 而库里没有渠道表，那个值就是这个名字。
 		Provider:  route.Provider(),
 		DeviceRef: in.DeviceID,
 		StoreRef:  in.StoreID,
@@ -53,7 +53,7 @@ func (s *PaymentService) buildSettlementPlan(ctx context.Context, in CreateReque
 	plan := &repository.SettlementPlan{StoreRef: in.StoreID}
 	if rule == nil {
 		// 没命中规则不是错误，是「这个门店没配规则」这个正常的业务事实。任务照样建，整单归平台
-		// （008 的存照：门店没配规则时这条任务照样建）。
+		// （settlement_tasks 的存照：门店没配规则时这条任务照样建）。
 		plan.PlatformAmount = in.Amount
 		return plan, nil
 	}
@@ -83,12 +83,12 @@ func (s *PaymentService) buildSettlementPlan(ctx context.Context, in CreateReque
 // 多少」的全部所在。过程中的那几句「本该分出去、结果没分出去」由第三个返回值带出去，调用方
 // 记日志。
 //
-// 算法照 008 与老系统：
+// 算法照老系统：
 //
 //	percent   金额 = floor(percentBase × ratio)
 //	fixed     金额 = fixed_amount
 //	remainder 平台项，不产生接收方；平台金额**永远**是差额倒挤（base − Σ 接收方）——
-//	          这是唯一能吸收固定额与取整尾差的算法，也是 008 那条 platform_amount >= 0 的来源
+//	          这是唯一能吸收固定额与取整尾差的算法，也是 settlement_tasks.platform_amount >= 0 那条 CHECK 的来源
 //
 // fixed_then_remaining 模式下 percentBase = base − Σfixed（**所有**固定额项，包括账户不可用的
 // 那些：那一份照样从基数里扣掉，只是它归平台而不是归门店——与老系统一致）。
@@ -120,7 +120,7 @@ func (s *PaymentService) buildSettlementPlan(ctx context.Context, in CreateReque
 // 剩下的「本该分出去、结果没分出去」只有两种，都不是配置错，所以仍然只记一条 warn 让别人
 // 看得见：账户不可用（停用或不属于本渠道）、算法值不认识（绕过 CHECK 写进来的）。
 //
-// 「不足 1 分的接收方不建行」也是 008 定的（amount > 0 那条 CHECK）：行上的 0 会让
+// 「不足 1 分的接收方不建行」也是 settlement_receivers.amount > 0 那条 CHECK 定的：行上的 0 会让
 // 「Σ 明细 = base − 平台」要打折才成立，比不拿这几分钱麻烦得多。
 func computeSettlement(base int64, allocationMode string, items []repository.SettlementRuleItem) ([]repository.SettlementReceiverLine, int64, []string, error) {
 	// 基数是正数、且乘得动比例的分母：base × 1000000 溢出 int64 之后符号会翻，接收方金额
@@ -158,17 +158,17 @@ func computeSettlement(base int64, allocationMode string, items []repository.Set
 		case model.SettlementCalcFixed:
 			amount = item.FixedAmount
 		case model.SettlementCalcRemainder:
-			// 平台项：金额靠差额倒挤，不产生接收方（008：平台永远没有接收方明细）。
+			// 平台项：金额靠差额倒挤，不产生接收方（平台项永远没有接收方明细）。
 			continue
 		default:
-			// 008 的 CHECK 保证只有三种 calc_type。真读到一个别的值，是配置被绕过约束写进来的：
+			// settlement_rule_items 的 CHECK 保证只有三种 calc_type。真读到一个别的值，是配置被绕过约束写进来的：
 			// 不猜它是什么意思，把它当成「这项不产生接收方」——钱归平台，账仍然是平的。
 			notes = append(notes, fmt.Sprintf("规则项 %s 的算法 %q 不认识，这一项归平台",
 				item.PartyType, item.CalcType))
 			continue
 		}
 		if amount <= 0 {
-			// 不足 1 分不分账（008）：算出来是 0 的接收方不建行，不留一行 0。
+			// 不足 1 分不分账：算出来是 0 的接收方不建行，不留一行 0。
 			continue
 		}
 		if item.Account == nil {
@@ -178,7 +178,7 @@ func computeSettlement(base int64, allocationMode string, items []repository.Set
 				item.PartyType, amount))
 			continue
 		}
-		// MerchantRef / BrandRef / StoreRef 三个快照**故意不填**：账户上已经没有这三列了（016），
+		// MerchantRef / BrandRef / StoreRef 三个快照**故意不填**：账户上已经没有这三列了，
 		// settlement_receivers 上那三列会一直是空串，全仓也没有一处渲染它们。列留着是等哪天要
 		// 删的时候单独走一条迁移，不夹在这一刀里。
 		receivers = append(receivers, repository.SettlementReceiverLine{
@@ -187,7 +187,7 @@ func computeSettlement(base int64, allocationMode string, items []repository.Set
 			PartyName:    item.Account.PartyName,
 			ReceiverType: item.Account.ReceiverType,
 			ReceiverID:   item.Account.ReceiverID,
-			// 固定额项的 ratio 记 0：它的金额在 amount 上，008 的列注释就是这么分的。
+			// 固定额项的 ratio 记 0：它的金额在 amount 上，settlement_receivers.ratio 的列注释就是这么分的。
 			RatioScaled: ratioForSnapshot(item),
 			Amount:      amount,
 		})
@@ -206,7 +206,7 @@ func computeSettlement(base int64, allocationMode string, items []repository.Set
 // ratioForSnapshot 取落进 settlement_receivers.ratio 的那个数。
 //
 // 只有比例项有快照比例；固定额项记 0（金额在 amount 上）。分成两个函数而不是在调用处写一个
-// 三元表达式，是因为这个口径写在 008 的列注释里，值得有一个能被引用的名字。
+// 三元表达式，是因为这个口径写在 settlement_receivers.ratio 的列注释里，值得有一个能被引用的名字。
 func ratioForSnapshot(item repository.SettlementRuleItem) int64 {
 	if item.CalcType == model.SettlementCalcPercent {
 		return item.RatioScaled
@@ -216,7 +216,7 @@ func ratioForSnapshot(item repository.SettlementRuleItem) int64 {
 
 // scaleFloor 算 base × ratioScaled ÷ 1000000 并**向下取整**到分。
 //
-// 整数运算，不用浮点：金额一律是 BIGINT 分（008 的第一条），而 float 的尾差会一路走到分账
+// 整数运算，不用浮点：金额一律是 BIGINT 分，而 float 的尾差会一路走到分账
 // 明细、再走到结算单上，对账时表现为几分钱的差。两个操作数都非负，Go 的整数除法就是 floor。
 //
 // **不是四舍五入**，理由见 computeSettlement 文件头「比例项为什么是向下取整」：逐项四舍五入

@@ -126,7 +126,7 @@ const (
 
 // userIDPtr 是订单上那个用户 ID 的指针形式。
 //
-// model.Order.UserID 可空（设备单没有用户，见 order/005），所以测试里构造订单要给指针：
+// model.Order.UserID 可空（设备单没有用户，见 migrations/order），所以测试里构造订单要给指针：
 // 用空串代替的话，「这张单没有用户」与「这张单的用户 id 是空」就分不开了，而 pay 那条路
 // 的归属判定正是拿这个区分「这张单能不能付」。
 func userIDPtr(id string) *string { return &id }

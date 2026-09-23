@@ -14,7 +14,7 @@ import type { PageQuery, PageResult } from './pagination';
  */
 
 // ——— 枚举 ———
-// 取值来自 lottery-service model 的常量，也就是 migrations/lottery/001 的 CHECK 约束。
+// 取值来自 lottery-service model 的常量，也就是 migrations/lottery 的 CHECK 约束。
 // 接口回的就是库里那些英文码。**改枚举必须同时改迁移和这里**，加了新码而这里没登记，
 // 界面上就退回显示原始码。文案表在 services/lotteryLabels.ts。
 
@@ -89,7 +89,7 @@ export type Activation = {
   locationId: string;
   /**
    * 门店名。**是读这一刻向商户域现解出来的，不是快照**：开通记录上只存 locationId
-   * （见 migrations/lottery/003），商户改了店名这里就跟着变。解不出来时是空串
+   * （见 migrations/lottery），商户改了店名这里就跟着变。解不出来时是空串
    * （商户域不可达，或那个 id 商户域已经不认识了）——门店的身份永远是上面那一列 id。
    */
   locationName: string;
@@ -122,7 +122,7 @@ export type Activation = {
  * 开通门店。这一个动作会同时建出**默认活动与第一期**。
  *
  * **只有门店 id，没有门店名**：名字是商户域的事实，抽奖库里不存（见
- * migrations/lottery/003），服务端会在开通过程中拿这个 id 问一次商户域「这家店存在吗」
+ * migrations/lottery），服务端会在开通过程中拿这个 id 问一次商户域「这家店存在吗」
  * ——不存在回 404，问不到回 503。
  *
  * participantTarget 是可选的：默认活动是内置模板建的，不给时门槛取 30 次。给
@@ -155,7 +155,7 @@ export type UpdateActivationInput = {
  * 活动的奖品。**一个活动只有一个**。
  *
  * 这里原先是一份清单（每个奖品带 sortOrder / prizeKind / couponTemplateId / quantity），
- * 2026-09-15 随 migrations/lottery/005 收敛成这样：运营侧实际就是一个活动一个奖品，「类型」
+ * 2026-09-15 收敛成这样：运营侧实际就是一个活动一个奖品，「类型」
  * 从落地起只存不消费，名额也永远填 1。名额那一列还在库里（恒为 1），但**不进这一层**——
  * 看名额的地方是期次上的 winnerCount，那是开期时冻结下来的真值。
  *
@@ -438,7 +438,7 @@ export type ActivationQuery = PageQuery & {
    * 门店 ID 精确匹配。不做 uuid 前缀匹配——那是没有意义的模糊。
    *
    * 后台的门店筛选走的就是它：从门店下拉里选一家。**没有按门店名搜这条路**——名字不落库
-   * （migrations/lottery/003），SQL 里没有一列能做 LIKE，而商户域的 gRPC 也没有「按名字查
+   * （migrations/lottery），SQL 里没有一列能做 LIKE，而商户域的 gRPC 也没有「按名字查
    * 门店」的能力（见 activations 页那一列的说明）。
    */
   locationId?: string;

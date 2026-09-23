@@ -311,7 +311,7 @@ func TestPostgresSettlePaymentNumbersFundingsAfterExistingLines(t *testing.T) {
 // orders.payment_method（后台订单列表那一列）与 order_payment_lines.line_type 存的是**同一个
 // 值**：用户实际选的那种支付方式，catalog 的 code（如 ums_h5_alipay）。从前这是两套词表——
 // 订单表存 code，出资行存「出资渠道」，于是支付宝那条路的 line_type 只能是 other，后台把一笔
-// 支付宝单显示成「其他」。那套词表已经退场（见 order/008），两边同值这条不变量值得有用例盯着：
+// 支付宝单显示成「其他」。那套词表已经退场（见 migrations/order），两边同值这条不变量值得有用例盯着：
 // 它一旦重新分岔，就又要有一种支付方式找不到档位。
 //
 // 用例刻意**不带 fundings**：那正是订单侧自己补一行的那条路，也就是唯一会把 PaymentMethod

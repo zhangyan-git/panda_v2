@@ -55,7 +55,7 @@ type RefundResult struct {
 //
 // 从前这里另有一个本地常量 `fundingTypeCoffeeBean`，理由是「退款判的是落库的历史值，不是
 // 用户今天选的方式」——出资渠道词表退场之后这句话不再成立：**出资行存的本来就是支付方式的
-// code**（见 payment/012），所以落库的历史值与 catalog 的常量是同一个东西，再抄一份只会
+// code**，所以落库的历史值与 catalog 的常量是同一个东西，再抄一份只会
 // 多一个能对不上的地方。
 const fundingLineTypeCoffeeBean = catalog.CodeCoffeeBean
 

@@ -370,7 +370,7 @@ services:
       DB_MIGRATE_ON_START: "false"
       # 这里以前还有两行：PAYMENT_MANUAL_SECRET（手工渠道的验签密钥）与 PAYMENT_SECRET_KEY
       # （封渠道凭据的主密钥）。**都删了**，不是忘了写——渠道表（payment_channels）连同它的
-      # 密文列一起删了（migrations/payment/009），收钱那四种里的三种现在写在 payment-service
+      # 密文列都不建（migrations/payment），收钱那四种里的三种现在写在 payment-service
       # 的 internal/catalog 里（咖啡豆 / 银联商务小程序 / 银联商务 H5；第四种取货码不经过
       # 支付服务），密钥按变量名现读（PAYMENT_UMS_APP_KEY / _COMM_KEY，见 .env）。
       # 留着这两行会让下一个读 compose 的人以为还有一摊凭据要配。
@@ -519,7 +519,7 @@ services:
       # 一次参与就是当场扣一张福卡，所以账户服务是硬依赖；后台页面要走实时授权，用户
       # 服务也是硬依赖。三个都在 config 里必填：少任何一个都拒绝启动。
       #
-      # 商户服务同样是硬依赖，而且不是装饰：抽奖库只存门店 id（migrations/lottery/003），
+      # 商户服务同样是硬依赖，而且不是装饰：抽奖库只存门店 id（migrations/lottery），
       # 开通前要先问一次「这家店存在吗」（问不到就不受理），读列表时还要解一页门店名。
       ACCOUNT_GRPC_ADDR: account-service:9090
       USER_GRPC_ADDR: user-service:9090

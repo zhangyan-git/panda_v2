@@ -28,7 +28,7 @@ import (
 // # 与老系统那条路的关系
 //
 // 老系统的续费回调按 out_trade_no 去查 user_subscriptions，而那个号是交易记录的 _id、从来没
-// 写进那张表，于是必然查不到 → 回 FAIL → 微信永久重推（见迁移 013 的文件头）。这里对上的键
+// 写进那张表，于是必然查不到 → 回 FAIL → 微信永久重推（见 payment_agreement_charges.out_trade_no 的列注释）。这里对上的键
 // 是 payment_agreement_charges.out_trade_no，它在这一期建行时就存下来了。
 
 // ErrChargeNotifyUnsupported：这条渠道不实现 provider.AgreementChargeNotifier。

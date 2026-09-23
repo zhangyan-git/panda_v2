@@ -1,6 +1,6 @@
 // Package model 是 partner-service 的库内形状：合作方、API 密钥、调用日志。
 //
-// 三个结构体与 migrations/partner/001 的三张表一一对应，**只有本服务拥有它们**。合作方的
+// 三个结构体与 migrations/partner 的三张表一一对应，**只有本服务拥有它们**。合作方的
 // 用户、订单、券、会员资格在这个包里一个字段都没有——那些是别的服务的事实，本服务只把
 // 一个 partner_id 当值传过去（见 internal/client 与 internal/service 的转发）。
 //
@@ -75,7 +75,7 @@ type APIKey struct {
 	Name       string
 	Status     Status
 	ExpiresAt  *time.Time
-	// IPWhitelist 为空表示不限制来源（不是「全拒」），见 migrations/partner/001。
+	// IPWhitelist 为空表示不限制来源（不是「全拒」），见 migrations/partner。
 	IPWhitelist []string
 	// RateLimitPerMinute 按密钥计，不是按来源 IP。
 	RateLimitPerMinute int
@@ -135,7 +135,8 @@ const SecretSlot = "signing"
 // （请求里的 0）归一成它，读路径（ingress 的限流）要在拿到一个非正数时用它兜底，两边各写
 // 一个 60 的那天，「页面上显示 60 而实际按 100 在限」会变成一个没人能解释的差异。
 //
-// 值 60 与老系统同档（它的默认是 60/分钟），也与 001 迁移里那一列的 DEFAULT 逐字一致。
+// 值 60 与老系统同档（它的默认是 60/分钟），也与 migrations/partner 里
+// partner_api_keys.rate_limit_per_minute 那一列的 DEFAULT 逐字一致。
 const DefaultRateLimitPerMinute = 60
 
 // UnknownPartnerID 是「认不出调用方」时写进日志的占位 id（全零 UUID）。

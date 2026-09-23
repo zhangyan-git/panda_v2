@@ -9,7 +9,7 @@ import (
 
 // 这个文件是**调用日志**：写一次调用、读一页调用。没有别的。
 //
-// 它是本库里唯一一张只增表（见 migrations/partner/001），所以只有两个动词，而且都在这里：
+// 它是本库里唯一一张只增表（见 migrations/partner），所以只有两个动词，而且都在这里：
 // RecordCallLog 在请求那条路上被调用（每个请求一次，包括所有拒绝路径），ListCallLogs 给后台
 // 查「某个合作方某段时间调了什么」。
 //
@@ -30,7 +30,8 @@ type CallLogRow struct {
 //
 // LEFT JOIN 而不是 JOIN：认不出调用方的那些行（密钥查不到、头都没带）写的 partner_id 是全零
 // UUID，它在 partner_accounts 里没有对应行。用 JOIN 的话这些行会从列表里**消失**——而它们
-// 恰恰是最该被看见的一类（有人在试）。这也是日志表不建外键的原因（见 001）。
+// 恰恰是最该被看见的一类（有人在试）。这也是日志表不建外键的原因
+// （见 migrations/partner 里 partner_call_logs 的建表说明）。
 const callLogFrom = ` FROM partner_call_logs l
 	LEFT JOIN partner_accounts p ON p.id = l.partner_id`
 
@@ -58,7 +59,8 @@ const callLogColumns = `l.id, l.partner_id::text, l.api_key_id::text, l.api_key_
 // 条件是**这一行没有 error_code**（也就是这次调用走到了 handler）。不这么判的话，任何一个人
 // 拿着一个泄露的 api_key（公开标识，抓包就有）反复发垃圾请求，就能把一把早已停用/淘汰的钥匙
 // 的 last_used_at 一直顶到最新，而 error_code 那一列根本不会有人去看。判定「最后使用时间」
-// 应当用「真的签对了」的调用，与 002 里那条注释（「验签通过之后才更新」）是同一件事。
+// 应当用「真的签对了」的调用，与 partner_api_keys.last_used_at 那条列注释
+// （「验签通过之后才更新」）是同一件事。
 func (r *PostgresRepository) RecordCallLog(ctx context.Context, entry model.CallLog) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -93,7 +95,7 @@ func (r *PostgresRepository) RecordCallLog(ctx context.Context, entry model.Call
 //
 // 排序用 `l.id DESC` 而不是 created_at：id 是 IDENTITY，天然单调，用它排序既走主键索引又
 // 不会在同一毫秒的几行之间给出不稳定的顺序——而「同一秒里这几条谁先谁后」正是排查一次并发
-// 调用时要看的。created_at 那个索引留给保留期清理（见 001 的已知缺口）。
+// 调用时要看的。created_at 那个索引留给保留期清理（见 migrations/partner 文件头的已知缺口）。
 //
 // 全部筛选条件都带 `l.` 前缀（见 callLogFrom 的 JOIN）：两张表都有 id、created_at，不限定
 // 别名的报错是运行时的「列指代不明」。

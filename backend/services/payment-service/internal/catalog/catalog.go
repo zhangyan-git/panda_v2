@@ -92,7 +92,7 @@ const (
 //   - 支付成功事件里带给 order-service，写进 orders.payment_method。
 //
 // 所以它们是**一次性契约**：改名等于改一次客户端，而且会让历史支付单与新支付单看起来是
-// 两种东西——009 把老 `payment_methods.code` 原样搬进了 `payments.payment_method`，那一列
+// 两种东西——`payments.payment_method` 存的是老 `payment_methods.code` 的原值，那一列
 // 今天只在展示与筛选时用。老库里若有一个这里没有的 code（那套种子连目录一起删了，没法再
 // 逐个核对），它不会报错，只会在后台列表上显示成空名字。
 const (

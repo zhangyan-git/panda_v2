@@ -2,8 +2,9 @@ package model
 
 import "time"
 
-// 变更类型。与 migrations/membership/001 + 008 里 membership_changes.change_type 的 CHECK
-// 逐字一致——这不是重复定义，是同一个取值表的 Go 半边。（后两个是 008 补的，前十二个在 001。）
+// 变更类型。与 migrations/membership 里 membership_changes.change_type 的 CHECK
+// 逐字一致——这不是重复定义，是同一个取值表的 Go 半边。（后两个 charge_failed / suspend
+// 是代扣专用的，前十二个建表时就在。）
 //
 // auto_renew_on / off 记的是那个开关**被拨动**这件事，而拨它的人不一定是用户：签约生效时由
 // 服务端跟着拨开（同一件事的两半），解约时跟着拨灭（见 repository.applyAutoRenew）。所以这两

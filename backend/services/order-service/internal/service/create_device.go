@@ -22,7 +22,7 @@ const deviceOrderReason = "设备刷卡购买"
 // CreateDeviceOrderInput 是一次设备单建单的全部输入。
 //
 // 这里**没有 UserID**：线下刷卡机上的这一单不属于任何用户（钱在机器上收过了），
-// orders.user_id 写 NULL，见 order/005。也没有幂等键——这条路的幂等键是对方单号本身。
+// orders.user_id 写 NULL，见 migrations/order。也没有幂等键——这条路的幂等键是对方单号本身。
 type CreateDeviceOrderInput struct {
 	// ThirdPartyOrderNo 是对方单号，也是这条路唯一的幂等键。
 	ThirdPartyOrderNo string

@@ -67,7 +67,7 @@ const IdempotencyRecoveryWindow = 15 * time.Minute
 // UUID 列一律 ::text：pgx 把 uuid 扫进 string 需要这一步，少了它 Scan 会报类型不匹配。
 // 列顺序与 scanOrder 的扫描顺序严格一一对应，两边必须一起改。
 //
-// user_id 是唯一一个**可空**的 UUID 列（设备单没有用户，见 order/005），所以它扫进的是
+// user_id 是唯一一个**可空**的 UUID 列（设备单没有用户，见 migrations/order），所以它扫进的是
 // *string 而不是 string：NULL 扫进 string 会让 Scan 直接报错（NULL 只能进指针或 sql.Null*），
 // 而「没有用户」正是那条路上的常态，不是异常。
 const orderColumns = `id::text, order_no, legacy_id, user_id::text, source, status,

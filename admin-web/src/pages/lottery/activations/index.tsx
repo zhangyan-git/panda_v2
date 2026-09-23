@@ -150,7 +150,7 @@ export default function LotteryActivationsPage() {
       // 自带的 locationName。
       //
       // 这里原先是一个按门店名的模糊搜索（发 `name`）。换成下拉是因为名字不落库了
-      // （migrations/lottery/003）：开通记录上只存门店 id，名字是每次读的时候向商户域现解
+      // （migrations/lottery）：开通记录上只存门店 id，名字是每次读的时候向商户域现解
       // 的，SQL 里没有一列能做 `ILIKE`；而商户域的 gRPC 也没有「按名字查门店」——ListStores
       // 只收 merchantId，ResolveScopeNames 只收 id。所以「按名字搜」和「显示当前店名」只能
       // 留一件，留的是后者，前者换成从上面那份门店列表里选。

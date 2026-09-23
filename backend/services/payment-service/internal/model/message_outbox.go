@@ -4,8 +4,7 @@ import "time"
 
 // MessageOutbox 对应 message_outbox 表，支付服务待发布消息事件。
 //
-// 与 identity/003、merchant/002、coupon/001、coffee_machine/001、order/001 里的同名表
-// 逐列一致，各库自带一份，跨库不共享表。
+// 与其它九个库里的同名表逐列一致，各库自带一份，跨库不共享表。
 type MessageOutbox struct {
 	EventID       string     `db:"event_id"`
 	EventType     string     `db:"event_type"`

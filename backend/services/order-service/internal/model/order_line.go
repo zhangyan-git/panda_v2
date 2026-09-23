@@ -60,7 +60,7 @@ type OrderLine struct {
 	//
 	// 它曾经被拆成两列（pickup_no「显示的短号」+ pickup_code「唯一凭据」），并由此派生出一条
 	// 「后台不得展示取杯码」的规则。那个拆分是凭空造的：原型里只有一个 order.pickup 字段，
-	// 用户侧叫取杯号、屏幕上叫取杯码，是同一个值。order/004 已把 pickup_no 删掉合并回本列。
+	// 用户侧叫取杯号、屏幕上叫取杯码，是同一个值。库里的列名就是 pickup_code，没有 pickup_no。
 	PickupCode *string   `db:"pickup_code"`
 	Remark     string    `db:"remark"`
 	CreatedAt  time.Time `db:"created_at"`
@@ -76,9 +76,10 @@ const (
 
 // 分账业务分类，发起支付时随请求交给支付域，命中 settlement_rules.biz_type。
 //
-// 与 payment/008 那张表的词表前三个值逐字一致（第四个 store_consume 是「到店消费」，
-// 老系统 store_pos 的存量口径，V2 没有产生它的来源，所以这里不列）。这份常量在支付域
-// 另有一份**完整的**词表用于校验——两边都对着 008 的 CHECK 写，改词表要一起改。
+// 与 payment 库 settlement_rules.biz_type 的 CHECK 前三个值逐字一致（第四个 store_consume
+// 是「到店消费」，老系统 store_pos 的存量口径，V2 没有产生它的来源，所以这里不列）。这份常量
+// 在支付域另有一份**完整的**词表用于校验——两边都对着 settlement_rules.biz_type 的 CHECK 写，
+// 改词表要一起改。
 const (
 	SettlementBizCoffee       = "coffee"
 	SettlementBizMembership   = "membership"

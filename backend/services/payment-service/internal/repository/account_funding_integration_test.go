@@ -13,7 +13,7 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/model"
 )
 
-// 这一组用例守的是 005 迁移加的那道闸：**豆已经扣了的支付单不许被当成没付过一样关掉**。
+// 这一组用例守的是 payments.account_entry_id 那道闸：**豆已经扣了的支付单不许被当成没付过一样关掉**。
 //
 // 只有真库能验它。判据全在那两条 SQL 的 WHERE 子句里（关单排除 account_entry_id 非空的行、
 // 补偿任务只挑非空的行），应用层看不见也补不回来——把子句写错，任何单元测试都不会红，而

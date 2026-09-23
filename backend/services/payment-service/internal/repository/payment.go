@@ -338,7 +338,7 @@ func (r *PostgresRepository) MarkPaymentFailed(ctx context.Context, p MarkPaymen
 	}
 	// 支付单进终态，还停在 pending 的分账任务跟着作废。**必须与这次失败同一个事务**：
 	// 分开了就可能出现「支付单是 failed、任务是 pending」——那条任务会被扫待发起的任务捞出来，
-	// 把一笔从没收到的钱发去分账（见 008 的 settlement_tasks_unfinished_idx 那段警告）。
+	// 把一笔从没收到的钱发去分账（见 settlement_tasks_unfinished_idx 那段警告）。
 	if err := cancelPendingSettlementInTx(ctx, tx, payment.ID); err != nil {
 		return nil, err
 	}
@@ -366,7 +366,7 @@ var ErrAccountEntryIDRequired = errors.New("account entry id is required to reco
 //
 // 调用点在 createAccountPayment 里，紧跟在账户域返回之后、**在结算之前**。它是一条独立的
 // UPDATE，不跟结算共用一个事务——共用的话，结算失败会把这条留痕一起回滚掉，而它要覆盖的
-// 恰恰就是结算失败那个窗口（见 005 迁移）。
+// 恰恰就是结算失败那个窗口（见 payments.account_entry_id 的列注释）。
 //
 // **故意不带状态判断**：这张单可能已经不在 created/pending 了（超时关单刚把它收走，这正是
 // 最需要留痕的那条路），带上 `AND status IN (...)` 会让最该写下的一行写不下去。它不是一次

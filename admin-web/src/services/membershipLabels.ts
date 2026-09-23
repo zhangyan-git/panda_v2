@@ -1,7 +1,7 @@
 /**
  * 会员域那些枚举码的中文文案。
  *
- * 取值来自 membership-service model 里的常量（也就是 migrations/membership/001 的 CHECK 约束），
+ * 取值来自 membership-service model 里的常量（也就是 migrations/membership 的 CHECK 约束），
  * 不是接口给的——接口回的就是库里那些英文码。所以**改枚举必须同时改迁移和这里**，加了新码而
  * 没登记，界面上就退回显示原始码。
  *
@@ -64,7 +64,7 @@ export const MEMBERSHIP_STATUS: Record<string, EnumMeta> = {
 /**
  * membership_changes.change_type：会员身上发生过的一件事。
  *
- * 十四个取值后端都在 CHECK 里写全了（前十二个在 001，charge_failed / suspend 是 008 补的），
+ * 十四个取值后端都在 CHECK 里写全了（最后两个来自代扣链路），
  * 但今天写得出来的只有一半——subscribe / unsubscribe 要签约链路、refund_adjust 要退款单、
  * expire 要到期扫描，这三条路都还没实现。照登的理由与抽奖那边逐字相同：登记一个今天到不了的
  * 码，好过将来那一格原样显示 `unsubscribe`。

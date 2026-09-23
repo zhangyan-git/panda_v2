@@ -63,7 +63,7 @@ func subscriptionResponse(row *repository.SubscriptionRow) *dto.SubscriptionResp
 	}
 }
 
-// signSceneFor 算「签约场景」。库里没有这一列（见 migrations/membership/005），三个来源 id
+// signSceneFor 算「签约场景」。库里没有这一列（见 migrations/membership），三个来源 id
 // 的**优先级**就是判据：一次签约可能既有咖啡订单又有活动单（从活动页扫了码再点单），
 // 老系统先看咖啡订单——那是用户当下真正在做的事。
 func signSceneFor(s *model.Subscription) string {

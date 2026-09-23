@@ -32,7 +32,7 @@ import (
 // CreateOrFindCharge 与真仓储那条唯一键同形：同一期已经有行就回那一行、**并且不采纳这次
 // 现算的 out_trade_no**。「重试复用同一个号」那条规矩在真库上是 ON CONFLICT DO NOTHING 的
 // 结果，在这里必须逐字复现——否则一条「每次重试都换号」的实现会在假仓储上验不出来，而那正是
-// 用户被扣两次的那条路（见迁移 013 的文件头）。
+// 用户被扣两次的那条路（见 payment_agreement_charges.out_trade_no 的列注释）。
 func (f *fakeRepository) CreateOrFindCharge(_ context.Context, p repository.CreateOrFindChargeParams) (*model.PaymentAgreementCharge, bool, error) {
 	f.createChargeCalls = append(f.createChargeCalls, p)
 	if f.createChargeErr != nil {

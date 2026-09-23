@@ -588,7 +588,7 @@ func TestUpdateDrinkKeepsNaturalKey(t *testing.T) {
 // 网，是索引定义本身的两条边界，改动索引写法时最容易顺手丢掉：
 //
 //   - device_id 为 NULL 的行互不相撞：唯一索引把 NULL 当作彼此不同，所以没有设备的
-//     历史行（迁移 003 之前建的那批）可以同 origin 并存。这是可接受的——设备维度的读
+//     历史行（device_id 为 NULL 的那批）可以同 origin 并存。这是可接受的——设备维度的读
 //     接口根本看不到它们，而新写入路径已经被服务层挡在 ErrDrinkDeviceRequired 上。
 //   - origin_id 为空的行也不相撞：索引只收 origin_id 非空的行（部分索引），后台手工
 //     新建的饮品全是空 origin，同一台设备上可以有任意多行。
@@ -909,7 +909,7 @@ func TestNoopRecorderStillWritesBusinessRows(t *testing.T) {
 // ============================================================
 
 // drinkFixture 造一款饮品并注册清理，返回它的 id。deviceID 为空串时写 NULL——库里
-// 确实存在还没挂设备的行（003 是加列迁移），「未分配设备」那条路径要有现场。
+// 确实存在还没挂设备的行（drinks.device_id 可空），「未分配设备」那条路径要有现场。
 func drinkFixture(t *testing.T, pool *pgxpool.Pool, manufacturerID, deviceID, name string) string {
 	t.Helper()
 	drinkID := uuid.NewString()

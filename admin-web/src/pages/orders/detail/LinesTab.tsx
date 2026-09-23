@@ -108,7 +108,7 @@ export default function LinesTab({ order }: { order: OrderDetail }) {
     },
     {
       // 取杯号：支付成功时生成，取杯口屏幕上大字显示的也是它（那边叫取杯码，同一个值）。
-      // 它曾经被当成后台不该看的凭据，那建立在一次凭空的列拆分上（见 order/004）。
+      // 它曾经被当成后台不该看的凭据，那建立在一次凭空的列拆分上（见 migrations/order）。
       title: '取杯号',
       dataIndex: 'pickupCode',
       width: 120,

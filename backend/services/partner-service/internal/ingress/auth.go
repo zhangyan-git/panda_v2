@@ -58,7 +58,7 @@ func CallerFrom(ctx context.Context) (Caller, bool) {
 
 // IPAllowList 是合作方密钥上的白名单，已解析。
 //
-// nil 接收者表示**不限制**（空数组的语义，见 migrations/partner/001）。这一条与「全拒」的
+// nil 接收者表示**不限制**（空数组的语义，见 migrations/partner）。这一条与「全拒」的
 // 区别是有意的：新签发的密钥默认不限制来源，否则运营不填白名单就调不通，而报出来的是 403
 // ——他会先怀疑签名算错了。
 type IPAllowList struct{ nets []*net.IPNet }

@@ -50,7 +50,7 @@ type CampaignResponse struct {
 	// **空串与 0 = 这场活动只送会员天数**，库里那两列是 NULL，形状转换时归一化成零值。
 	//
 	// 它是跨库值引用：本服务查不到那张模板存不存在，配错了要等发券那一刻才现形（券服务会
-	// 记一条日志并跳过，不会回头改这里）——见 migrations/membership/007 那段说明。
+	// 记一条日志并跳过，不会回头改这里）——见 migrations/membership 那段说明。
 	CouponTemplateID string `json:"couponTemplateId"`
 	CouponCount      int32  `json:"couponCount"`
 	// QRCodeURL 今天恒为空：生成小程序码要走微信的 wxacode.getUnlimited，而 appid/secret

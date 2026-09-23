@@ -4,8 +4,8 @@ import "time"
 
 // UserSMSCode 对应 user_sms_codes 表，一个手机号当前有效的短信验证码。
 //
-// 一个手机号同时只有一条：重发是覆盖而不是新增（见 010 迁移的文件头——否则
-// 反复请求就能把猜中的概率乘上去）。
+// 一个手机号同时只有一条：重发是覆盖而不是新增（user_sms_codes.phone 是主键，见
+// migrations/identity 里那一节的说明——否则反复请求就能把猜中的概率乘上去）。
 type UserSMSCode struct {
 	Phone string `db:"phone"`
 	// Purpose 取值同 model.SMSPurpose*，库里有 CHECK 约束。

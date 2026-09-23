@@ -13,7 +13,7 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/model"
 )
 
-// 这一组用例守的是主动查单那条扫描（010 索引服务的就是它）：**一分钟一轮的补偿任务每轮问谁**。
+// 这一组用例守的是主动查单那条扫描（payments_pending_reconcile_idx 服务的就是它）：**一分钟一轮的补偿任务每轮问谁**。
 //
 // 只有真库能验它。三件事全写在那一条 WHERE 里——挑 pending、挑有渠道的、挑「发起之后一直没动过」
 // 的——而写完它们之后，任何一层都补不回来：多挑一张，就会对着一个没有渠道可问的账户出资单去查
@@ -202,7 +202,7 @@ func TestPostgresSettlePaymentWithoutANotification(t *testing.T) {
 	// 「没有出资行」的兜底分支，而被验的就不是正常路径了。
 	//
 	// line_type 取上面那张单的 payment_method（出资渠道那套词表已经退场，两处今天存的是同一个
-	// 值，见 payment/012）：随手写个字面量会让夹具比真行多出一种状态。
+	// 值）：随手写个字面量会让夹具比真行多出一种状态。
 	if _, err := pool.Exec(ctx, `INSERT INTO payment_fundings
 		(payment_id, line_no, line_type, amount, status) VALUES ($1,1,$2,1980,'reserved')`,
 		fixture.paymentID, catalog.CodeUMSH5Alipay); err != nil {

@@ -126,7 +126,7 @@ func (s *AdminMerchantService) UpdateStatus(ctx context.Context, id, status stri
 // Delete 删除商户；名下存在账号、品牌或门店时拒绝。
 //
 // 账号那条是跨库检查（identity 库），品牌/门店这条是本库的：brands 与 stores 对
-// merchants 都是 ON DELETE CASCADE（merchant/001），不拦的话删除会静默连带品牌、
+// merchants 都是 ON DELETE CASCADE（migrations/merchant），不拦的话删除会静默连带品牌、
 // 门店与两张审核表的历史一起消失，接口只回一个 200。
 func (s *AdminMerchantService) Delete(ctx context.Context, id string) error {
 	if _, err := s.merchants.FindByID(ctx, id); err != nil {

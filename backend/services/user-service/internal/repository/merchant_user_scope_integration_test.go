@@ -176,7 +176,7 @@ func TestMerchantUserUpdateScopeReplacesTheWholeSet(t *testing.T) {
 
 // TestResetScopeByTargetDropsOnlyTheNamedTarget 覆盖品牌/门店被删时那条 UPDATE。
 //
-// 三种结果同时钉住：只有一个目标的账号回落成商户档（004 的产品口径）；还有别的目标的
+// 三种结果同时钉住：只有一个目标的账号回落成商户档（产品口径）；还有别的目标的
 // 账号保持原档、只少一个；同 id 但档位不同的账号不受影响（品牌 id 与门店 id 是两个
 // 命名空间，只按 id 匹配会把另一档的账号一起回收）。
 //

@@ -28,10 +28,10 @@ import (
 // 已经被自动开奖、甚至已经被作废。对不上就回 409（ErrRoundChanged / ErrRoundAlreadyDrawn），
 // 而不是替一个已经变了的局面决定谁中奖。
 //
-// 与 account-service 人工调整余额那条路（identity/021）同一条思路：全系统少数几个能决定
+// 与 account-service 人工调整余额那条路（migrations/identity）同一条思路：全系统少数几个能决定
 // 资产归属的动作，必须先证明自己看的是当前状态。**本轮不做审批流**（方案 §18.3 要求 RBAC +
 // 审批 + 不可篡改审计，审批这一项由「只绑 super_admin + 强制 reason + expect 校验 + 只增的
-// 开奖记录 + 审计日志」替代，见 migrations/identity/022_lottery_admin.sql 的收窄说明）。
+// 开奖记录 + 审计日志」替代，见 migrations/identity 的收窄说明）。
 func (s *LotteryService) DrawManually(ctx context.Context, roundID string, req dto.DrawRequest, actor *string) (*repository.DrawOutcome, error) {
 	roundID = strings.TrimSpace(roundID)
 	if roundID == "" {

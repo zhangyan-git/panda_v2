@@ -91,7 +91,8 @@ func (c *AdminOrderController) list(w http.ResponseWriter, r *http.Request) {
 	}
 	source := strings.TrimSpace(query.Get("source"))
 	// 判据用 model.IsOrderSource 而不是在这里列一遍取值：这份白名单**漏过一次**——后台的
-	// 来源下拉里一直摆着「设备下单」（device 是 005 加的），而这里只认到 003 那两个，
+	// 来源下拉里一直摆着「设备下单」（device 这个取值是后来才加的），而这里只认到 miniapp
+	// 与 screen_qr 那两个，
 	// 于是选中「设备下单」就回 400，看起来像「这个来源没有订单」。列在这里的每多一个取值，
 	// 就多一次漏掉的机会；词表的全集在 model 那边，与库上的 CHECK 逐字对齐。
 	if source != "" && !model.IsOrderSource(source) {

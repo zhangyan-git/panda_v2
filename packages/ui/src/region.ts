@@ -20,7 +20,7 @@ export type RegionPath = string[];
 /**
  * 门店表上的六个区划字段：三个名字给人看，三个编码用来定位与迁移。
  *
- * 之所以名字和编码并存，见 `migrations/merchant/003_store_region_codes.sql` 的注释：
+ * 之所以名字和编码并存，见 `migrations/merchant` 的注释：
  * 名字不是稳定的键（数据源一过期就冒出「下城区」这种已撤销的名字），而编码是**事后
  * 算不出来的**，名字反倒随时能从编码推出来。
  */

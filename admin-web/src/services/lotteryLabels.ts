@@ -1,7 +1,7 @@
 /**
  * 抽奖域那些枚举码的中文文案。
  *
- * 取值来自 lottery-service model 里的常量（也就是 migrations/lottery/001 的 CHECK 约束），
+ * 取值来自 lottery-service model 里的常量（也就是 migrations/lottery 的 CHECK 约束），
  * 不是接口给的——接口回的就是库里那些英文码。所以**改枚举必须同时改迁移和这里**，加了
  * 新码而没登记，界面上就退回显示原始码。
  *

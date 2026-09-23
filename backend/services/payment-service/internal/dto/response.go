@@ -27,7 +27,7 @@ type PaymentItem struct {
 	// Attach 是渠道附加数据（小程序 openid、设备号等），**不放密钥**。
 	Attach                json.RawMessage `json:"attach"`
 	ProviderTransactionID string          `json:"providerTransactionId"`
-	// FailureCode / FailureMessage 在成功单上都是空串（不是 null）——见 001 的列定义。
+	// FailureCode / FailureMessage 在成功单上都是空串（不是 null）——见 payments 那两列的列定义。
 	FailureCode    string `json:"failureCode"`
 	FailureMessage string `json:"failureMessage"`
 	RequestID      string `json:"requestId"`
@@ -43,7 +43,7 @@ type PaymentItem struct {
 	MethodCode  string `json:"methodCode"`
 	MethodName  string `json:"methodName"`
 	// AccountEntryID 非空 = 这笔钱确实动过账户域（纯豆支付扣豆的那笔账变），
-	// 在扣豆返回的那一刻就落了库、先于结算。见 model.Payment 与 005 迁移。
+	// 在扣豆返回的那一刻就落了库、先于结算。见 model.Payment 与 payments.account_entry_id 的列注释。
 	AccountEntryID  *string    `json:"accountEntryId"`
 	AccountFundedAt *time.Time `json:"accountFundedAt"`
 	ExpiresAt       *time.Time `json:"expiresAt"`

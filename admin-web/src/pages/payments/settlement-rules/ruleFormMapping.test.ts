@@ -52,7 +52,7 @@ describe('itemToForm / itemToPayload', () => {
       itemToPayload({ partyType: 'member_store', calcType: 'fixed', ratioPercent: 45, fixedAmount: 12 }, 0),
     ).toMatchObject({ ratioPercent: 0, fixedAmount: 1200 });
 
-    // 平台项没有账户（008 的 CHECK 是等价式），留着的一律清掉。
+    // 平台项没有账户（`settlement_rule_items` 上那条 CHECK 是等价式），留着的一律清掉。
     expect(
       itemToPayload(
         { partyType: 'platform', calcType: 'remainder', ratioPercent: 45, fixedAmount: 12, accountId: 'acct-1' },
@@ -76,7 +76,7 @@ describe('itemToForm / itemToPayload', () => {
 
 describe('ruleScopeRef', () => {
   it('全局档一律空串，其余四档原样发', () => {
-    // 008 的 CHECK 是充要条件：global 带引用是一条违规，非 global 不带引用也是一条。
+    // `settlement_rules` 上那条 CHECK 是充要条件：global 带引用是一条违规，非 global 不带引用也是一条。
     expect(ruleScopeRef('global', 'store-uuid')).toBe('');
     expect(ruleScopeRef('store', 'store-uuid')).toBe('store-uuid');
     expect(ruleScopeRef('device', 'device-uuid')).toBe('device-uuid');

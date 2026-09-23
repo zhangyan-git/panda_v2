@@ -49,7 +49,7 @@ type RefundEventPayload struct {
 // RefundFunding 是一笔出资的冲正。
 type RefundFunding struct {
 	// LineType 是这行退的是哪种支付方式：catalog 的 code（ums_h5_alipay / coffee_bean 等），
-	// 与 payment_fundings.line_type 一致——出资渠道那套词表已经退场（见 payment/012）。
+	// 与 payment_fundings.line_type 一致——出资渠道那套词表已经退场（见 migrations/payment）。
 	LineType string `json:"lineType"`
 	Amount   int64  `json:"amount"`
 	// AccountEntryID 只有账户出资（咖啡豆）那条路可能有，而且**今天恒为空**——豆的冲正

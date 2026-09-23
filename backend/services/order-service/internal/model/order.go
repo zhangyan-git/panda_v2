@@ -8,7 +8,7 @@ import (
 // Order 对应 orders 表，订单主表。
 //
 // 这里没有 order_type：一次支付可以只买咖啡、只买会员，也可以两样一起买，
-// 「这一单是什么类型」由它有哪些 order_lines 决定（见迁移 001 的说明）。
+// 「这一单是什么类型」由它有哪些 order_lines 决定（见 migrations/order 里 orders 的表注释）。
 type Order struct {
 	ID       string  `db:"id"`
 	OrderNo  string  `db:"order_no"`
@@ -97,7 +97,7 @@ const (
 	SourceMiniapp  = "miniapp"
 	SourceScreenQR = "screen_qr"
 	// SourceDevice 是线下刷卡机：partner-service 验完厂商签名后经 gRPC 建单，没有用户、
-	// 没有支付单，**直接落成已支付**（钱在机器上已经收过了，见 order/005）。
+	// 没有支付单，**直接落成已支付**（钱在机器上已经收过了，见 migrations/order）。
 	SourceDevice = "device"
 	// SourceRenewal 是**会员续费**：连续包月每期代扣成功之后，由 membership-service 经 gRPC
 	// 建单，同样直接落成已支付（钱是微信代扣收的，我们手里只有渠道流水号）。
@@ -107,7 +107,7 @@ const (
 	//
 	// 为什么不复用 miniapp：那条路的语义是「用户在小程序里点了下单」，而续费根本没有这一下
 	// ——没有人点，是到期自动扣的。后台列表的来源筛选、以及按来源看的每一张报表，靠的都是
-	// 这一列，把它们混在一起就再也分不开了（见 order/009）。
+	// 这一列，把它们混在一起就再也分不开了（见 migrations/order）。
 	//
 	// **订单号不另起前缀**（老系统续费单是 SUB 开头）：单号格式是收单渠道的约定
 	// （3CYM + 时间 + 随机，见 generateOrderNo），而「这是续费」这件事已经由本列说清楚了

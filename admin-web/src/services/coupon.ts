@@ -16,7 +16,7 @@ export type CouponType = {
 
 /**
  * 会员价体验券的类型编码。**这是跨域的约定值，不是随手写的字符串**：
- * migrations/coupon/004_coupon_types_seed.sql 里 coupon_types 的那行种子数据、
+ * migrations/coupon 里 coupon_types 的那行种子数据、
  * membership 库 membership_plans.member_price_coupon_template_id 的列注释都写着它。
  * 三处（种子 / 会员套餐表单 / 这里）改名必须同批改。
  *

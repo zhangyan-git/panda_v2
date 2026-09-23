@@ -7,7 +7,7 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/lottery-service/internal/controller"
 )
 
-// 权限码。三个分开，与 migrations/identity/022_lottery_admin.sql 逐字一致。
+// 权限码。三个分开，与 migrations/identity 逐字一致。
 //
 // 分开的理由不是「细一点更好」，是这三件事的爆炸半径完全不同：
 //
@@ -15,7 +15,8 @@ import (
 //   - manage —— 建/改活动、改奖池、开关门店。改奖池就是改**将来中奖的名额与奖品**，
 //     下一次开奖按它发。它今天不直接动人资产，明天就会（奖池里的券要发出去）。
 //   - draw   —— 人工开奖与作废。全系统唯一一个能凭空决定「谁中奖」的动作，所以它
-//     只绑 super_admin，且权限码单列（见 022 的文件头：本轮没有审批流，所以只能收窄）。
+//     只绑 super_admin，且权限码单列（见 migrations/identity 里 lottery 三枚权限码的注释：
+//     本轮没有审批流，所以只能收窄）。
 //
 // 把 draw 并进 manage 是最容易犯的错：那等于让任何一个能改活动名字的人也能决定中奖名单。
 const (

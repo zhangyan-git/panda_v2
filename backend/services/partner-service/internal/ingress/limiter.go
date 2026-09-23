@@ -78,7 +78,7 @@ func (l *Limiters) For(perMinute int) (ratelimit.Limiter, error) {
 	return limiter, nil
 }
 
-// rateLimitKey 拼限流键：**按密钥**，不按来源 IP（与 migrations/partner/001 上那一列的注释
+// rateLimitKey 拼限流键：**按密钥**，不按来源 IP（与 migrations/partner 上那一列的注释
 // 同一条理由）。一把密钥发给一家合作方，它们背后可能是一整个机房——按 IP 限会把一家正常
 // 公司挡在门外，而按密钥限算的正是「你答应的调用量」。
 //

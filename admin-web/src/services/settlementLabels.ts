@@ -5,7 +5,7 @@ import type { SettlementCalcType, SettlementScopeType } from './settlement';
  * 分账域那些枚举码的中文文案。
  *
  * 取值来自 payment-service 的 `internal/model/settlement.go`（也就是
- * `migrations/payment/008_settlement_core.sql` 的 CHECK 约束），不是接口给的——接口回的就是库里
+ * `migrations/payment` 的 CHECK 约束），不是接口给的——接口回的就是库里
  * 那些英文码。所以**改枚举必须同时改迁移、改 model 和这里**，加了新码而没登记，界面上就退回
  * 显示原始码。
  *
@@ -60,7 +60,7 @@ export const SCOPE_NOT_HIT_TODAY: SettlementScopeType[] = ['brand', 'product'];
 export const CALC_TYPE: Record<string, EnumMeta> = {
   percent: { text: '按比例', color: 'blue' },
   fixed: { text: '固定额', color: 'cyan' },
-  // 「平台自留」而不是「剩余」：它只能给平台项用（008 的 CHECK 钉死了），拿的是差额，
+  // 「平台自留」而不是「剩余」：它只能给平台项用（`settlement_rule_items` 上那条 CHECK 钉死了），拿的是差额，
   // 与上面两项是两种东西——写「剩余」会让人以为任何一个主体都能选它。
   remainder: { text: '平台自留', color: 'default' },
 };
@@ -68,7 +68,7 @@ export const CALC_TYPE: Record<string, EnumMeta> = {
 /**
  * 收款主体类型。规则项与账户共用一套词表。
  *
- * `platform` 是特殊的那一个：它不能挂账户（008 把它写成了充要条件），而且一条规则里至多出现
+ * `platform` 是特殊的那一个：它不能挂账户（`settlement_rule_items` 上那条 CHECK 把它写成了充要条件），而且一条规则里至多出现
  * 一次。所以它在这一列上的含义与另外四个不完全一样——另外四个是「分给谁」，它是「剩下的归自己」。
  */
 export const PARTY_TYPE: Record<string, EnumMeta> = {
@@ -120,7 +120,7 @@ export const TASK_STATUS: Record<string, EnumMeta> = {
  * `settlement_receivers.status`：某一条接收方明细走到哪一步。**五个取值**（比任务少
  * submitted——明细没有「已提交但没结果」这一档）。
  *
- * `returned` 与金额是钉在一起的：008 的 CHECK 要求它与「已全额回退」互为充要条件。回退本身
+ * `returned` 与金额是钉在一起的：`settlement_receivers` 上那条 CHECK 要求它与「已全额回退」互为充要条件。回退本身
  * （settlement_reversals）本刀不做，所以今天这里只会是待分账或分账成功。
  */
 export const RECEIVER_STATUS: Record<string, EnumMeta> = {
@@ -141,7 +141,7 @@ export const RECEIVER_TYPE: Record<string, EnumMeta> = {
 /**
  * 范围档位要不要填范围引用。
  *
- * 008 的 CHECK 是**充要条件**：`(scope_type='global') = (scope_ref='')`。所以两个方向都要管
+ * `settlement_rules` 上那条 CHECK 是**充要条件**：`(scope_type='global') = (scope_ref='')`。所以两个方向都要管
  * ——选了全局就绝不能带引用（带了是一条 CHECK 违规），选了其余四档就必须给。
  */
 export const scopeNeedsRef = (scopeType?: string | null) => !!scopeType && scopeType !== 'global';
@@ -172,7 +172,7 @@ export function percentSumHundredths(
 ): number {
   return items.reduce(
     (sum, item) =>
-      // 只有按比例的项参与合计：固定额与平台自留项没有比例（008 的 CHECK 要求它们的 ratio = 0）。
+      // 只有按比例的项参与合计：固定额与平台自留项没有比例（`settlement_rule_items` 上那条 CHECK 要求它们的 ratio = 0）。
       item?.calcType === 'percent' ? sum + Math.round(Number(item.ratioPercent ?? 0) * 100) : sum,
     0,
   );

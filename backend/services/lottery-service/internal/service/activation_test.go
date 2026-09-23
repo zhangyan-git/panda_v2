@@ -102,7 +102,7 @@ func TestActivateFillsTheBuiltInTemplate(t *testing.T) {
 	if strings.TrimSpace(got.Description) == "" {
 		t.Error("活动描述是空的：活动详情页会显示一句空白说明")
 	}
-	// 进库的**只有门店 id**：名字是商户域的事实，本库不留（见 migrations/lottery/003）。
+	// 进库的**只有门店 id**：名字是商户域的事实，本库不留（见 migrations/lottery）。
 	// 这条断言挡的是「顺手把名字也存一份」的改动——那一份快照正是被删掉的那一列。
 	if repo.activateParams.LocationID != testLocationID {
 		t.Errorf("门店 id = %q", repo.activateParams.LocationID)

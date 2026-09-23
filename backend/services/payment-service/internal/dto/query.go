@@ -40,7 +40,7 @@ type PaymentQuery struct {
 	//
 	// MethodCode 筛的是 `payments.payment_method`（catalog 的 code，如 `ums_h5_alipay`），
 	// 不再是那套已经退场的「出资渠道」词表——两者从前后台同一条单上有两个可筛的值，
-	// 现在只剩这一个。见 payment/012。
+	// 现在只剩这一个。
 	Status     string
 	MethodCode string
 	// CreatedFrom / CreatedTo 是创建时间区间，闭区间，nil 表示这一端不限。

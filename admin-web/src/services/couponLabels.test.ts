@@ -10,7 +10,7 @@ import {
 import { enumMeta, searchOptions } from './labels';
 
 /**
- * 这几张表是页面显示的全部依据，取值来自 migrations/coupon/001_coupon_core.sql 的
+ * 这几张表是页面显示的全部依据，取值来自 migrations/coupon 的
  * CHECK 约束。这里逐条钉住码→文案，是为了让「迁移加了枚举但页面没跟上」在测试里
  * 就能看出来，而不是等运营在界面上看见一个 COFFEE_CASH。
  */

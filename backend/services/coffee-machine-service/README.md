@@ -48,8 +48,8 @@ fulfillment-service 直连厂商执行出杯，调用前向本服务取一组只
 `FailedPrecondition`，且一个字段都不写。
 
 写接口的权限码有三个：`coffee_machine:read`、`coffee_machine:manage`、
-`coffee_machine:balance`。后两个由身份库迁移 `identity/014_coffee_machine_write.sql` 建出并绑定
-`super_admin`；新环境要跑过这条迁移，否则写接口会回 401。挂路由时**一条路径只注册一次**
+`coffee_machine:balance`。后两个由身份库的种子 `migrations/identity` 建出并绑定
+`super_admin`；新环境要跑过这个集，否则写接口会回 401。挂路由时**一条路径只注册一次**
 （见 `internal/routes/admin.go`）——底层 gorilla/mux 的 `HandleFunc` 是追加而非按路径合并，
 对同一路径注册两次，先注册的那条会吃掉所有方法。
 
@@ -61,7 +61,7 @@ fulfillment-service 直连厂商执行出杯，调用前向本服务取一组只
 但含义不同：后台那次是管理员填错了数，取货码那次是一个正常的业务拒绝。`device_balance_ledger` 上有 BEFORE DELETE/UPDATE
 触发器，流水只增不改不删；这也意味着有流水的设备在库里删不掉，写集成测试夹具时要留意。
 
-饮品行自带 `device_id`（迁移 `003_drinks_own_device.sql`）：一行饮品就是「某台设备上的一杯」，
+饮品行自带 `device_id`（见 `migrations/coffee_machine`）：一行饮品就是「某台设备上的一杯」，
 价格与上下架都在这一行上，设备详情页那一屏读写的就是这些行——改价走 `PUT /drinks/{id}`、
 上下架走 `PATCH /drinks/{id}/status`，没有一条设备维度的饮品写路由（`GET /devices/{id}/drinks`
 只是换个入口读同一张表）。

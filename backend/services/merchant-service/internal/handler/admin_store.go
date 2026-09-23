@@ -40,7 +40,7 @@ type storeResponse struct {
 	ContactPhone  string   `json:"contactPhone"`
 	Detail        string   `json:"detail"`
 	BusinessHours string   `json:"businessHours"`
-	// 订货系统 xlsx「客户」页三列（merchant/004）；列表与详情都回，出库单的门店下拉要用编码
+	// 订货系统 xlsx「客户」页三列（migrations/merchant）；列表与详情都回，出库单的门店下拉要用编码
 	CustomerCode string `json:"customerCode"`
 	DMSCode      string `json:"dmsCode"`
 	CustomerType string `json:"customerType"`

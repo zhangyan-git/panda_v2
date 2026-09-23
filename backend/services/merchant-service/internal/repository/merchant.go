@@ -24,7 +24,7 @@ type MerchantRepository interface {
 	UpdateStatus(ctx context.Context, id, status string) error
 	Delete(ctx context.Context, id string) error
 	// HasBrandsOrStores 报告商户名下还有没有品牌或门店。brands / stores 对 merchants
-	// 都是 ON DELETE CASCADE（merchant/001），两个都在时删商户会把品牌、门店连同
+	// 都是 ON DELETE CASCADE（migrations/merchant），两个都在时删商户会把品牌、门店连同
 	// 它们的审核历史一起静默带走，所以删除前必须先问这一句。
 	HasBrandsOrStores(ctx context.Context, id string) (bool, error)
 }

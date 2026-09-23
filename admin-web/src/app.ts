@@ -173,7 +173,7 @@ function matchMenuNode(nodes: MenuNode[], pathname: string): MenuNode | undefine
  * 为什么需要自己算：ProLayout 内部用的是 `getMatchMenu(pathname, menuData, true)`
  * （`@ant-design/pro-layout/es/ProLayout.js:268`），第三个参数的意思是「把**所有**命中的
  * key 都展示出来」，而匹配是按 path 做前缀的——`/orders` 会命中 `/orders/coffee`。
- * 于是「订单列表」和「咖啡订单」这两个**同级**菜单项会同时点亮（见 identity/018、019）。
+ * 于是「订单列表」和「咖啡订单」这两个**同级**菜单项会同时点亮（见 migrations/identity）。
  *
  * 传 `selectedKeys` 就是接管这件事（BaseMenu 把它当受控值用）。**只影响点亮**：目录的展开
  * 仍归 ProLayout（openKeys 用的是它自己算的全部命中项），所以父级目录照常自动展开。

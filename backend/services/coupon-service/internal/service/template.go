@@ -118,7 +118,7 @@ func validateTemplate(t *model.CouponTemplate) bool {
 	if t.RedemptionType == "external_code" && t.ExternalUseMethod == nil {
 		return false
 	}
-	// 有效期窗口：也是那条跨列 CHECK 的等值翻译（001_coupon_core.sql:69-70）。
+	// 有效期窗口：也是 coupon_templates 上那条跨列 CHECK 的等值翻译（见 migrations/coupon）。
 	//
 	// fixed 档的三件事一件都不能少——必须同时给起止、止必须晚于起、不能带天数；relative
 	// 档反过来，起止必须都空、天数必须为正。少了这一段，一个直接调接口的调用方拿到的又是

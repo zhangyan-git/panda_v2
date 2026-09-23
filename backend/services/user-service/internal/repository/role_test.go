@@ -62,7 +62,7 @@ CREATE TABLE admin_permissions (id UUID PRIMARY KEY, code TEXT UNIQUE NOT NULL,
  description TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT now());
 -- username 会被审计快照读出来（TargetName 用），不是装饰列。
 CREATE TABLE admin_users (id UUID PRIMARY KEY, username TEXT);
--- 级联与真实迁移（migrations/identity/001_identity.sql:142-151）保持一致：
+-- 级联与真实迁移（migrations/identity 里这两张绑定表上的两个外键）保持一致：
 -- 删角色/权限时绑定行是靠 ON DELETE CASCADE 跟着走的，如果这里不写，
 -- 删除路径会因为外键报错而根本跑不起来，删除相关的 bug 也就永远测不出来。
 CREATE TABLE admin_role_permissions (

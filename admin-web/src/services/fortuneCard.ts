@@ -13,7 +13,7 @@ import type { PageQuery, PageResult } from './pagination';
 
 /**
  * 流水的收支类型。取值来自 account-service 的 model 常量，与
- * migrations/account/001 的 CHECK 约束一致。
+ * migrations/account 的 CHECK 约束一致。
  *
  * 加新码而这里没登记时，界面退回显示原始码（同 order.ts 的规矩）。
  */
@@ -55,7 +55,7 @@ export type FortuneCardEntry = {
 };
 
 /**
- * 冻结状态。取值来自 account-service 的 model 常量，与 migrations/account/007 的 CHECK 一致。
+ * 冻结状态。取值来自 account-service 的 model 常量，与 migrations/account 的 CHECK 一致。
  *
  * released 与 recovered 是钱没出去与钱出去了的两种结局，别合并：前者余额一分不动，
  * 后者那几笔发放已经被冲正注销掉了。

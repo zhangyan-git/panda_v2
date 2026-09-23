@@ -146,6 +146,15 @@ func TestSetsDoNotCrossTheDatabaseBoundary(t *testing.T) {
 // the same transaction as the business row, so it cannot be a shared table. That
 // makes eleven copies of the same DDL, and eleven places to forget.
 //
+// Each copy sits between a pair of sentinel comments (messageBlockBegin/End), so
+// the block can be located inside a file that now holds a whole set's DDL. The
+// sentinels are the only thing that moved when the sets were squashed: the DDL
+// inside them is untouched, including the differences the eleven already had
+// before — coupon writes its two indexes on one line, coffee_machine and account
+// carry one extra explanatory comment, order has a third index. Those are
+// cosmetic except order's extra message_inbox_lease_idx, which is in that
+// database's dump and must stay; normalising them is a separate change.
+//
 // The copies are compared on their CREATE TABLE column lists, in order. Comments,
 // formatting, and the ALTER block the identity and merchant sets carry (it exists
 // to upgrade tables built by the earliest schema) deliberately do not take part:
@@ -158,19 +167,27 @@ var messageTableCopies = []struct {
 	file  string
 	label string
 }{
-	{Identity, "003_message_outbox_inbox.sql", "identity"},
-	{Merchant, "002_message_outbox_inbox.sql", "merchant"},
-	{Coupon, "001_coupon_core.sql", "coupon"},
-	{CoffeeMachine, "001_coffee_machine_core.sql", "coffee_machine"},
-	{Order, "001_order_core.sql", "order"},
-	{Payment, "001_payment_core.sql", "payment"},
-	{Account, "001_account_core.sql", "account"},
-	{Lottery, "001_lottery_core.sql", "lottery"},
-	{Membership, "001_membership_core.sql", "membership"},
+	{Identity, "001_identity.sql", "identity"},
+	{Merchant, "001_merchant.sql", "merchant"},
+	{Coupon, "001_coupon.sql", "coupon"},
+	{CoffeeMachine, "001_coffee_machine.sql", "coffee_machine"},
+	{Order, "001_order.sql", "order"},
+	{Payment, "001_payment.sql", "payment"},
+	{Account, "001_account.sql", "account"},
+	{Lottery, "001_lottery.sql", "lottery"},
+	{Membership, "001_membership.sql", "membership"},
 	// partner-service 只写 outbox（后台治理动作的审计出口），不消费任何事件——inbox 一起
-	// 建着，与其它九份逐字相同，见 partner/003 的说明。
-	{Partner, "003_partner_message_tables.sql", "partner"},
+	// 建着，与其它九份逐列相同。
+	{Partner, "001_partner.sql", "partner"},
 }
+
+// The sentinels bracketing each set's copy of the message-table DDL. They exist so
+// that a set's whole DDL can live in one file without the byte-for-byte comparison
+// below having to re-parse it — see TestMessageTablesAddLeaseColumnsBeforeIndexes.
+const (
+	messageBlockBegin = "-- >>> message-tables:begin >>>"
+	messageBlockEnd   = "-- <<< message-tables:end <<<"
+)
 
 func TestMessageTablesStayInSyncAcrossSets(t *testing.T) {
 	for _, table := range []string{"message_outbox", "message_inbox"} {
@@ -178,7 +195,9 @@ func TestMessageTablesStayInSyncAcrossSets(t *testing.T) {
 			var want []string
 			wantLabel := ""
 			for _, copy := range messageTableCopies {
-				got := tableColumns(readMigration(t, copy.set, copy.file), table)
+				migration := readMigration(t, copy.set, copy.file)
+				messageBlock(t, copy.label, migration)
+				got := tableColumns(migration, table)
 				if len(got) == 0 {
 					t.Fatalf("%s: %s not found in %s", copy.label, table, copy.file)
 				}
@@ -199,12 +218,21 @@ func TestMessageTablesStayInSyncAcrossSets(t *testing.T) {
 // and creating an index on a column that does not exist yet fails outright. In the
 // two fresh-database sets the column is part of CREATE TABLE instead, so the test
 // asks where lease_until is first mentioned rather than looking for an ALTER.
+//
+// identity and merchant are the two sets that keep the ALTER fallback, and they
+// must keep it identically — they are the same migration written twice, because
+// either database may be the one that predates the lease columns. Before the sets
+// were squashed this was asserted on the two whole files, which were single-purpose
+// files; now each file holds a whole set, so the comparison is scoped to the
+// sentinel block they both carry.
 func TestMessageTablesAddLeaseColumnsBeforeIndexes(t *testing.T) {
-	identity := readMigration(t, Identity, "003_message_outbox_inbox.sql")
-	merchant := readMigration(t, Merchant, "002_message_outbox_inbox.sql")
-	// The headers differ (each names its own set); the statements must not.
-	if stripComments(identity) != stripComments(merchant) {
-		t.Error("identity and merchant message migrations have drifted apart")
+	identity := messageBlock(t, "identity", readMigration(t, Identity, "001_identity.sql"))
+	merchant := messageBlock(t, "merchant", readMigration(t, Merchant, "001_merchant.sql"))
+	if identity != merchant {
+		t.Error("identity and merchant message-table blocks have drifted apart")
+	}
+	if !strings.Contains(identity, "ADD COLUMN IF NOT EXISTS lease_until") {
+		t.Error("identity/merchant block lost the ALTER fallback for the lease columns")
 	}
 	for _, copy := range messageTableCopies {
 		migration := readMigration(t, copy.set, copy.file)
@@ -238,16 +266,18 @@ func tableColumns(migration, table string) []string {
 	return columns
 }
 
-// stripComments drops whole-line SQL comments so two copies of the same
-// migration can be compared on their statements alone.
-func stripComments(migration string) string {
-	var kept []string
-	for _, line := range strings.Split(migration, "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), "--") {
-			kept = append(kept, line)
-		}
+// messageBlock returns the text between a set's sentinel comments, trailing
+// whitespace trimmed. It fails the test rather than returning an empty string: a
+// missing sentinel means the block is no longer findable, and every assertion
+// built on it would quietly become a comparison of two empty strings.
+func messageBlock(t *testing.T, label, migration string) string {
+	t.Helper()
+	begin := strings.Index(migration, messageBlockBegin)
+	end := strings.Index(migration, messageBlockEnd)
+	if begin < 0 || end < 0 || end < begin {
+		t.Fatalf("%s: message-table sentinels %q / %q not found in order", label, messageBlockBegin, messageBlockEnd)
 	}
-	return strings.Join(kept, "\n")
+	return strings.TrimSpace(migration[begin:end])
 }
 
 func readMigration(t *testing.T, set fs.FS, name string) string {

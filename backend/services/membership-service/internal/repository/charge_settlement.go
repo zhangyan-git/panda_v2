@@ -14,7 +14,7 @@ import (
 //
 // 扣款成功那条链上的第一步是在订单域建一张续费单，第二步是把会员续一期（顺序反不得，见
 // service/renewal_order.go）。第一步失败时**不能靠平台重投**：那 5 次重投是毫秒级的、之后进
-// panda.events.dlq，而那个队列今天没有消费者也没有监控（见 migrations/membership/009）。
+// panda.events.dlq，而那个队列今天没有消费者也没有监控（见 migrations/membership）。
 // 所以失败的那一笔要被本服务自己记下来，由 worker 慢慢重试。
 //
 // # 它是一张工作队列
@@ -74,7 +74,7 @@ func (r *PostgresRepository) ParkChargeSettlement(ctx context.Context, p ChargeS
 // ClaimDueChargeSettlements 取一批到点的待办，并**顺手把它们推后一个租期**。
 //
 // 认领即推后：这一行被取走之后，下一个副本（或者同一轮的下一次调用）在租期内看不到它，不需要
-// lease_owner 那三列（理由见 migrations/membership/009）。真正的保护也不在锁上——重试的两步
+// lease_owner 那三列（理由见 migrations/membership）。真正的保护也不在锁上——重试的两步
 // 都是幂等的，多跑一遍的后果只是一次多余的 gRPC，见 service.SettlePendingCharges。
 //
 // limit <= 0 时取 DefaultSettlementBatch（一个 0 会变成 LIMIT 0，表现是「worker 一直在跑、

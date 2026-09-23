@@ -14,7 +14,7 @@ import (
 
 // ErrSettlementAmountsDoNotBalance：分账计划的金额对不上（基数 ≠ 平台自留 + Σ 接收方）。
 //
-// 这条恒等式**跨表，CHECK 表达不了**（008 文件头写着），所以它只能由应用在同一事务里保证。
+// 这条恒等式**跨表，CHECK 表达不了**，所以它只能由应用在同一事务里保证。
 // 写在这里、以 error 的形式炸出来，是因为它是「钱算错了」的最后一处可见的地方——放过去就是
 // 一张平台少拿或多拿的账，而对账要等结算时才发现。
 //
@@ -34,7 +34,7 @@ type SettlementRuleQuery struct {
 	// 范围的值引用，**空串表示这一档给不出来**（不是「匹配空值」）。device 最具体、global 最宽泛。
 	//
 	// brand / product 今天恒为空：订单库里没有品牌（brands/stores 属商户域），而一笔支付可能
-	// 含多个商品、008 又是「一笔支付一条任务」，没有单一商品可指。命中逻辑收全五档、调用方
+	// 含多个商品、而分账任务又是「一笔支付一条任务」，没有单一商品可指。命中逻辑收全五档、调用方
 	// 只给得出两个——写全是为了等值来源出现时不用改这里。
 	DeviceRef  string
 	StoreRef   string
@@ -59,20 +59,20 @@ type SettlementRuleItem struct {
 	CalcType string
 	// RatioScaled 是 ratio × 1000000 的**整数**（NUMERIC(20,6) 精确换算，0.45 → 450000）。
 	//
-	// 用整数而不是 float64 传下去：比例是钱的乘数，float 的尾差会一路走到金额上，而 008 定的
+	// 用整数而不是 float64 传下去：比例是钱的乘数，float 的尾差会一路走到金额上，而本库定的
 	// 口径是「金额一律 BIGINT 分」。换算放在 SQL 里做（numeric 运算是精确的），Go 这边只做
 	// 整数乘除。
 	RatioScaled int64
 	FixedAmount int64
 	SortOrder   int
 	// Account 为 nil 表示这一项**没有可用账户**：它指着的那一行被停用了，或者挂在别的渠道上。
-	// 平台项永远是 nil（008 的 CHECK：平台项没有 account_id），两者靠 CalcType 分得开。
+	// 平台项永远是 nil（settlement_rule_items 的 CHECK：平台项没有 account_id），两者靠 CalcType 分得开。
 	Account *SettlementAccount
 }
 
 // SettlementAccount 是接收方在渠道侧的那个号。
 //
-// **不带主体引用**（关联门店/品牌/商户）：那三列在 016 里删了。它们从来没有读者——命中规则挑
+// **不带主体引用**（关联门店/品牌/商户）：账户表上没有那三列。它们从来没有读者——命中规则挑
 // 账户只看 id / status / provider，账户挂在哪条渠道上才是要紧的事。
 type SettlementAccount struct {
 	ID           string
@@ -88,7 +88,7 @@ type SettlementAccount struct {
 type SettlementPlan struct {
 	// RuleID 为空是**常态**：门店没配规则时这条任务照样建（整单归平台），老系统也是这个兜底。
 	RuleID string
-	// 命中时的范围快照。RuleID 为空时 ScopeType 也留空（008 的 CHECK 允许空串），表示
+	// 命中时的范围快照。RuleID 为空时 ScopeType 也留空（settlement_tasks 的 CHECK 允许空串），表示
 	// 「这次没有规则命中」，而不是 global 那一档。
 	ScopeType string
 	ScopeRef  string
@@ -99,7 +99,7 @@ type SettlementPlan struct {
 	MerchantRef string
 	// PlatformAmount 是平台自留，**差额倒挤**：base − Σ Receivers.Amount。
 	PlatformAmount int64
-	// Receivers 是本笔要发给各接收方的钱。算出来不足 1 分的**不在这里**（008：不建 0 元的行）。
+	// Receivers 是本笔要发给各接收方的钱。算出来不足 1 分的**不在这里**（settlement_receivers.amount > 0，不建 0 元的行）。
 	Receivers []SettlementReceiverLine
 }
 
@@ -113,8 +113,8 @@ type SettlementReceiverLine struct {
 	PartyName    string
 	ReceiverType string
 	ReceiverID   string
-	// RatioScaled 是当初生效的比例（× 1000000）。固定额项记 0，它的金额在 Amount 上——与 008 的
-	// 列注释一致：规则改了不影响这一行。
+	// RatioScaled 是当初生效的比例（× 1000000）。固定额项记 0，它的金额在 Amount 上——与
+	// settlement_receivers.ratio 的列注释一致：规则改了不影响这一行。
 	RatioScaled int64
 	Amount      int64
 }
@@ -122,14 +122,14 @@ type SettlementReceiverLine struct {
 // FindSettlementRule 按范围精度命中一条启用中的规则，连同它的项与账户一次取回。
 //
 // 命中顺序 device → store → brand → product → global，**第一条命中的就是它**。同档位不会撞车：
-// 008 的 settlement_rules_scope_uniq 保证 (biz_type, scope_type, scope_ref) 上只有一条启用中的。
+// settlement_rules_scope_uniq 保证 (biz_type, scope_type, scope_ref) 上只有一条启用中的。
 //
 // 没命中返回 (nil, nil)——这不是错误，是「这个门店没配规则」，调用方按「整单归平台」落任务。
 // **查失败（error）与没命中必须分得开**：前者是配置库读不动，后者是一个正常的业务事实。
 // 老系统把两者一起当成「没规则、全归平台」，于是配置故障被静默变成一次错误的分账。
 func (r *PostgresRepository) FindSettlementRule(ctx context.Context, q SettlementRuleQuery) (*SettlementRule, error) {
 	// 五个档位写成一条 OR，顺序由 CASE 定。空的范围引用**天然命中不了非 global 的规则**：
-	// 008 的 CHECK 钉住了「非 global ⇒ scope_ref <> ''」，所以 store_ref 为空的规则不存在。
+	// settlement_rules 的 CHECK 钉住了「非 global ⇒ scope_ref <> ''」，所以 store_ref 为空的规则不存在。
 	rule := &SettlementRule{}
 	err := r.pool.QueryRow(ctx, `SELECT id::text, biz_type, scope_type, scope_ref, allocation_mode
 		FROM settlement_rules
@@ -166,7 +166,7 @@ func (r *PostgresRepository) FindSettlementRule(ctx context.Context, q Settlemen
 // 而且要记一条 warn）。INNER JOIN 会把那一项整个吞掉，于是「配置里有三项、分出去两项」这件事
 // 在数据上完全看不出来——而它正是运营改配置时最需要看到的那条线索。
 //
-// 可用的判据两条：账户是启用中的（停用了就不再参与新分账，008 的列注释），以及账户挂在本笔
+// 可用的判据两条：账户是启用中的（停用了就不再参与新分账，settlement_accounts.status 的列注释），以及账户挂在本笔
 // 支付走的那个渠道上。
 //
 // 渠道那一列今天是 TEXT（渠道名），不再需要 NULLIF(...)::uuid：空串本身就能比，
@@ -276,7 +276,7 @@ type settlementBalance struct {
 	ReceiverRows int
 }
 
-// checkSettlementIdentity 核 008 文件头写的那条恒等式：base = platform + Σreceivers。
+// checkSettlementIdentity 核那条恒等式：base = platform + Σreceivers。
 //
 // 它是个**纯函数**，不碰数据库：判据（三个数从哪来）与比较（三个数平不平）分开，后者才需要
 // 被穷举测。唯一的写法要点是比较**读回来的**三个数——见 ErrSettlementAmountsDoNotBalance
@@ -317,7 +317,7 @@ func readSettlementBalance(ctx context.Context, tx pgx.Tx, taskID string) (settl
 //
 // 支付单进 failed / expired 时调它。作废只会发生在 pending 上：那时还没向渠道发起过，渠道侧
 // 没有任何东西要收回。已经 submitted 的任务不动——钱可能已经分出去了，那种只能走
-// settlement_reversals 回退（008 的状态说明）。
+// settlement_reversals 回退（settlement_tasks.status 的状态说明）。
 //
 // **接收方先改、任务后改**，顺序是有用的：第一句要在任务还是 pending 的时候读它，反过来就一条
 // 也匹配不到了。

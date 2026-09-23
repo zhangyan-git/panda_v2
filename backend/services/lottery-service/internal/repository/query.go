@@ -77,7 +77,7 @@ func (w *whereClause) sql() string {
 type ActivationListRow struct {
 	Activation *model.Activation
 	// LocationName 是**读出来之后**由 service 层向商户域解析填上的，不是本表的列
-	// （见 migrations/lottery/003）。仓储只管把 LocationID 带出来。
+	// （见 migrations/lottery）。仓储只管把 LocationID 带出来。
 	LocationName        string
 	DefaultCampaignID   string
 	DefaultCampaignName string
@@ -141,7 +141,7 @@ func (r *PostgresRepository) ListActivations(ctx context.Context, q dto.Activati
 	if q.Status != "" {
 		w.add("a.status = $%d", q.Status)
 	}
-	// 按门店名搜这条路 2026-09-15 去掉了：名字不落库（migrations/lottery/003），而本表的
+	// 按门店名搜这条路 2026-09-15 去掉了：名字不落库（migrations/lottery），而本表的
 	// 其他列里没有任何一列能表达「门店名含某几个字」。后台的筛选换成了从门店下拉里选一家
 	// （传 locationId，走上面那条等值比较），所以这里没有留下一个半功能的模糊搜。
 
@@ -193,11 +193,11 @@ func (r *PostgresRepository) GetActivationView(ctx context.Context, id string) (
 // CampaignListRow 是活动列表的一行。
 type CampaignListRow struct {
 	Campaign *model.Campaign
-	// 门店来自开通记录：活动挂在哪家店完全由 activation_id 决定（见 migrations/lottery/001
+	// 门店来自开通记录：活动挂在哪家店完全由 activation_id 决定（见 migrations/lottery
 	// 为什么不用账号范围那种多态指针）。
 	LocationID string
 	// LocationName 与 ActivationListRow 的同名字段一样：**不是本表的列**，由 service 层
-	// 拿着上面的 LocationID 向商户域批量解析后填上（见 migrations/lottery/003）。
+	// 拿着上面的 LocationID 向商户域批量解析后填上（见 migrations/lottery）。
 	LocationName string
 	// 这里原先还有一个 prizeTotalQuantity = SUM(prizes.quantity)，即「下一期的 winner_count」。
 	// 名额恒为 1 之后它是一份恒等于 1 的第二事实（期次上那个冻结的 winnerCount 才是真的），

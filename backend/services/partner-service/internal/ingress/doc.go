@@ -41,5 +41,5 @@
 //
 // # 一个已知缺口
 //
-// 调用日志只增不删，没有保留期清理（见 migrations/partner/001 文末）。本包负责写，不负责删。
+// 调用日志只增不删，没有保留期清理（见 migrations/partner 文末）。本包负责写，不负责删。
 package ingress

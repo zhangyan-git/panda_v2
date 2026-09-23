@@ -19,7 +19,7 @@ import (
 // # 这一层为什么是厚的（与隔壁 AdminQueryService 正相反）
 //
 // AdminQueryService 是纯透传——支付单没有可写的东西，页面上没有一条规则需要判断。
-// 这里不一样：008 把能钉在表上的约束都钉住了，但**跨行的那几条钉不住**，而它们恰好是配错了
+// 这里不一样：能钉在表上的约束都钉住了，但**跨行的那几条钉不住**，而它们恰好是配错了
 // 不报错、只是钱分错地方的那几条：
 //
 //   - 同一条规则下 percent 项的 ratio 合计超过 1：computeSettlement 遇到它会**静默整单归
@@ -47,7 +47,7 @@ var (
 	ErrSettlementRuleNameRequired     = errors.New("settlement rule name is required")
 	ErrSettlementRuleBizTypeInvalid   = errors.New("settlement rule biz_type is not in the vocabulary")
 	ErrSettlementRuleScopeTypeInvalid = errors.New("settlement rule scope_type is not in the vocabulary")
-	// ErrSettlementScopeRefRequired / ErrSettlementScopeRefNotAllowed：008 的 CHECK 把
+	// ErrSettlementScopeRefRequired / ErrSettlementScopeRefNotAllowed：settlement_rules 的 CHECK 把
 	// scope_type='global' ⇔ scope_ref='' 钉死了，两个方向都要在这儿拦——反过来那一半（global
 	// 却指着一个门店）如果漏到 SQL 上，是一条 CHECK 违规，用户看到的是一句没有线索的兜底。
 	ErrSettlementScopeRefRequired   = errors.New("a non-global settlement rule needs a scope_ref")
@@ -261,7 +261,7 @@ func (s *AdminSettlementService) DeleteAccount(ctx context.Context, id string) e
 //
 // 归一化（而不是把原样值写进去）的两处：渠道与接收方类型。`provider` 收的是渠道名，页面下拉
 // 给的就是它，但**接口不能假设调用方只可能是那个页面**；`receiver_type` 空表示 MERCHANT_ID
-// ——银联商务按子商户号直接分，那是最常见的一种，008 的列默认值也是它。
+// ——银联商务按子商户号直接分，那是最常见的一种，settlement_accounts.receiver_type 的列默认值也是它。
 func (s *AdminSettlementService) buildAccountWrite(in dto.SettlementAccountInput) (repository.SettlementAccountWrite, error) {
 	write := repository.SettlementAccountWrite{}
 
@@ -269,9 +269,9 @@ func (s *AdminSettlementService) buildAccountWrite(in dto.SettlementAccountInput
 	if !model.IsSettlementPartyType(write.PartyType) {
 		return write, ErrSettlementAccountPartyInvalid
 	}
-	// 主体名必填（017）：账户号那列没了，它是这一行**唯一**给人看的名字——规则项的账户下拉、
+	// 主体名必填：账户上已经没有账户号那一列，它是这一行**唯一**给人看的名字——规则项的账户下拉、
 	// 分账接收方快照、账户列表用的都是它。空着的话这一行在页面上只剩一个子商户号，
-	// 而 017 的 CHECK 也会把空值挡在库外。
+	// 而 settlement_accounts_party_name_check 也会把空值挡在库外。
 	write.PartyName = strings.TrimSpace(in.PartyName)
 	switch {
 	case write.PartyName == "":
@@ -302,7 +302,7 @@ func (s *AdminSettlementService) buildAccountWrite(in dto.SettlementAccountInput
 	case len([]rune(write.ReceiverID)) > MaxSettlementReceiverIDLength:
 		return write, ErrSettlementAccountFieldTooLong
 	}
-	// 状态空 = enabled：新建的账户默认可用（与 008 的列默认值一致）。停用是一个明确动作。
+	// 状态空 = enabled：新建的账户默认可用（与 settlement_accounts.status 的列默认值一致）。停用是一个明确动作。
 	write.Status = strings.TrimSpace(in.Status)
 	if write.Status == "" {
 		write.Status = model.SettlementRecordEnabled
@@ -397,7 +397,7 @@ func (s *AdminSettlementService) buildRuleWrite(ctx context.Context, in dto.Sett
 	if !model.IsSettlementScopeType(write.ScopeType) {
 		return write, ErrSettlementRuleScopeTypeInvalid
 	}
-	// global 与非 global 的 scope_ref 是**两个方向都要拦**的（008 的 CHECK 是个等价式）：
+	// global 与非 global 的 scope_ref 是**两个方向都要拦**的（settlement_rules 的 CHECK 是个等价式）：
 	// 少了任何一个方向，用户拿到的都是一句没有线索的「配置不合法」。
 	scopeRef := strings.TrimSpace(in.ScopeRef)
 	if write.ScopeType == model.SettlementScopeGlobal {
@@ -471,7 +471,7 @@ func (s *AdminSettlementService) buildRuleWrite(ctx context.Context, in dto.Sett
 			platformSeen = true
 		}
 		if accountID != "" {
-			// 同一个账户在同一条规则里出现两次：008 有一条部分唯一索引钉它，但撞索引会回一句
+			// 同一个账户在同一条规则里出现两次：settlement_rule_items_account_uniq 钉它，但撞索引会回一句
 			// 「这一行和已有的撞了」，而用户要的是「第 3 项和第 5 项是同一个账户」。这件事只由
 			// 请求体决定，所以在进库之前就按 400 拒掉。
 			if seenAccounts[accountID] {
@@ -502,7 +502,7 @@ func (s *AdminSettlementService) buildRuleWrite(ctx context.Context, in dto.Sett
 
 // buildRuleItem 校验一项，并把它归一化成仓储要的形状（返回第二值是账户 id，平台项为空）。
 //
-// 逐项要查四件事，两两对应 008 那条三选一的 CHECK：算法与主体绑死（平台项不可能是比例项）、
+// 逐项要查四件事，两两对应 settlement_rule_items 那条三选一的 CHECK：算法与主体绑死（平台项不可能是比例项）、
 // 算法与金额绑死（percent 只看 ratio、fixed 只看 fixed_amount）、主体与账户绑死（平台项没有
 // 账户）。表上的 CHECK 会在写库那一刻拒掉不合的那些，但那时错误已经没法指出是第几项了。
 func (s *AdminSettlementService) buildRuleItem(item dto.SettlementRuleItemInput) (repository.SettlementRuleItemWrite, string, error) {
@@ -533,7 +533,7 @@ func (s *AdminSettlementService) buildRuleItem(item dto.SettlementRuleItemInput)
 		}
 		hundredths, ok := ratioHundredths(item.RatioPercent)
 		// (0, 100]：0 的比例项等于什么也不分，留着它只会让「这条规则总共分了 45%」这句话
-		// 在页面上对不上（有一个 0% 的项却没有那笔钱）。008 的 CHECK 只管 ratio >= 0。
+		// 在页面上对不上（有一个 0% 的项却没有那笔钱）。settlement_rule_items 的 CHECK 只管 ratio >= 0。
 		if !ok || hundredths <= 0 || hundredths > 10000 {
 			return write, "", ErrSettlementRuleItemRatioInvalid
 		}
@@ -563,7 +563,7 @@ func (s *AdminSettlementService) buildRuleItem(item dto.SettlementRuleItemInput)
 		return write, "", ErrSettlementRuleRemarkTooLong
 	}
 
-	// 平台项没有账户，其余项必须有。008 的 CHECK 是个等价式，两个方向都要管——写成
+	// 平台项没有账户，其余项必须有。settlement_rule_items 的 CHECK 是个等价式，两个方向都要管——写成
 	// 「platform 时清空 accountId」会让一个误填的账户悄无声息地消失，而那个人下次打开这条
 	// 规则时会疑惑自己填的账户去哪了。
 	accountID := strings.TrimSpace(item.AccountID)

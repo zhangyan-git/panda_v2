@@ -6,7 +6,7 @@ import "time"
 //
 // 老系统 drinks 集合就是每台设备一行（后台那张表单里 device_id 与 manufacturer_id
 // 并存，不是二选一）。V2 起初拆成「厂商级目录 + 供应关系」两张表，拆完却没有任何入口
-// 能把目录行挂到设备上，于是并了回来，见 migrations/coffee_machine/003。
+// 能把目录行挂到设备上，于是并了回来，见 migrations/coffee_machine。
 //
 // 因此 price / vip_price / pickup_code_price 是**这台设备上**的售价，不再有「每机
 // 覆盖价 / 目录价」两套说法；status 与 sort 就是这台设备上的上下架与排序。

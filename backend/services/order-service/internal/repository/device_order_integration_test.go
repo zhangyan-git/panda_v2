@@ -16,7 +16,7 @@ import (
 
 // 这一组用例打真库，盯的是设备单那条 INSERT 上**只有真库才验得了**的三件事：
 //
-//  1. user_id 写进去的是 NULL，而那几条金额恒等式与 NOT NULL 列全都过得去（order/005）；
+//  1. user_id 写进去的是 NULL，而那几条金额恒等式与 NOT NULL 列全都过得去（migrations/order）；
 //  2. 幂等是**靠那条部分唯一索引**兜住的，不是靠先查后插——所以并发重投只落一张单；
 //  3. 这条路不发任何事件。
 //
@@ -109,7 +109,7 @@ func TestPostgresCreateDeviceOrderRecordsAPaidOrderWithoutAUser(t *testing.T) {
 		t.Fatalf("read the order back: %v", err)
 	}
 	if userID != nil {
-		t.Errorf("user_id = %q, want NULL: a device order has no user (order/005)", *userID)
+		t.Errorf("user_id = %q, want NULL: a device order has no user (migrations/order)", *userID)
 	}
 	if source != model.SourceDevice || status != model.OrderStatusPaid {
 		t.Errorf("(source, status) = (%q, %q), want (%q, %q)", source, status, model.SourceDevice, model.OrderStatusPaid)

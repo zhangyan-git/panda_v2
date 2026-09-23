@@ -10,7 +10,7 @@ import {
  * 与 orderLabels.test.ts 同一个理由：钉的是**取值全集**而不是「有没有文案」。
  * 前者能在后端加码时失败，后者只在漏写文案时失败——而多出来的那个码才是常见的。
  *
- * 这两个集合来自 account-service 的 model 常量，也就是 migrations/account/001 的
+ * 这两个集合来自 account-service 的 model 常量，也就是 migrations/account 的
  * CHECK 约束（entry_type IN ('grant','draw','reverse')，reference_type 没有 CHECK、
  * 默认 ''）。
  */

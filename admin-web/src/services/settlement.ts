@@ -14,7 +14,7 @@ import type { PageQuery, PageResult } from './pagination';
  *
  *  - **没有「发起分账」。** 分账在 V2 是**随支付一次下发**的：银联商务的 `divisionFlag` /
  *    `platformAmount` / `subOrders` 三个键拼在**下单报文**里，支付成功即分账成功。所以这里既
- *    没有「打款」接口，也没有 `settlement:payout` 这个码（identity/035 里写着为什么暂不发它）。
+ *    没有「打款」接口，也没有 `settlement:payout` 这个码（migrations/identity 里写着为什么暂不发它）。
  *    老系统同样没有这一层，连 `ConfirmDivision` 都是定义了零调用方。
  *  - **没有「结算单」。** `settlement_statements` 那两张表仍然是空的，本刀不做。
  *
@@ -28,7 +28,7 @@ import type { PageQuery, PageResult } from './pagination';
 
 // ——— 枚举 ———
 // 取值来自 payment-service 的 internal/model/settlement.go，也就是
-// migrations/payment/008_settlement_core.sql 的 CHECK 约束。接口回的就是库里那些英文码。
+// migrations/payment 的 CHECK 约束。接口回的就是库里那些英文码。
 // **改枚举必须同时改迁移、改 model、改这里**，加了新码而这里没登记，界面上就退回显示原始码。
 // 文案表在 services/settlementLabels.ts。
 
@@ -36,7 +36,7 @@ import type { PageQuery, PageResult } from './pagination';
  * `settlement_rules.biz_type`：这笔钱是哪一类业务收上来的。规则命中的第一段键。
  *
  * 顺序**不是**命中顺序——命中先比档位（从具体到宽泛），同档位才比业务分类；同一个业务分类下
- * 同档位只允许有一条启用中的规则（008 的部分唯一索引）。
+ * 同档位只允许有一条启用中的规则（`settlement_rules_scope_uniq` 那条部分唯一索引）。
  */
 export type SettlementBizType = 'coffee' | 'membership' | 'store_consume' | 'addon_product';
 
@@ -54,14 +54,14 @@ export type SettlementScopeType = 'device' | 'store' | 'brand' | 'product' | 'gl
  * `settlement_rule_items.calc_type`：这一项按什么算。
  *
  * `remainder` 是**平台自留**，拿的是差额（基数 − 其他接收方），只能给 platform 项用——
- * 008 的 CHECK 钉死了：让某个门店去当那个「剩下的」，既算不清也说不通。
+ * `settlement_rule_items` 上那条 CHECK 钉死了：让某个门店去当那个「剩下的」，既算不清也说不通。
  */
 export type SettlementCalcType = 'percent' | 'fixed' | 'remainder';
 
 /**
- * 收款主体类型。规则项与账户**共用一套词表**（008 的 CHECK 要求两边逐字一致）。
+ * 收款主体类型。规则项与账户**共用一套词表**（两边的 CHECK 要求逐字一致）。
  *
- * `platform` 是特殊的那一个：008 把它与「没有账户」写成了充要条件
+ * `platform` 是特殊的那一个：`settlement_rule_items` 上那条 CHECK 把它与「没有账户」写成了充要条件
  * （`CHECK ((party_type='platform') = (account_id IS NULL))`）。
  */
 export type SettlementPartyType = 'partner' | 'city_center' | 'agent' | 'member_store' | 'platform';
@@ -105,7 +105,7 @@ export type SettlementTaskStatus =
 /**
  * `settlement_receivers.status`：某一条接收方明细走到哪一步。**五个取值**（任务少了 submitted）。
  *
- * `returned` 与金额是钉在一起的：008 的 CHECK 要求 `status='returned'` 与
+ * `returned` 与金额是钉在一起的：`settlement_receivers` 上那条 CHECK 要求 `status='returned'` 与
  * `reversed_amount = amount` 互为充要条件。回退本身（`settlement_reversals`）本刀不做，
  * 所以今天这里只会是 pending 或 succeeded。
  */
@@ -133,7 +133,7 @@ export type SettlementReceiverType = 'MERCHANT_ID' | 'PERSONAL_OPENID';
  * 出来、写的时候不收**——写只认 `accountId`。
  *
  * `ratioPercent` 是当初生效的比例（百分数）；固定额项记 0，它的数值在 `fixedAmount` 上；
- * remainder 项两个都是 0（008 的 CHECK 钉着）。
+ * remainder 项两个都是 0（`settlement_rule_items` 上那条 CHECK 钉着）。
  */
 export type SettlementRuleItem = {
   id: string;
@@ -142,7 +142,7 @@ export type SettlementRuleItem = {
   ratioPercent: number;
   /** 单位分。只有 calcType = 'fixed' 时有意义。 */
   fixedAmount: number;
-  /** 空串表示平台项——008 的 CHECK 把「平台项没有账户」写死了。 */
+  /** 空串表示平台项——`settlement_rule_items` 上那条 CHECK 把「平台项没有账户」写死了。 */
   accountId: string;
   accountName: string;
   /** 账户上的子商户号，渠道认的就是它。 */
@@ -162,7 +162,8 @@ export type SettlementRule = {
   bizType: SettlementBizType;
   scopeType: SettlementScopeType;
   /**
-   * 范围引用。`scopeType` 是 global 时**必须是空串**（008 的 CHECK 是充要条件），其余四档
+   * 范围引用。`scopeType` 是 global 时**必须是空串**（`settlement_rules` 上那条
+   * `(scope_type = 'global') = (scope_ref = '')` CHECK 是充要条件），其余四档
    * 必须给一个 uuid。今天真正会命中的只有门店 id 与设备 id 两种。
    */
   scopeRef: string;
@@ -244,8 +245,9 @@ export async function updateSettlementRule(id: string, data: SettlementRuleInput
  * 删除一条规则。**被分账任务引用过的规则删不掉，后端回 409**（`settlement_tasks.rule_id` 是
  * ON DELETE RESTRICT）。
  *
- * 常规出口是**停用**，不是删：停用之后同业务分类同档位可以再配一条（008 的唯一索引带
- * `WHERE status='enabled'`），已经发生的那几笔分账也不受影响——它们用的是任务上的快照。
+ * 常规出口是**停用**，不是删：停用之后同业务分类同档位可以再配一条（`settlement_rules_scope_uniq`
+ * 那条部分唯一索引带着 `WHERE status='enabled'`），已经发生的那几笔分账也不受影响——它们用的是
+ * 任务上的快照。
  */
 export async function deleteSettlementRule(id: string) {
   return request<{ id: string }>(`/api/v1/admin/settlement/rules/${id}`, { method: 'DELETE' });
@@ -256,19 +258,19 @@ export async function deleteSettlementRule(id: string) {
 /**
  * 一个收款账户：**钱分到谁的哪个子商户号上**。
  *
- * `provider` 是渠道名（catalog 里的那个值，如 `ums`），**不是 uuid**——渠道与支付方式在
- * identity/009 之后是代码里的目录表，库里没有可指向的那张表。
+ * `provider` 是渠道名（catalog 里的那个值，如 `ums`），**不是 uuid**——渠道与支付方式不进库
+ * （payment 库里没有那三张表），是代码里的目录表。
  *
  * `receiverId` 就是下发时子单里的 `mid`：银联商务按它找到收款方。它是**快照源头**——任务建
  * 下来的那一刻这个值会被冻结进 `settlement_receivers`，账户后来改了名或换了号都不会回头影响
  * 历史明细。这也是账户**改得**而明细**不改**的原因。
  *
- * **没有账户号与接收方名**（017 删的两列）：这一行给人看的名字就是 `partyName`，渠道侧要的号
+ * **没有账户号与接收方名**（账户表上没有这两列）：这一行给人看的名字就是 `partyName`，渠道侧要的号
  * 就是 `receiverId`，多出来的那两个标签谁也没读。
  */
 export type SettlementAccount = {
   id: string;
-  /** 收款主体名。必填（017 起），也是规则项下拉、接收方快照与列表里用的同一个名字。 */
+  /** 收款主体名。必填，也是规则项下拉、接收方快照与列表里用的同一个名字。 */
   partyName: string;
   partyType: SettlementPartyType;
   provider: string;
@@ -294,7 +296,7 @@ export type SettlementAccountInput = {
   partyName: string;
   partyType: SettlementPartyType;
   provider: string;
-  /** 空表示 MERCHANT_ID（后端的归一化值与 008 的列默认值都是它）。 */
+  /** 空表示 MERCHANT_ID（后端的归一化值与 `settlement_accounts.receiver_type` 的列默认值都是它）。 */
   receiverType: SettlementReceiverType;
   receiverId: string;
   /** 空表示 enabled。 */

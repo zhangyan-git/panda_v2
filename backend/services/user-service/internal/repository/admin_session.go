@@ -10,7 +10,7 @@ import (
 // AdminSessionRepository 是**平台后台管理员** Refresh Token 会话的数据访问接口。
 //
 // 与 UserSessionRepository 方法集相同、语义逐条相同，但打的是 admin_sessions 表
-// （identity/031）：管理员住在 admin_users 里，和 users 一行都不重叠，所以两者
+// （migrations/identity）：管理员住在 admin_users 里，和 users 一行都不重叠，所以两者
 // 不能共用一张表——user_sessions 的外键是 user_id → users(id)，写管理员 id 进去
 // 是 23503。方法集的注释不再重复一遍，看 UserSessionRepository。
 //

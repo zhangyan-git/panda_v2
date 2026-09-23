@@ -110,7 +110,7 @@ func main() {
 
 	// 商户域也是同步依赖，但它只在两条路上：开通前问一次「这家店存在吗」（问不到就不受理），
 	// 以及每次读列表时解一页门店名（解不到只让名字空着，见 service.resolveStoreNames）。
-	// 门店名不落库（migrations/lottery/003），所以这条连接不是可选的装饰。
+	// 门店名不落库（migrations/lottery），所以这条连接不是可选的装饰。
 	merchantConn, err := platformclient.Dial(context.Background(), "merchant-service", cfg.MerchantGRPCAddress, merchantServiceDialTimeout, reg)
 	if err != nil {
 		log.Fatalf("lottery-service: dial merchant-service: %v", err)

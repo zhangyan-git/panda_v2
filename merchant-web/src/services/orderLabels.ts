@@ -110,7 +110,7 @@ export const AGGREGATE_TYPE: Record<string, EnumMeta> = {
  * 这一列上，`orders.payment_method`、`order_payment_lines.line_type`（门店详情「出资分摊」
  * 那张表）以及支付单那边的四列存的是**同一个值**：payment-service 目录（catalog）里的 code。
  * 从前它们各存一套「出资渠道」词表，加一种支付方式要改两处 DDL，而支付宝在那套词表里没有
- * 档位、只能落成 other——那套词表已经整个退场（migrations/order/008 与 payment/012），历史
+ * 档位、只能落成 other——那套词表已经整个退场，历史
  * 行按支付单号回填订正过了，所以这里不再列 wechat / unionpay / wallet / other 那些字面量。
  *
  * 六条 code 抄自 payment-service/internal/catalog 的 Code* 常量，名字抄自那边的 Name；商户端

@@ -5,7 +5,7 @@ import "time"
 // ActivateRequest 是「开通门店抽奖」的请求体。
 //
 // 请求体里**只有门店 id，没有门店名**：名字是商户域的事实，本库不留（见
-// migrations/lottery/003）。服务端在开通前拿这个 id 问一次商户域「这家店存在吗」，问不出
+// migrations/lottery）。服务端在开通前拿这个 id 问一次商户域「这家店存在吗」，问不出
 // 来就不受理；显示用的名字则在每次读的时候现解（service.resolveStoreNames）。
 //
 // 原先这里有一个 locationName，由后台选择器带上来。去掉它换来的正是那条存在性校验：
@@ -38,7 +38,7 @@ type ActivationResponse struct {
 	Remark       string `json:"remark"`
 	// 默认活动的 ID 与名字。列表页要能直接点进默认活动，也要能回答「这家店开通的是
 	// 哪个活动」。它来自 lottery_campaigns.is_default，不是存在开通行上的列
-	// （见 migrations/lottery/001 为什么不多存一列）。
+	// （见 migrations/lottery 为什么不多存一列）。
 	DefaultCampaignID   string `json:"defaultCampaignId"`
 	DefaultCampaignName string `json:"defaultCampaignName"`
 	// 活动数（含默认）。列表页显示「3 个活动」。

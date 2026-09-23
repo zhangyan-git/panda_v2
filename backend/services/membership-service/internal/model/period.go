@@ -5,7 +5,7 @@ import "time"
 // AddPeriod 按日历把 base 往后推 count 个 period（month / year）。
 //
 // 这是本包唯一一个不是「列与字段一一对应」的东西，写在这里是因为**它是库结构本身的语言**：
-// migrations/membership/001 把时长存成 period + period_count 而不是 duration_days，理由就是
+// migrations/membership 把时长存成 period + period_count 而不是 duration_days，理由就是
 // 续期要按日历加；那么「按日历加」这个动作的定义，与那两列是同一件事的两半，分开迟早会漂。
 //
 // # 为什么不能用 time.AddDate

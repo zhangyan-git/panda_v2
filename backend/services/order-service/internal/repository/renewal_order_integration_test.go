@@ -17,7 +17,8 @@ import (
 
 // 这一组用例打真库，盯的是续费单那条 INSERT 上**只有真库才验得了**的四件事：
 //
-//  1. `source='renewal'` 真的过得了 orders_source_check——也就是说 order/009 **真的 apply 过**。
+//  1. `source='renewal'` 真的过得了 orders_source_check——也就是说 orders_source_check 里有
+//     renewal 这个取值。
 //     这是整条路上唯一一处「代码对了、库没改就是不行」的地方，而它在集成用例里是免费验的；
 //  2. user_id 非空、点位与设备为空、履约汇总 none、expires_at 为 NULL 这一组形状；
 //  3. 幂等仍然靠**那条部分唯一索引**兜（不是先查后插），且命中时返回的是既有那张单；
@@ -101,8 +102,8 @@ func cleanupRenewalOrder(t *testing.T, pool *pgxpool.Pool, thirdParty string) {
 
 // TestPostgresCreateRenewalOrderRecordsAPaidMembershipOrder 是续费单落库的正例。
 //
-// 它同时是 order/009 的验证：`source='renewal'` 过不了 CHECK 的话，第一句 INSERT 就会以
-// 23514 失败，而这条用例会带着「迁移没 apply」的提示红掉。
+// 它同时是 orders_source_check 的验证：那个 CHECK 里没有 renewal 的话，第一句 INSERT 就会以
+// 23514 失败，而这条用例会带着「约束拒了这一行」的提示红掉。
 func TestPostgresCreateRenewalOrderRecordsAPaidMembershipOrder(t *testing.T) {
 	pool := afterSaleIntegrationPool(t)
 	ctx := context.Background()
@@ -114,7 +115,7 @@ func TestPostgresCreateRenewalOrderRecordsAPaidMembershipOrder(t *testing.T) {
 
 	result, created, err := repo.CreateRenewalOrder(ctx, params)
 	if err != nil {
-		t.Fatalf("CreateRenewalOrder: %v（source='renewal' 被拒说明 order/009 没 apply 到这个库）", err)
+		t.Fatalf("CreateRenewalOrder: %v（source='renewal' 被拒说明 orders_source_check 里没有这个取值）", err)
 	}
 	if !created || !result.Created {
 		t.Fatalf("created = %v/%v, want true on the first insert", created, result.Created)

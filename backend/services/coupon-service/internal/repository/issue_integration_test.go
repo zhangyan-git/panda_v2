@@ -60,7 +60,7 @@ func issueFixture(t *testing.T, pool *pgxpool.Pool, validity string) (typeID, te
 			batchIDs = append(batchIDs, id)
 		}
 		rows.Close()
-		// 两张账本表从 coupon/006 起带只增触发器，直接 DELETE 会被当场拒掉。
+		// 两张账本表带只增触发器，直接 DELETE 会被当场拒掉。
 		if err := deleteAppendOnlyRows(ctx, pool, "coupon_state_transitions", "aggregate_id", batchIDs); err != nil {
 			t.Errorf("cleanup coupon_state_transitions: %v", err)
 		}

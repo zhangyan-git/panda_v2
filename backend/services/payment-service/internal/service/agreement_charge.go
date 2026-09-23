@@ -453,7 +453,7 @@ func validateChargeAgreement(in ChargeAgreementRequest) error {
 //
 // 与协议通知（agreement-notify）分开两条 URL，因为这个 project 里最贵的一次事故就是这两条
 // 撞在一起：老系统的续费扣款与签约回调共用一条路由，回调按 out_trade_no 去查订阅表，而那个
-// 号从来没写进那张表 —— 永远查不到 → 回 FAIL → 微信永久重推（见迁移 013 的文件头）。
+// 号从来没写进那张表 —— 永远查不到 → 回 FAIL → 微信永久重推（见 payment_agreement_charges.out_trade_no 的列注释）。
 //
 // 三条 URL 各一个方法而不是加参数，理由与 agreementNotifyURL 同：controller 的路径常量是
 // 硬编码的第二份（它已经 import service，反过来引就是环）。
@@ -468,7 +468,7 @@ func (s *PaymentService) chargeNotifyURL(channelCode string) string {
 //
 // 形状照 paymentNo（PAY + 时间戳 + 三位毫秒 + 六位随机），把前缀换成 CHG：26 个字符，而微信
 // 对 out_trade_no 的上限是 32。**不带协议号与期次**——微信只要求全局唯一，而把业务语义编进
-// 单号会让「换个期次算法」变成一次历史数据的迁移（见迁移 013 的注释）。
+// 单号会让「换个期次算法」变成一次历史数据的迁移（见 payment_agreement_charges.out_trade_no 的列注释）。
 func chargeNo(now time.Time) string {
 	random := make([]byte, 3)
 	if _, err := rand.Read(random); err != nil {

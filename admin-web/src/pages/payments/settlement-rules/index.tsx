@@ -79,7 +79,8 @@ import { scrollableModalBody } from '../../../components/common/modalProps';
  * # 命中顺序与「同档位只能有一条」
  *
  * 同一个业务分类下，档位从具体到宽泛（设备 → 门店 → 品牌 → 商品 → 全局）先命中先返回；
- * 同档位**只能有一条启用中的规则**（008 的部分唯一索引，在 `WHERE status='enabled'` 上）。
+ * 同档位**只能有一条启用中的规则**（`settlement_rules_scope_uniq` 那条部分唯一索引，在
+ * `WHERE status='enabled'` 上）。
  * 所以配重了会 409，而出口是**把旧的那条停用**——停用之后同档位就能再配一条。
  *
  * # 为什么列表里看不到「分给了谁、分多少」
@@ -154,7 +155,7 @@ export default function SettlementRulesPage() {
       .catch(() => setChannels({}));
   }, []);
 
-  // 名字只取 partyName，没有 fallback：账户号那列随 017 删了，主体名现在是必填的（后端与库
+  // 名字只取 partyName，没有 fallback：账户表上没有账户号那一列，主体名现在是必填的（后端与库
   // 的 CHECK 都拦着空值），而渠道接收方号是给渠道看的号、不该拿来当人认的名字。
   const accountOptions = accounts.map((account) => ({
     label: `${account.partyName}（${account.receiverId}${
@@ -282,7 +283,7 @@ export default function SettlementRulesPage() {
       },
     },
     {
-      // 全局档的范围引用是空串（008 的 CHECK 是充要条件），那是一种正常，不是缺值。
+      // 全局档的范围引用是空串（`settlement_rules` 上那条 CHECK 是充要条件），那是一种正常，不是缺值。
       // 解不出名字时退回原始 id —— 多半是字典没取到（门店列表要另一个权限码）。
       title: '范围',
       dataIndex: 'scopeRef',
@@ -371,7 +372,7 @@ export default function SettlementRulesPage() {
       dataIndex: 'ratioPercent',
       width: 90,
       align: 'right',
-      // 固定额项与平台自留项的比例是 0（008 的 CHECK 钉着），显示成 % 会让人以为它分不到。
+      // 固定额项与平台自留项的比例是 0（`settlement_rule_items` 上那条 CHECK 钉着），显示成 % 会让人以为它分不到。
       render: (_, row) => (row.calcType === 'percent' ? formatPercent(row.ratioPercent) : '—'),
     },
     {
@@ -382,7 +383,7 @@ export default function SettlementRulesPage() {
       render: (_, row) => (row.calcType === 'fixed' ? money(row.fixedAmount) : '—'),
     },
     {
-      // 平台项没有账户（008 的 CHECK 是等价式），那不是缺值。
+      // 平台项没有账户（`settlement_rule_items` 上那条 CHECK 是等价式），那不是缺值。
       title: '收款账户',
       dataIndex: 'accountId',
       ellipsis: true,
@@ -523,7 +524,7 @@ export default function SettlementRulesPage() {
               scroll={{ x: 1000 }}
               columns={itemColumns}
               locale={{
-                // 空数组是**几乎不会发生**的（008 要求一条规则至少有一项），但真出现时
+                // 空数组是**几乎不会发生**的（migrations/payment 要求一条规则至少有一项），但真出现时
                 // 一句「暂无数据」会让人以为是页面坏了。
                 emptyText: '这条规则没有分账项——它不会分出去任何钱',
               }}
@@ -604,7 +605,7 @@ export default function SettlementRulesPage() {
           extra="同一个业务分类下，档位从设备到全局先命中先返回。同档位只能有一条启用中的规则。换档位会清掉已经选好的范围引用。"
         />
         {/*
-          范围引用跟着档位出现：全局档**不要**它（008 的 CHECK 是充要条件，带了就是一条违规），
+          范围引用跟着档位出现：全局档**不要**它（`settlement_rules` 上那条 CHECK 是充要条件，带了就是一条违规），
           其余四档**必须**给。门店 / 品牌 / 设备三档给的是下拉（名字认得出），商品档今天没有
           可选的来源，只能手填一个 id。
         */}
@@ -740,7 +741,7 @@ export default function SettlementRulesPage() {
               valueEnum={searchOptions(CALC_TYPE)}
             />
             {/*
-              比例与固定额**二选一**，按算法显示。提交时会按算法把另一个归零——008 与 service
+              比例与固定额**二选一**，按算法显示。提交时会按算法把另一个归零——`settlement_rule_items` 上那条 CHECK 与 service
               都要求它们互斥（比例项带固定额会被拒），而在切换算法之后留一个不再渲染的输入框，
               是最容易发生的一种半截组合。
 
@@ -775,7 +776,7 @@ export default function SettlementRulesPage() {
               }
             </ProFormDependency>
             {/*
-              平台项没有账户（008 的 CHECK 钉着），所以这一格在平台项时换成一句说明。用 antd 的
+              平台项没有账户（`settlement_rule_items` 上那条 CHECK 钉着），所以这一格在平台项时换成一句说明。用 antd 的
               `Form.Item` 而不是 `Alert`：它跟旁边那些字段是同一套标签＋控件的结构，行高一样、
               格子的宽度也一样——换成 Alert 会把这一行撑高、把后面的字段挤歪。
             */}

@@ -13,7 +13,7 @@ import (
 // userID 非空表示这是终端用户在查自己的单：先确认归属。
 //
 // 这里曾经按「取杯码是凭据」剥掉后台视角的 PickupCode。那个定性建立在一次凭空的列拆分上
-// （order/004 已把 pickup_no/pickup_code 合并回一列）：原型里取杯口那块屏幕本来就把它大字
+// （库里只有 pickup_code 一列，没有 pickup_no）：原型里取杯口那块屏幕本来就把它大字
 // 摆着，用户侧叫取杯号、屏幕上叫取杯码，是同一个值，从来不是秘密。后台要看它，客服最常被
 // 问的就是「我的号是多少」。
 func (s *OrderService) GetOrderDetail(ctx context.Context, orderID, userID string) (*repository.OrderDetail, error) {

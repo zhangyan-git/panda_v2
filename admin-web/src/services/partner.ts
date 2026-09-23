@@ -83,7 +83,7 @@ export type PartnerInput = {
 /**
  * 一把密钥。**只有掩码，没有明文**——后端读路径上一次解密都不做（库里根本没有明文可算）。
  *
- * `ipWhitelist` 空数组表示**不限制来源**（不是全拒），见 migrations/partner/001 上那一列的
+ * `ipWhitelist` 空数组表示**不限制来源**（不是全拒），见 migrations/partner 上那一列的
  * 注释。后端回显的是运营自己填的原串（不做归一化），所以这里也原样显示。
  */
 export type PartnerAPIKey = {

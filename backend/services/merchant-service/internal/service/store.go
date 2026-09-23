@@ -26,7 +26,7 @@ type StoreInput struct {
 	ProvinceCode string
 	CityCode     string
 	DistrictCode string
-	// 订货系统 xlsx「客户」页的三列（merchant/004）；编码是对账键，两个编码各有
+	// 订货系统 xlsx「客户」页的三列（migrations/merchant）；编码是对账键，两个编码各有
 	// 「空串不参与」的部分唯一索引，冲突由库拦下、经 repository.storeCodeConflict 翻成人话
 	// （**本服务没有 mapPGError**，那是 order/payment 那几个服务的写法，别 grep 错）。
 	CustomerCode  string

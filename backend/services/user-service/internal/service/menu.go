@@ -209,7 +209,7 @@ func (s *AdminMenuService) AssignMenusToRole(ctx context.Context, roleID string,
 
 // isDescendant 判断 candidateID 是否位于 rootID 的子树中。
 //
-// visited 是兜环的，不能省：库里的 parent_id 是自引用外键（002_identity_menus.sql:82），
+// visited 是兜环的，不能省：admin_menus.parent_id 是自引用外键（见 migrations/identity），
 // 只声明了 ON DELETE CASCADE，**不拦成环**，表上也没有 CHECK 或触发器。走 API 造不出环
 // （本函数就是那道闸之一），但 SQL 直改能——手工修菜单在这套系统里是常规操作。
 // 没有 visited 时，只要 rootID 落在环上，这里就永远转不完：那一次「修改菜单」会挂住不放，

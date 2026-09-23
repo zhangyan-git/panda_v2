@@ -47,7 +47,7 @@ import type { OperationLog } from '../../services/operationLog';
  * 已经有两条是这么留下来的，都是「服务没了、记录还在」：
  *   * `device_drinks`：设备×饮品那张关系表拆了，饮品行自带 device_id，读写都落在 `drinks` 上；
  *   * `inventory`：整个订货/库存域从 V2 删了（服务、proto、迁移、后台七页一起，见
- *     migrations/identity/036）。这一条留着是因为 admin_operation_logs 里有一条
+ *     migrations/identity）。这一条留着是因为 admin_operation_logs 里有一条
  *     `inventory / confirm`——删掉它，那条旧记录会在页面上变成一串英文模块名。
  * 新删一个域时照这条判断：先 `SELECT DISTINCT module FROM admin_operation_logs`，有行才留。
  */

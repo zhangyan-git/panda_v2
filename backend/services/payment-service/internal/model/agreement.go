@@ -110,13 +110,13 @@ type PaymentAgreementCharge struct {
 	// 回来时唯一的关联键**——报文里没有别的字段能定位到这一行。
 	//
 	// **建行时生成一次，重试复用同一个值，绝不重算**：重算就是在渠道侧开出第二笔订单，而两个
-	// 单号不同，渠道那边无法去重，用户会被扣两次（见迁移 013 的文件头）。
+	// 单号不同，渠道那边无法去重，用户会被扣两次（见 payment_agreement_charges.out_trade_no 的列注释）。
 	OutTradeNo string `db:"out_trade_no"`
 	// ProviderTransactionID 是这一期在渠道那边的流水号（微信的 transaction_id），由扣款结果
 	// 通知写进来。它与 OutTradeNo 是**两个方向**的号：那个是我们发给渠道的，这个是渠道发的，
 	// 用户在微信账单里看到的是这一个。
 	//
-	// 列上有部分唯一索引（迁移 014）：同一笔渠道流水挂到两期上，含义就是同一笔钱被记了两次。
+	// 列上有部分唯一索引（payment_agreement_charges_transaction_unique）：同一笔渠道流水挂到两期上，含义就是同一笔钱被记了两次。
 	ProviderTransactionID string `db:"provider_transaction_id"`
 	// PaymentNo 是这一期成功扣款对应的支付单号（值引用）；今天恒为空——代扣不建 payments
 	// 行（payments.order_no 是 NOT NULL 的订单号，而代扣没有订单）。

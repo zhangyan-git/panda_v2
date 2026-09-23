@@ -64,7 +64,7 @@ func (s MembershipSnapshot) couponColumns() (*string, *int32) {
 type PaidOrderParams struct {
 	UserID string
 	// OrderID 是幂等凭据：membership_changes 上有 order_id 上的部分唯一索引（限开通与续期，
-	// 见 migrations/membership/003），同一单被处理两遍会撞上它（见 ErrDuplicateChange）。
+	// 见 migrations/membership），同一单被处理两遍会撞上它（见 ErrDuplicateChange）。
 	// 按 order_id 而不是 order_id+变更类型：重投走的是另一支（首次开通、重投续期）。
 	OrderID string
 	// OccurredAt 是**支付成功时刻**，不是处理时刻。补投一条上周的事件时，会员的 start_at
@@ -426,7 +426,8 @@ func (r *PostgresRepository) GrantMembership(ctx context.Context, p GrantParams)
 // hasChangeWithRequest 回答「这个用户的这种变更，是不是已经用这个 request_id 记过一次」。
 //
 // 它服务于重试：调用方在「已经有一条会员」时先问它，是重放就回那条、不是才报冲突。
-// request_id 为空串时恒为 false——部分唯一索引的 WHERE 也把空串排除在外（见 004）。
+// request_id 为空串时恒为 false——部分唯一索引的 WHERE 也把空串排除在外
+// （见 membership_changes_request_unique）。
 func hasChangeWithRequest(ctx context.Context, q querier, userID, changeType, requestID string) (bool, error) {
 	if requestID == "" {
 		return false, nil

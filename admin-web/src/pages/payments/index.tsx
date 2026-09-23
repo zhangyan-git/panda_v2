@@ -107,7 +107,7 @@ export default function PaymentsPage() {
     },
     {
       // **出资类型那一列没有了**：它与支付方式是同一个值（payment_fundings.line_type 存的
-      // 就是支付方式 code，见 payment/012），并排摆两列是同一件事说两遍；从前并排是因为它
+      // 就是支付方式 code，见 migrations/payment），并排摆两列是同一件事说两遍；从前并排是因为它
       // 俩真是两套词表，而正因如此支付宝只能落成 other，这一列会显示成「其他」。
       //
       // dataIndex 用 methodCode 而不是 methodName：搜索框的键就是这个 dataIndex，而后端

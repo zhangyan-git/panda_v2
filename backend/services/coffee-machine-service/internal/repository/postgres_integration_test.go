@@ -289,7 +289,7 @@ func TestListDeviceDrinksScopesToTheDevice(t *testing.T) {
 	freeDrinkID := insertDrink(&deviceID, "集成测试免费的", 0, 1)
 	paidDrinkID := insertDrink(&deviceID, "集成测试美式", 1800, 2)
 	insertDrink(&otherDeviceID, "另一台设备上的", 1800, 3)
-	// 还没挂设备的行：它是合法的数据库状态（003 是加列迁移），但绝不属于任何一台设备。
+	// 还没挂设备的行：它是合法的数据库状态（drinks.device_id 可空），但绝不属于任何一台设备。
 	insertDrink(nil, "还没分配设备的", 1800, 4)
 
 	drinks, err := repo.ListDeviceDrinks(ctx, deviceID)
@@ -533,7 +533,8 @@ func TestListDrinksFiltersByManufacturer(t *testing.T) {
 
 // codedDrinkFixture 插一行带编号与上下架状态的饮品并注册清理。admin_integration_test.go
 // 里那个 drinkFixture 只填名字，编号两列留默认空串——设备回调那条路要按编号找人，
-// 所以这里单独一个：deviceID 为 nil 表示这行还没挂设备（003 允许的遗留行）。
+// 所以这里单独一个：deviceID 为 nil 表示这行还没挂设备（drinks.device_id 可空，库里允许
+// 这样的行）。
 func codedDrinkFixture(t *testing.T, pool *pgxpool.Pool, deviceID *string, manufacturerID, productNum, originID, status string) string {
 	t.Helper()
 	drinkID := uuid.NewString()
@@ -642,7 +643,7 @@ func TestGetDrinkReadsTheRowByPrimaryKey(t *testing.T) {
 	}
 }
 
-// TestListDrinksScopesToADeviceAndKeepsUnassignedRowsApart 盯的是 003 之后 drinks 的两类行：
+// TestListDrinksScopesToADeviceAndKeepsUnassignedRowsApart 盯的是 drinks 的两类行：
 // 挂在设备上的，和还没挂设备的（device_id 为 NULL）。按设备过滤只该给出前者，不过滤才是
 // 两类都在——把两者写成同一个结果，设备回调建单就会拿到别的机器上的饮品。
 func TestListDrinksScopesToADeviceAndKeepsUnassignedRowsApart(t *testing.T) {
@@ -661,7 +662,8 @@ func TestListDrinksScopesToADeviceAndKeepsUnassignedRowsApart(t *testing.T) {
 	}
 	cleanupFixture(t, pool, `DELETE FROM drinks WHERE id = $1`, mineID)
 
-	// 遗留行：003 的注释说明库里可能还有没挂设备的饮品，过滤与不过滤的差别就出在它身上。
+	// 遗留行：drinks.device_id 的列注释说明库里可能还有没挂设备的饮品，过滤与不过滤的差别
+	// 就出在它身上。
 	orphanID := uuid.NewString()
 	_, err = pool.Exec(ctx, `INSERT INTO drinks(id, manufacturer_id, product_name, origin_id, price)
 		VALUES($1, $2, $3, $4, 1500)`,

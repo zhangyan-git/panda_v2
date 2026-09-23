@@ -14,7 +14,7 @@ import { formatYuan } from '../../../services/money';
  * 空值一律显示成「—」。
  *
  * 空串与 null 都算空：接口对「没发生过」给 null（closedAt），对「没有这个值」给空串
- * （failureCode，001 的列定义是 NOT NULL DEFAULT ''）。这两种在页面上都该是「没有」，
+ * （failureCode，`payments.failure_code` 的列定义是 NOT NULL DEFAULT ''）。这两种在页面上都该是「没有」，
  * 但要与 0 分得开——0 是有效值（sortOrder、金额），照实显示。
  */
 export const dash = (value?: string | number | null) =>

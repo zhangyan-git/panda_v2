@@ -566,7 +566,7 @@ func TestParseIPAllowListAcceptsCIDRsAndBareAddresses(t *testing.T) {
 // TestEmptyAllowListMeansUnrestricted 钉住「空数组 ≠ 全拒」。
 //
 // 新签发的密钥默认不限制来源：反过来的话，运营不填白名单就调不通，而报出来的是一句 401
-// ——他会先去怀疑签名算错了。这条语义写在 migrations/partner/001 那一列上。
+// ——他会先去怀疑签名算错了。这条语义写在 migrations/partner 那一列上。
 func TestEmptyAllowListMeansUnrestricted(t *testing.T) {
 	for _, entries := range [][]string{nil, {}, {"", "   "}} {
 		list, err := ParseIPAllowList(entries)

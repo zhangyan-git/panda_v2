@@ -28,8 +28,8 @@ import (
 // settlement_accounts 的唯一键是「四个引用 + 渠道」，全空会退化成 (类型, '', '', '', 渠道)，
 // 于是这条夹具会与 dev 库里任何一条同形的启用账户（比如 e2e 留下的那一条）撞上 23505，用例
 // 就变成了在验夹具而不是在验代码——当时靠给 store_ref 塞一个随机 uuid 绕过去。
-// payment/015 把那条键换成了主体键（空主体不进索引），夹具因此可以照页面上的真实形状写；
-// payment/016 又干脆把那三列删了，这一段现在只剩历史。
+// 现在账户表上没有主体引用那几列，唯一键只认 (渠道, 接收方类型, 接收方号)（settlement_accounts_receiver_uniq，
+// 且只对启用中的行生效），夹具因此可以照页面上的真实形状写。
 
 // settlementAccountFixture 是一个账户加上一条引用它的规则。
 type settlementAccountFixture struct {

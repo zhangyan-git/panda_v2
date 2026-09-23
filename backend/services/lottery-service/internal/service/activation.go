@@ -25,7 +25,7 @@ import (
 // （见 repository.DefaultCampaignCode）。
 //
 // 门店名**不由请求体带上来**（原来带，2026-09-15 去掉）：名字是商户域的事实，本库只存 id
-// （见 migrations/lottery/003）。开通前先问一次商户域「这家店存在吗」，问不出来就不受理
+// （见 migrations/lottery）。开通前先问一次商户域「这家店存在吗」，问不出来就不受理
 // ——那一次调用顺带就把「幽灵门店」堵掉了，而名字在每次读的时候现解。
 func (s *LotteryService) Activate(ctx context.Context, req dto.ActivateRequest, actor *string) (*repository.ActivationListRow, error) {
 	locationID := strings.TrimSpace(req.LocationID)

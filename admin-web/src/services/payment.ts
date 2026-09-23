@@ -158,7 +158,7 @@ export type Payment = {
  * 一条出资行：这笔钱按来源拆成的一行。
  *
  * lineType 就是**这笔出资的支付方式 code**，与同一张支付单上的 methodCode 是同一个值
- * （出资渠道那套词表已经退场，见 migrations/payment/012）。所以它是个自由字符串：合法的
+ * （出资渠道那套词表已经退场，见 migrations/payment）。所以它是个自由字符串：合法的
  * 取值就是 catalog 里那几条，前端没有一份能对齐的枚举，中文名走 paymentMethodLabels。
  */
 export type PaymentFunding = {

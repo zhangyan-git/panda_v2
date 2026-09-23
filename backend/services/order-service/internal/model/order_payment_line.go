@@ -8,8 +8,8 @@ import "time"
 // 分账要按来源拆分，所以逐笔留行，而不是在主表存一个支付方式了事。
 //
 // 福卡**不在出资方之列**：它是下单赠送的抽奖凭证，余额归 account-service、消耗途径只有
-// 抽奖（这两个服务都还没建）。规划里没有把它列成出资方，是本文件与 order/001 的 CHECK
-// 凭空写上了它，order/003 已收窄。
+// 抽奖（这两个服务都还没建）。规划里没有把它列成出资方，是本文件与那套旧词表的 CHECK 凭空
+// 写上了它；那套词表今天已经退场，line_type 上只剩「非空」这一条 CHECK。
 //
 // 券不在这里：券是权益抵扣、不是资金出资，它抵掉的钱记在它作用的那一行
 // （OrderLine.CouponDiscountAmount），核销事实在 coupon-service。
@@ -44,7 +44,7 @@ const (
 )
 
 // line_type 那套「出资渠道」词表（wechat / unionpay / coffee_bean / wallet / other）与
-// 它的五个常量**已经退场**（见 order/008）：order_payment_lines.line_type 今天存的是
+// 它的五个常量**已经退场**（见 migrations/order）：order_payment_lines.line_type 今天存的是
 // **支付方式的 code**（catalog 里的 ums_h5_alipay / coffee_bean 等），与
 // orders.payment_method 同一个值。
 //

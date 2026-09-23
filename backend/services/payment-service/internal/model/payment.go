@@ -48,7 +48,7 @@ type Payment struct {
 	//
 	// 非空 = 这笔钱确实动过。它有两个用途：超时关单不碰这样的单（把钱已经动过的单当成
 	// 没付过一样关掉、把出资标成 released，是一次记账上的撒谎），补偿任务把它们结算掉。
-	// 渠道支付永远是 nil——这条路上没有账户域可扣。见 005 迁移。
+	// 渠道支付永远是 nil——这条路上没有账户域可扣。见 payments.account_entry_id 的列注释。
 	AccountEntryID *string `db:"account_entry_id"`
 	// 扣豆成交的时刻（账户域那笔账变的发生时刻）。账户出资没有第三方给成交时间，
 	// 结算与补偿都用它，而不是拿处理请求的那一刻顶上。
@@ -92,7 +92,7 @@ func IsPaymentStatus(status string) bool {
 }
 
 // 出资类型那套词表（wechat / unionpay / coffee_bean / wallet / other）**已经退场**，
-// 连同 payments.funding_type 那一列一起（见 payment/012）。
+// 连同 payments.funding_type 那一列一起。
 //
 // 从前它是「这笔钱从哪个通道出」的归纳，与「用户点了哪个支付方式」分两处记。代价是加一种
 // 支付方式要同时在 catalog 里给 code、再在这套词表里给它找一档——找不到就得改两个库的 DDL，

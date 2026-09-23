@@ -61,7 +61,7 @@ var (
 	// ErrOrderHasNoPayment：这一单没有支付单，退款这条链在结构上装不下它。
 	//
 	// 判据是 orders.payment_no 为空：线下刷卡机与取货码那两类设备单**根本没有 payments 行**
-	// （钱在机器那边就收过了，见 order/005），而 payment-service 的
+	// （钱在机器那边就收过了，见 migrations/order），而 payment-service 的
 	// payment_refunds.payment_id 是 NOT NULL REFERENCES payments(id)。放它过去的结果是
 	// 审核通过之后在建退款单那一步炸掉，而那时钱已经承诺要退了。
 	ErrOrderHasNoPayment = errors.New("order has no payment to refund against")
@@ -391,7 +391,7 @@ func (r *PostgresRepository) ApplyAfterSale(ctx context.Context, p ApplyAfterSal
 	if err != nil {
 		return nil, false, err
 	}
-	// user_id 可空（设备单没有用户，见 order/005），nil 与任何调用方都不相等：一张没有主人的
+	// user_id 可空（设备单没有用户，见 migrations/order），nil 与任何调用方都不相等：一张没有主人的
 	// 单不能被谁认领成自己的。设备单也本来就走不到这里——它建出来就是 paid，而申请售后的
 	// 那条路是用户拿自己的单来退钱，机器卖出去的那一杯没有对应的用户可退。
 	if p.UserID != "" && (order.UserID == nil || *order.UserID != p.UserID) {

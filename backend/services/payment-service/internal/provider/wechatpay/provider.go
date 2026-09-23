@@ -117,7 +117,7 @@ func (p *Provider) Create(_ context.Context, req provider.CreateRequest) (provid
 // 它们各有自己的入口——前者 `/v1/payments/agreement-notify/{渠道码}`（改的是协议），后者
 // `/v1/payments/agreement-charge-notify/{渠道码}`（改的是某一期扣款）。两条都**不是支付聚合
 // 的一条出资**：payment_agreement_charges 有自己的状态，而 payments.order_no 那列是 NOT NULL
-// 的订单号（见迁移 001），代扣没有订单可挂。
+// 的订单号，代扣没有订单可挂。
 //
 // 所以这一族在这条路上没有能返回的 provider.Notification（它要求一个 payment_no），拒绝是
 // 诚实的答案。把报文送到这里来是一个配置错误（notify_url 配错了地址），而该说的话是「这条

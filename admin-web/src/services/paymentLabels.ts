@@ -13,7 +13,7 @@
  * 中文名由服务端照目录补在 methodName / channelName 上，不需要在这里再翻一次码。
  *
  * **出资类型那一列不在这里了**：payment_fundings.line_type / payment_transactions.line_type
- * 从前与订单域共用一套「出资渠道」词表，那套词表已经整个退场（migrations/payment/012），
+ * 从前与订单域共用一套「出资渠道」词表，那套词表已经整个退场，
  * 四列今天存的就是支付方式的 code，文案在 services/paymentMethodLabels.ts——与订单页同一份。
  *
  * 表在这里，翻码的那两个函数在 services/labels.ts。

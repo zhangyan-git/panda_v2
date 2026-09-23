@@ -126,7 +126,7 @@ type Repository interface {
 	// 这四个只服务**一条链**：事件入口建单失败时落一行（ParkChargeSettlement），worker 定时取
 	// 一批重试（ClaimDueChargeSettlements），落成了就删（DeleteChargeSettlement）、没成就推后
 	// （RescheduleChargeSettlement）。它们不是给别的读写路径用的——这张表是一张工作队列，不是
-	// 业务数据（见 migrations/membership/009 的文件头）。
+	// 业务数据（见 migrations/membership 的文件头）。
 	ParkChargeSettlement(ctx context.Context, p repository.ChargeSettleParams) error
 	ClaimDueChargeSettlements(ctx context.Context, limit int) ([]*model.ChargeSettlement, error)
 	DeleteChargeSettlement(ctx context.Context, providerTransactionID string) error
@@ -454,8 +454,9 @@ var (
 	ErrCampaignCouponIncomplete = errors.New("campaign coupon template and count must be provided together")
 	// ErrCampaignCouponInvalid：券模板不是一个合法的 id，或券张数不在 1 到 100 之间。
 	//
-	// **本服务查不出那张模板存不存在**——它在券库，跨库没有外键也没有同步查询（见 007 那段
-	// 说明）。这里能管的只有「形状」：形状不对要在保存那一刻就挡住，配错模板则要等发券时由
+	// **本服务查不出那张模板存不存在**——它在券库，跨库没有外键也没有同步查询
+	// （见 migrations/membership 里 membership_campaigns 券那两列的说明）。这里能管的只有
+	// 「形状」：形状不对要在保存那一刻就挡住，配错模板则要等发券时由
 	// 券服务记日志跳过。
 	ErrCampaignCouponInvalid = errors.New("campaign coupon template or count is invalid")
 )
@@ -613,7 +614,7 @@ type OrderGateway interface {
 // # 为什么由本服务代转，而不让后台直连支付域
 //
 // 因为那一页的权限码是 membership:read：它读的是「谁签了连续包月、这一期扣了没」，而支付域的
-// 后台读接口要求 payment:read（见 migrations/identity/033 的说明）。让前端直连就等于把一次
+// 后台读接口要求 payment:read（见 migrations/identity 的说明）。让前端直连就等于把一次
 // 「看订阅」变成一次「看支付数据」，运营得同时拿到两个权限。所以这两块经本服务出去。
 //
 // # 两个方法都是纯读，而且都**不允许**把整页打成 500

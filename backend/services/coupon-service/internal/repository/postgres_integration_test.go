@@ -60,7 +60,7 @@ func couponFixture(t *testing.T, pool *pgxpool.Pool, status string) (couponID, t
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		// coupon_state_transitions 从 migrations/coupon/006 起带了只增触发器，直接
+		// coupon_state_transitions 带了只增触发器，直接
 		// DELETE 会被那条 BEFORE UPDATE OR DELETE 当场拒掉。摘下来删完再装回去，
 		// 与 membership-service 测试里对 membership_changes 的做法同一个意图：
 		// 删的只是这个用例自己刚写进去的 fixture，不是把账本防线拆了。

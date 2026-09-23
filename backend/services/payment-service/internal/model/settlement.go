@@ -1,8 +1,8 @@
 package model
 
-// 分账的受控词表，与 migrations/payment/008_settlement_core.sql 的 CHECK 逐字一致。
+// 分账的受控词表，与 settlement_rules / settlement_rule_items / settlement_accounts 上的 CHECK 逐字一致。
 //
-// 三组词表放在一个文件里，因为它们是同一张表族的同一批取值：改词表 = 改 008 的 CHECK + 改这里。
+// 三组词表放在一个文件里，因为它们是同一张表族的同一批取值：改词表 = 改那三张表的 CHECK + 改这里。
 // 散在各处的话，「加了第五个 biz_type 却只改了一半」是必然会发生的事。
 
 // 分账业务分类（settlement_rules.biz_type），也是发起支付时随请求过来的那个 biz_type。
@@ -34,7 +34,7 @@ func IsSettlementBizType(value string) bool {
 // 规则范围档位（settlement_rules.scope_type）。
 //
 // 声明顺序就是命中顺序：从具体到宽泛，先命中先返回（见 repository.FindSettlementRule）。
-// 同一个 biz_type 下同档位只能有一条启用中的规则（008 的部分唯一索引），所以这个顺序是确定的。
+// 同一个 biz_type 下同档位只能有一条启用中的规则（settlement_rules_scope_uniq），所以这个顺序是确定的。
 const (
 	SettlementScopeDevice  = "device"
 	SettlementScopeStore   = "store"
@@ -59,7 +59,7 @@ func IsSettlementScopeType(value string) bool {
 }
 
 // 规则项的收款主体类型（settlement_rule_items.party_type 与 settlement_accounts.party_type
-// 共用一套词表，008 的 CHECK 要求两边逐字一致）。
+// 共用一套词表，两张表的 CHECK 是同一套取值）。
 const (
 	SettlementPartyPartner     = "partner"
 	SettlementPartyCityCenter  = "city_center"
@@ -148,7 +148,7 @@ const (
 	// SettlementCalcFixed 拿固定额（fixed_amount，单位分）。
 	SettlementCalcFixed = "fixed"
 	// SettlementCalcRemainder 平台自留，拿的是**差额**（基数 − 其他接收方）。只有平台项能用，
-	// 008 的 CHECK 把这一条钉死了：别的项用 remainder 等于让某个门店去当那个「剩下的」，
+	// settlement_rule_items 的 CHECK 把这一条钉死了：别的项用 remainder 等于让某个门店去当那个「剩下的」，
 	// 既算不清也说不通。
 	SettlementCalcRemainder = "remainder"
 )
@@ -164,7 +164,7 @@ const (
 // 任务与接收方的状态。这里只列本服务**写**的那三个。
 //
 // 没写的：submitted（微信那种「先发起、等回执」的四步走法才需要，我们走的是一次下发）、
-// failed 与 returned（渠道明确拒绝、以及退回，两条路都还没有实现）。008 已经把落点摆好，
+// failed 与 returned（渠道明确拒绝、以及退回，两条路都还没有实现）。settlement_tasks.status 已经把落点摆好，
 // 实现时按它的状态说明写，别在这里补一个没人写的常量。
 const (
 	// SettlementStatusPending 已建任务、还没向渠道发起。**发起支付时就写它**：任务提前建，
@@ -181,7 +181,7 @@ const (
 	SettlementStatusCancelled = "cancelled"
 )
 
-// IsSettlementTaskStatus 判断一个值是不是 008 给 settlement_tasks.status 那一列写的六个取值
+// IsSettlementTaskStatus 判断一个值是不是 settlement_tasks.status 那一列上的六个取值
 // 之一。
 //
 // **它认的是列的全集，不是本服务写的那三个**（上面那组常量）：后台的筛选框要能筛出库里真有的

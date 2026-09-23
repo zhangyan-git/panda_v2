@@ -87,7 +87,7 @@ func newLotteryFixture(t *testing.T, target, prizeQuantity int32) *lotteryFixtur
 	ctx := testContext(t)
 
 	created, err := repo.Activate(ctx, ActivateParams{
-		// 只给门店 id：名字不落库（见 migrations/lottery/003），显示时由 service 层向商户域
+		// 只给门店 id：名字不落库（见 migrations/lottery），显示时由 service 层向商户域
 		// 现解。所以这一层的夹具拿到的门店是一个商户域里并不存在的随机 UUID——这对仓储没
 		// 影响（它只写 id），但**它正是那个「幽灵门店」的形状**，存在性校验在服务层。
 		LocationID: uuid.NewString(),

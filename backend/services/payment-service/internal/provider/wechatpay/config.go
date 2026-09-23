@@ -1,8 +1,9 @@
 // Package wechatpay 是「微信支付 APIv2 + XML 报文 + MD5 签名」这一族的适配器。
 //
 // 它今天只服务一件事：**委托代扣**（连续包月的签约、查约、解约、代扣）。这条链路在
-// payment-service 的存在理由写在 migrations/payment/002 的文件头里：「微信委托代扣的签约、
-// 扣款、解约归 payment-service；会员怎么续、什么时候该扣，由 membership-service 决定并传进来」。
+// payment-service 的存在理由写在 migrations/payment 的「委托代扣与渠道对账」一节里：
+// 「微信委托代扣的签约、扣款、解约归 payment-service；渠道对账也归它。会员怎么续、
+// 什么时候该扣，由 membership-service 决定并传进来」。
 //
 // # 它为什么与 wechatv3 不是同一族
 //

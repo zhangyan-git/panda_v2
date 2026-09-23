@@ -58,7 +58,7 @@ export const toFormValues = (template: CouponTemplate): TemplateFormValues => ({
   //
   // 类型上要收窄一次：CouponTemplate 这一侧是 string（它是接口原样的形状），
   // 而提交侧的 TemplateInput 是枚举字面量。收窄不是「校验」，是照抄库里的约束——
-  // 001 的 coupon_templates 上那两条 CHECK 已经把取值限死在这几个里，库里拿不到的
+  // coupon_templates 上那两条 CHECK 已经把取值限死在这几个里，库里拿不到的
   // 值在这里也不该被造出来。真要做校验，位置在后端 validateTemplate。
   claimPeriodUnit: (template.claimPeriodUnit as TemplateFormValues['claimPeriodUnit']) ?? undefined,
   claimPeriodQuantity: template.claimPeriodQuantity ?? undefined,
@@ -118,7 +118,7 @@ export const toPayload = (values: TemplateFormValues): TemplateInput => {
   }
 
   // 同一件事的第二组，而这一组连「静默吃掉」都不会：库里那条 CHECK 要求
-  // periodic 时两个周期字段都非空、其余两档两个都为空（001 的 coupon_templates）。
+  // periodic 时两个周期字段都非空、其余两档两个都为空（coupon_templates 上那条 CHECK）。
   // 所以从 periodic 切到「仅一次」之后若还把旧值发出去，得到的是一个 500（约束
   // 失败），而不是一句「填错了」。反过来，选了 periodic 却没发这两个字段同样是
   // 500 —— 表单那边把它们标成必填正是为了不让人走到这里。

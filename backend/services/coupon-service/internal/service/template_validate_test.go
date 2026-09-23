@@ -25,7 +25,7 @@ func template(overrides func(t *model.CouponTemplate)) *model.CouponTemplate {
 		Name:          "满减券",
 		TotalQuantity: 10,
 		ValidityMode:  "relative",
-		// relative 档必须带正的天数（001 那条 CHECK）。这个夹具原先没给，**它是插不进库的**——
+		// relative 档必须带正的天数（coupon_templates 上那条 CHECK）。这个夹具原先没给，**它是插不进库的**——
 		// 只因为校验里当时没有这一条才一直是绿的。
 		ValidDays:      intPtr(30),
 		ClaimLimitMode: "once_ever",
@@ -100,7 +100,8 @@ func TestValidateTemplateClaimPeriodIsPairedWithMode(t *testing.T) {
 	}
 }
 
-// 有效期窗口那一组。这三件事在库里是一条跨列 CHECK（001_coupon_core.sql:69-70），
+// 有效期窗口那一组。这三件事在库里是 coupon_templates 上的一条跨列 CHECK
+// （见 migrations/coupon 建表语句末尾那条 validity_mode 相关的 CHECK），
 // 校验里没有的话，接口拿到的是 500（一句 Postgres 的行话）而不是 400。
 func TestValidateTemplateValidityWindowMatchesMode(t *testing.T) {
 	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)

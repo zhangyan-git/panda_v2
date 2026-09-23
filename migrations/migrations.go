@@ -1,7 +1,16 @@
 // Package migrations embeds the SQL migration sets this repository ships.
 //
 // The SQL lives outside every Go module tree, so it is embedded here and handed
-// to platform/database/migrate as an fs.FS. Twelve sets exist:
+// to platform/database/migrate as an fs.FS. Eleven sets exist:
+//
+// Each set holds its whole DDL in one file, `<set>/001_<set>.sql`, so every table
+// is defined exactly once, in the file that describes the shape it has today.
+// identity, coupon and membership keep their seed data in a second file,
+// `002_<set>_seed.sql`: INSERT has a different lifecycle from CREATE TABLE
+// (idempotent re-runs, ON CONFLICT), and mixing the two makes both harder to
+// read. The runner keys a version by its bare file name, not by a checksum, so
+// editing a file a database has already recorded changes nothing there — a
+// squashed set reaches an existing database only by being applied to a new one.
 //
 //   - Legacy: the pre-split single-database chain (001…009). It is kept
 //     byte-for-byte as it was applied, so a database that predates the split can

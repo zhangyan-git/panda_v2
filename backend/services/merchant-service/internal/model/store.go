@@ -13,12 +13,13 @@ type Store struct {
 	Province   string   `db:"province"`
 	City       string   `db:"city"`
 	District   string   `db:"district"`
-	// 区划编码与名称并存：名称给人看，编码用来回填、校验与迁移（见 003 迁移的注释）。
+	// 区划编码与名称并存：名称给人看，编码用来回填、校验与迁移（见 stores.province_code
+	// 那三列的列注释）。
 	// 历史行为空，回填不上的也为空。
 	ProvinceCode string `db:"province_code"`
 	CityCode     string `db:"city_code"`
 	DistrictCode string `db:"district_code"`
-	// 订货系统 xlsx「客户」页的三列（merchant/004）。客户编码与 DMS 编码是跟供应商、
+	// 订货系统 xlsx「客户」页的三列（migrations/merchant）。客户编码与 DMS 编码是跟供应商、
 	// DMS 对账的业务键，各自带一条「空串不参与」的部分唯一索引；客户类型取值未定型，
 	// 刻意不做 CHECK。三者都允许为空串——历史门店还没有编码。
 	CustomerCode  string     `db:"customer_code"`

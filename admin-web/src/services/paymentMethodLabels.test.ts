@@ -5,7 +5,7 @@ import { PAYMENT_METHOD, paymentMethodLabel } from './paymentMethodLabels';
  * 这一份盯的是**支付方式那一列的值域**。
  *
  * 与其它 labels 的测试不同，它不是「后端加了个枚举码这里要红」：支付方式的值不在任何一张
- * CHECK 约束里（词表已经退场，见 migrations/payment/012），合法取值只有 payment-service
+ * CHECK 约束里（词表已经退场，见 migrations/payment），合法取值只有 payment-service
  * catalog 里那几个常量。所以这里钉的是**这份表的键集**：
  *
  *   - 多出一个键 = 有人把已经退场的那套「出资渠道」字面量加了回来（wechat / unionpay /
@@ -35,8 +35,8 @@ describe('支付方式文案表', () => {
   });
 
   it('退场的那套出资渠道字面量一个都不在里面', () => {
-    // 这几条从前在这张表里，value 就是老词表。回填把库里的值换成了 code（order/008 与
-    // payment/012），表里再留着它们只会让人以为那是今天的取值。
+    // 这几条从前在这张表里，value 就是老词表。回填把库里的值换成了 code，
+    // 表里再留着它们只会让人以为那是今天的取值。
     for (const gone of ['wechat', 'unionpay', 'wallet', 'other', 'balance', 'cash', 'wechat_pay']) {
       expect(PAYMENT_METHOD[gone], gone).toBeUndefined();
     }

@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-// 会员状态。与 migrations/membership/001 里 memberships.status 的 CHECK 逐字一致。
+// 会员状态。与 migrations/membership 里 memberships.status 的 CHECK 逐字一致。
 //
 // 判「算不算会员价」只看 active：frozen 是权益暂停（争议/风控，到期时间不动，解冻后继续），
 // 停着的时候不该享价。expired 与 revoked 的差别只在对用户怎么说：前者是自然走完，

@@ -6,7 +6,7 @@ import "time"
 // 一致：空串 = 这一条不筛。
 //
 // name 是模糊匹配（后台按名字找模板是第一位的用法）；status / auditStatus 是精确匹配，
-// 取值就是 001 迁移里 coupon_templates 那两条 CHECK 的枚举。这里不校验枚举合法性，
+// 取值就是 coupon_templates 上 status 与 audit_status 两条 CHECK 的枚举。这里不校验枚举合法性，
 // 与 ListBatches 对 status/source 的处理保持一致：传了库里没有的值只会查出 0 行。
 type CouponTemplateQuery struct {
 	Page        int

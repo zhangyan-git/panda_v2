@@ -50,7 +50,7 @@ type Repository interface {
 	// pending，账户出资不会。
 	SettleAccountPayment(ctx context.Context, p repository.SettleAccountPaymentParams) (*model.Payment, error)
 	// RecordAccountDeduction 把「账户域已经扣了这笔豆」登记到支付单上。它**先于结算**，
-	// 而且刻意不跟结算共用一个事务：要覆盖的正是结算失败的那个窗口（见 005 迁移）。
+	// 而且刻意不跟结算共用一个事务：要覆盖的正是结算失败的那个窗口（见 payments.account_entry_id 的列注释）。
 	RecordAccountDeduction(ctx context.Context, paymentID, accountEntryID string, fundedAt time.Time) error
 	RecordProviderCall(ctx context.Context, p repository.ProviderCallParams) error
 

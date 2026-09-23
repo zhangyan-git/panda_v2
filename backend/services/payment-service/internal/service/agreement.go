@@ -93,7 +93,7 @@ type CreateAgreementResult struct {
 //
 // agreementNo 由这里生成，**并且就是交给渠道的 contract_code**。老系统有两个号（自己那个
 // ObjectID 与 contract_code），而扣款回传的 out_trade_no 与回调查询用的号又各说各话，于是
-// 续费回调永远查不到订阅、渠道无限重推（见 002 迁移里 payment_agreements 的注释）。这里
+// 续费回调永远查不到订阅、渠道无限重推。这里
 // 只留一个：渠道推回来的通知按它认这份协议，我们查约、解约、扣款也按它。
 //
 // # 三段里只有一段

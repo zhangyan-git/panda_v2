@@ -20,7 +20,7 @@ import {
  * 逐一对着活库的 `pg_get_constraintdef` 核过（2026-09），所以**迁移里加了码而这里没跟，
  * 这一份会红**。
  *
- * 支付方式与渠道那三张表已经删了（009 迁移），方式不再是枚举而是一张代码里的常量表
+ * 支付方式与渠道不进库（payment 库里没有那三张表），方式不再是枚举而是一张代码里的常量表
  * （provider/catalog.go），所以这里没有它们的位置。
  */
 describe('支付枚举文案表', () => {
@@ -51,7 +51,7 @@ describe('支付枚举文案表', () => {
   });
 
   // 「出资类型」那张 FUNDING_TYPE 不在这里了：四列今天存的是支付方式的 code，那套词表
-  // 已经整个退场（payment/012），文案回到 paymentMethodLabels 那一份。
+  // 已经整个退场，文案回到 paymentMethodLabels 那一份。
   it('覆盖 payment_fundings.status 的五个取值', () => {
     expect(Object.keys(FUNDING_STATUS).sort()).toEqual([
       'failed',

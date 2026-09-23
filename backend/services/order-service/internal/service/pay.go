@@ -137,7 +137,7 @@ func (s *OrderService) InitiatePayment(ctx context.Context, in InitiatePaymentIn
 
 // settlementBizType 由订单行推出这笔支付的分账业务分类（settlement_rules.biz_type 的词表）。
 //
-// 一笔支付只有一条分账任务、整单一次分完（见 008 的 settlement_tasks），而一张订单可以有
+// 一笔支付只有一条分账任务、整单一次分完（见 payment 库的 settlement_tasks），而一张订单可以有
 // 多种行（咖啡 + 会员 + 加购），所以这里必须收口成一个值。优先序是**饮品 > 会员 > 加购**：
 // 有饮品行的单是咖啡单，哪怕它顺手带了一个杯套或者一年会员——门店分成最常挂的就是饮品。
 //

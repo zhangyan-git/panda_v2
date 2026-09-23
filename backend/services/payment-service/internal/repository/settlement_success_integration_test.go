@@ -29,8 +29,8 @@ import (
 // 归平台」，那种任务照样要在这个回调里置成功，所以下面第二种夹具（没有接收方）不是简化，
 // 是另一半现实。
 //
-// 账户的渠道是一个**名字**（`provider`），不是指向某张渠道表的外键：渠道与支付方式在 009 之后
-// 是代码里的目录（internal/catalog），库里没有可 JOIN 的那张表了。
+// 账户的渠道是一个**名字**（`provider`），不是指向某张渠道表的外键：渠道与支付方式不在库里，
+// 是代码里的目录（internal/catalog），没有可 JOIN 的那张表。
 
 // settlementCallbackFixture 是一张「等着回调」的支付单，以及它那条分账任务。
 type settlementCallbackFixture struct {
@@ -196,7 +196,7 @@ func TestPostgresSettlePaymentSucceedsSettlement(t *testing.T) {
 				t.Fatalf("provider_transaction_id = %q, want %q", gotTransactionID, providerTransactionID)
 			}
 			if finishedAt == nil {
-				// 银联商务一次下发没有「完结」那一步，008 的列注释要求 succeeded 时一并置上。
+				// 银联商务一次下发没有「完结」那一步，settlement_tasks.finished_at 的列注释要求 succeeded 时一并置上。
 				t.Fatal("finished_at is null on a succeeded settlement task")
 			}
 			if !finishedAt.Equal(paidAt) {

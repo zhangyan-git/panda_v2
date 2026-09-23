@@ -20,7 +20,7 @@ import type { PageQuery, PageResult } from './pagination';
 
 /**
  * 流水的账变类型。取值来自 account-service 的 model 常量（BeanEntryType*），与
- * migrations/account/005 的 CHECK 一致。
+ * migrations/account 的 CHECK 一致。
  *
  * 加新码而这里没登记时，界面退回显示原始码（同 order.ts / fortuneCard.ts 的规矩）。
  */

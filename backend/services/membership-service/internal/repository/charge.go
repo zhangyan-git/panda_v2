@@ -33,7 +33,8 @@ type ChargeSettleParams struct {
 	// ProviderTransactionID 是渠道侧的流水号。成功那条它非空，并且就是流水的幂等键。
 	//
 	// 失败那条它可能为空（渠道拒一笔时不给号），而**那里不能拿它当幂等键**：一次失败的号可能
-	// 是空的，硬拿空串去撞唯一索引等于没有索引（004 那条索引的 WHERE 也把空串排除在外）。
+	// 是空的，硬拿空串去撞唯一索引等于没有索引（membership_changes_request_unique 的 WHERE
+	// 也把空串排除在外）。
 	ProviderTransactionID string
 	FailureCode           string
 	FailureMessage        string

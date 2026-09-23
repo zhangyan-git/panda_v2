@@ -335,7 +335,7 @@ type MarkRefundSucceededParams struct {
 	// 是同一拍；本服务这一侧只把这一行标成成功，不发冲正请求（见 service.CreateRefund）。
 	//
 	// 值域是**支付方式的 code**，与 payment_refund_fundings.line_type 同一套——那套「出资
-	// 渠道」词表已经退场（见 payment/012），别按 wechat/unionpay/other 那些老值来传。
+	// 渠道」词表已经退场，别按 wechat/unionpay/other 那些老值来传。
 	//
 	// 传进来的每一个值都必须真的在 payment_refund_fundings 里出现过——这句话由下面那条
 	// UPDATE 的 line_type = ANY(...) 保证：写错一个名字的后果是那一行留在 pending，

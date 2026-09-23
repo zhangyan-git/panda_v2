@@ -73,8 +73,8 @@ const formatYuan = (fen?: number) => fenToYuan(fen).toFixed(2);
 const remainingOf = (template: CouponTemplate) =>
   template.totalQuantity - template.issuedQuantity - template.reservedQuantity;
 
-// 有效期按模式拼一句人话。两个模式在库里有 CHECK 保证字段互斥（见 001 的
-// coupon_templates 约束），所以 relative 一定有 validDays、fixed 一定有起止。
+// 有效期按模式拼一句人话。两个模式在库里有 CHECK 保证字段互斥（见
+// coupon_templates 上的两条 CHECK），所以 relative 一定有 validDays、fixed 一定有起止。
 // 用 formatDateTime 而不是 valueType: 'dateTime'：这一格是拼出来的字符串，不是
 // 一个时间字段，ProTable 的 valueType 只对整格是时间的情况生效。
 const validityText = (template: CouponTemplate) =>
@@ -83,7 +83,7 @@ const validityText = (template: CouponTemplate) =>
     : `${formatDateTime(template.validFrom)} 至 ${formatDateTime(template.validTo)}`;
 
 // 两个金额字段的 0 都有专门含义，铺成「0.00」等于把含义抹掉：最低消费 0 是
-// 无门槛，售价 0 是免费领取（001 的列注释就是这么写的）。
+// 无门槛，售价 0 是免费领取（coupon_templates 的列注释就是这么写的）。
 const thresholdText = (fen: number) => (fen === 0 ? '无门槛' : formatYuan(fen));
 const priceText = (fen: number) => (fen === 0 ? '免费领取' : formatYuan(fen));
 
@@ -827,7 +827,7 @@ export default function CouponTemplatesPage() {
           rules={[{ required: true }]}
         />
         {/* 周期领取的两个字段与上面这一栏是一对：库里那条 CHECK 要求 periodic 时
-            两个都非空、其余两档两个都为空（001 的 coupon_templates）。所以「按周期」
+            两个都非空、其余两档两个都为空（coupon_templates 上那条 CHECK）。所以「按周期」
             以前是**选不了的**——填不上周期，保存必然撞约束报 500；切走之后旧值又还
             留在 store 里，同样撞约束。必填标记与 templateForm 里那两行 delete 是同
             一件事的两半，缺一半就复现。 */}

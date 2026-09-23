@@ -4,9 +4,8 @@ import "time"
 
 // MessageOutbox 对应 message_outbox 表，抽奖服务待发布消息事件。
 //
-// 与 identity/003、merchant/002、coupon/001、coffee_machine/001、order/001、payment/001、
-// account/001 里的同名表逐列一致，各库自带一份，跨库不共享表。八份拷贝由
-// migrations 包的 TestMessageTablesStayInSyncAcrossSets 按列序比对，不能加列不能换序。
+// 与其它九个库里的同名表逐列一致，各库自带一份，跨库不共享表。十份拷贝由 migrations
+// 包的 TestMessageTablesStayInSyncAcrossSets 按列序比对，不能加列不能换序。
 //
 // 对抽奖域它不是可选件：lottery.round.drawn 与开奖记录必须在同一个事务里追加，
 // relay 才不可能漏投一条已经生效的开奖；后台的人工开奖与期次作废还要在同一个事务里追加

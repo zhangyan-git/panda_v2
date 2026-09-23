@@ -7,7 +7,7 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/lottery-service/internal/repository"
 )
 
-// 门店名不落库（见 migrations/lottery/003），所以每一次要显示名字的读都要向商户域解一次。
+// 门店名不落库（见 migrations/lottery），所以每一次要显示名字的读都要向商户域解一次。
 // 这一层管的正是那一次解析，以及开通前的那一次存在性检查——两件事都只在这一个文件里，
 // 因为它们的取舍是相反的（见下）。
 

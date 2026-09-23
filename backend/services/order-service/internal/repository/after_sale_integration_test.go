@@ -113,9 +113,9 @@ func afterSaleOrderFixture(t *testing.T, pool *pgxpool.Pool, status string, fort
 	// 两行各 1900：按行退的金额就是这一行的 payable_amount。
 	//
 	// 两条约束决定了这两行长什么样，都不是随便挑的：
-	//   - 一单一杯：`order_lines_one_drink_per_order`（001:415）只允许一条 drink 行，
+	//   - 一单一杯：`order_lines_one_drink_per_order` 只允许一条 drink 行，
 	//     所以第二行只能换个类型，这里用加购品——「同一单的另一个可退对象」就是这个意思。
-	//   - 加购行必须来自活动：`order_lines_addon_needs_campaign`（001:224）要求
+	//   - 加购行必须来自活动：`order_lines_addon_needs_campaign` 要求
 	//     campaign_id 非空。活动在别的服务里，这一列没有外键，给个 uuid 就成立。
 	lines := []struct {
 		id         string

@@ -7,12 +7,12 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/partner-service/internal/controller"
 )
 
-// 权限码，与 migrations/identity/028_partner_admin.sql 逐字一致。
+// 权限码，与 migrations/identity 逐字一致。
 //
 // 两枚，不是一枚：read 看合作方、密钥（只有掩码）与调用日志；manage 动的是**别人调用我们的
 // 凭据**——签发一把新密钥、改一条 IP 白名单、停用一把钥匙，每一件都能立刻改变谁能打进来。
-// 这种码的破坏半径比「看一张表」大得多，所以分开，与 023 的 manage / receipt、026 的
-// payment:read / payment:manage 同一条思路。
+// 这种码的破坏半径比「看一张表」大得多，所以分开，与支付域 payment:read / payment:manage
+// 同一条思路。
 //
 // manage **不等于能看到明文密钥**：明文只在签发那一次的响应里出现，之后读接口只回掩码
 // （见 controller 的 issueKey 与 dto.APIKeyItem）。manage 能做的最后一件事是**再签发一把**，

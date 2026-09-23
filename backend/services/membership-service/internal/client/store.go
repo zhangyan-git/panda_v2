@@ -20,7 +20,7 @@ import (
 // user-service 的 MerchantGRPCClient 走的都是同一条路。
 //
 // 与 lottery-service 的同名类型逐字同形（那边是本仓库里最近的先例）。会员库同样只存门店 id
-// （见 migrations/membership/004）：名字是商户域的事实，本服务不留第二份。于是「校验」与
+// （见 migrations/membership）：名字是商户域的事实，本服务不留第二份。于是「校验」与
 // 「显示」这两件事都落在这个客户端上——一个是开通前问一次存在性，一个是每次读一页名字。
 type StoreClient struct {
 	merchants merchantv1.MerchantServiceClient

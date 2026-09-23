@@ -461,7 +461,8 @@ func (s *OrderService) applyDrinkPricing(ctx context.Context, lines []*repositor
 			unitPrice = drink.VipPrice
 		}
 
-		// 单价差 × 数量：price_discount_amount 是**行级**金额，不是单价差。001 的列注释
+		// 单价差 × 数量：price_discount_amount 是**行级**金额，不是单价差。
+		// migrations/order 里 order_lines.price_discount_amount 的列注释
 		// 写得很直白——「这个会员价一共省了多少」= sum(price_discount_amount)，而两格
 		// 单价的差只说明「一杯省多少」，另一格 unit_price 明确不参与任何恒等式。
 		//
@@ -609,7 +610,7 @@ func mapWriteError(err error) error {
 
 // userMatches 判断这一单是不是这个调用方的。
 //
-// nil（设备单没有用户，见 order/005）**不等于任何调用方**，包括空串：它意味着这张单谁都
+// nil（设备单没有用户，见 migrations/order）**不等于任何调用方**，包括空串：它意味着这张单谁都
 // 不属于，不是「谁都能看/能付/能取消」。写成 `order.UserID == nil || *order.UserID != caller`
 // 是同一件事，但三处调用点各写一遍迟早会有一处漏掉 nil 判断——漏掉的那处就是一次越权
 // （nil 与空串调用方相等，后台那条路正是空串）。

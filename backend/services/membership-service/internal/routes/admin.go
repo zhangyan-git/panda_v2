@@ -7,7 +7,7 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/membership-service/internal/controller"
 )
 
-// 权限码。三个分开，与 migrations/identity/025_membership_admin.sql 逐字一致。
+// 权限码。三个分开，与 migrations/identity 逐字一致。
 //
 //   - read    —— 看套餐、看会员列表与详情、看变更流水。这一档迟早要发给客服：用户问「我是不是
 //     会员、什么时候到期、为什么被冻了」，答这三句只需要它。它一次账都动不了。
@@ -19,7 +19,7 @@ import (
 //     往后挪一年，等于送他一年会员价，没有任何订单、支付、流水跟着发生。
 //
 // 把 adjust 并进 manage 是最容易犯的错：那等于让任何一个能改套餐文案的人也能给人加一年会员。
-// 025 的注释里把这条写死了。
+// migrations/identity 里 membership 三枚权限码的注释把这条写死了。
 const (
 	permRead   = "membership:read"
 	permManage = "membership:manage"
@@ -108,7 +108,7 @@ func RegisterAdmin(
 	r.HandleFunc("/v1/admin/memberships", routeFor(map[string]methodRoute{
 		http.MethodGet: {permRead, handler.Memberships},
 		// POST 到集合上是**开通**（客服补偿、线下活动），用的也是 adjust：那一枚的语义就是
-		// 「直接白送钱」，而开一次会员正是这件事，所以**不新增权限码**（migrations/identity/025
+		// 「直接白送钱」，而开一次会员正是这件事，所以**不新增权限码**（migrations/identity
 		// 一个字不改）。它不是 manage——manage 管的是「接下来卖什么」，改一个在售套餐动不了
 		// 任何人的会员。
 		http.MethodPost: {permAdjust, handler.Memberships},

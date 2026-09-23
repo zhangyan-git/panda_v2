@@ -15,7 +15,7 @@ import {
  * 「有没有文案」。前者能在后端加码时失败，后者只在漏写文案时失败——而多出来的那个码
  * 才是常见的。
  *
- * 这些集合来自 membership-service 的 model 常量，也就是 migrations/membership/001_membership_core.sql
+ * 这些集合来自 membership-service 的 model 常量，也就是 migrations/membership
  * 的 CHECK 约束。逐一对着那份迁移核过，所以**迁移里加了码而这里没跟，这一份会红**。
  */
 describe('会员枚举文案表', () => {
@@ -44,7 +44,7 @@ describe('会员枚举文案表', () => {
     // 其中几个今天写不出来（签约、退款、到期扫描那几条路都还没实现），照登是因为迁移里的
     // CHECK 已经把它们写全了——见 membershipLabels 里的说明。
     //
-    // charge_failed / suspend 是 008 从代扣链路补进来的：它们在**已经落地**的那条路上，
+    // charge_failed / suspend 来自代扣链路：它们在**已经落地**的那条路上，
     // 后端集成用例（charge_integration_test.go）直接断言这两个码会被写出来。这一份漏登过
     // 一次，症状是时间线与筛选下拉里原样显示英文码。
     expect(Object.keys(CHANGE_TYPE).sort()).toEqual([

@@ -10,11 +10,11 @@ import { listStores } from '../../services/store';
  * # 为什么需要它
  *
  * 分账库里的这几个引用列（`settlement_rules.scope_ref`、`settlement_tasks` 的
- * merchant_ref / brand_ref / store_ref）**装的全是 uuid**：跨域 ID 不进外键（那是 008 的设计，
+ * merchant_ref / brand_ref / store_ref）**装的全是 uuid**：跨域 ID 不进外键（那是分账域的设计，
  * 也是全仓的做法）。但运营不认识 uuid —— 规则列表上摆几列 uuid，「这条规则管的是哪家店」就
  * 永远答不出来。
  *
- * 账户表上原先也有同名三列，**016 已整个删掉**（账户的主体归属由规则表达）。这里保留它们的
+ * 账户表上原先也有同名三列，**现在没有了**（账户的主体归属由规则表达）。这里保留它们的
  * 取数是因为规则与任务还在用。
  *
  * 后端**没有**帮我们解：分账任务上的三列是**建任务那一刻的快照**（这是对的，历史明细不该

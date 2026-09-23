@@ -300,10 +300,10 @@ type SettlePaymentParams struct {
 	// order_payment_lines.line_type。从前这是两个字段——订单表存 code、出资行存另一套
 	// 「出资渠道」词表，代价是加一种支付方式要同时在两套词表里找档位（支付宝在后者里没有档，
 	// 只能落 `other`，于是后台把一笔支付宝单显示成「其他」）。那套词表连同
-	// payments.funding_type 一列已经退场，出资行存的也是 code，见 payment/012 与 order/008。
+	// payments.funding_type 一列已经退场，出资行存的也是 code，见 migrations/payment 与 migrations/order。
 	//
-	// 所以往 order_payment_lines 插这个值时**不再有词表拦着**（003 那条 CHECK 已换成
-	// line_type <> ''），但它仍然是「用户点了什么」，不是「这一笔从哪个通道出」。
+	// 所以往 order_payment_lines 插这个值时**不再有词表拦着**（那条出资渠道词表的 CHECK 已
+	// 换成 line_type <> ''），但它仍然是「用户点了什么」，不是「这一笔从哪个通道出」。
 	PaymentMethod         string
 	Fundings              []FundingLine
 	ProviderTransactionID string
@@ -371,7 +371,7 @@ func (r *PostgresRepository) SettlePayment(ctx context.Context, p SettlePaymentP
 		//
 		// 补的是 PaymentMethod 本身。从前这里要另取一个字段（出资渠道词表），因为 line_type
 		// 有词表而 PaymentMethod 是 catalog 的 code，插进去会撞 CHECK；那条 CHECK 已经换成
-		// `line_type <> ''`（见 order/008），两者是同一个值了。
+		// `line_type <> ''`（见 migrations/order），两者是同一个值了。
 		//
 		// **空值不兜底**：从前这里是 `if method == "" { method = "other" }`。`other` 不再是
 		// 合法值，而更要紧的是——事件没带支付方式时凭空写一个，等于替用户编一句「这笔钱从哪
@@ -535,7 +535,7 @@ func nextPaymentLineNo(ctx context.Context, tx pgx.Tx, orderID string) (int, err
 // （微信失败改用咖啡豆），订单仍是 pending_payment 直到超时或用户取消。
 func settleFailed(ctx context.Context, tx pgx.Tx, order *lockedOrder, p SettlePaymentParams) error {
 	// 与上面补出资行那一处同一个值、同一个取舍：line_type 存的就是支付方式 code（那套出资
-	// 渠道词表已经退场，见 order/008），而且**空值不兜底**——编一个 line_type 出来等于替用户
+	// 渠道词表已经退场，见 migrations/order），而且**空值不兜底**——编一个 line_type 出来等于替用户
 	// 编一句「这笔钱从哪出」。所以拿不到方式时这一笔失败尝试不落行（见下面）。
 	method := strings.TrimSpace(p.PaymentMethod)
 	amount := p.Amount
@@ -580,7 +580,7 @@ func settleFailed(ctx context.Context, tx pgx.Tx, order *lockedOrder, p SettlePa
 type lockedOrder struct {
 	ID      string
 	OrderNo string
-	// UserID 可空：设备单没有用户（见 order/005 与 model.Order.UserID）。这里的每一处
+	// UserID 可空：设备单没有用户（见 migrations/order 与 model.Order.UserID）。这里的每一处
 	// 用到它的判定都必须把 nil 当成「谁都不是」——nil 与任何调用方的 id 都不相等。
 	UserID *string
 	// StoreID 可空，也是要随 order.paid 发出去的：它是会员域**归属门店**的来源
@@ -822,7 +822,7 @@ func (r *PostgresRepository) ExpireOverdue(ctx context.Context, limit int, trace
 	if err != nil {
 		return 0, err
 	}
-	// userID 是 *string：设备单没有用户（order/005）。今天扫不到它——设备单一建出来就是
+	// userID 是 *string：设备单没有用户（migrations/order）。今天扫不到它——设备单一建出来就是
 	// paid，永远不会出现在「到点未支付」这一批里——但列可空，扫进 string 会在某天后端补
 	// 一条数据时变成一个 500，而不是一条带 null 的事件。
 	type expired struct {

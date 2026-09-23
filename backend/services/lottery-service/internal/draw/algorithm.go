@@ -28,7 +28,7 @@ import (
 //
 // **这不是可证明公平**：seed 是派生值而不是先承诺后揭示的随机数，所以有本库读权限的
 // 运维在「最后一人参与到扫描之间」那个窗口里能预测结果。commit–reveal 不在本轮范围，
-// 这句话在 model/draw.go 与 migrations/lottery/001 里都写着，不要在任何地方暗示相反。
+// 这句话在 model/draw.go 与 migrations/lottery 里都写着，不要在任何地方暗示相反。
 
 // SeedInput 是派生种子需要的全部事实。
 //

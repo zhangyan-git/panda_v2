@@ -80,7 +80,7 @@ const genderText: Record<MiniappUser['gender'], string> = {
 
 /**
  * 咖啡豆账变的类型文案。取值来自 account-service 的 model 常量（BeanEntryType*），
- * 与 migrations/account/005 的 CHECK 一致。
+ * 与 migrations/account 的 CHECK 一致。
  *
  * 文案用「人工调整 / 订单扣减 / 退款冲正」而不是「收入 / 支出」：类型回答的是**为什么**变，
  * 方向已经由金额的符号回答了。写成收支会让人分不清一次冲正到底加还是减。

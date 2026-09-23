@@ -56,7 +56,7 @@ type RefundEventPayload struct {
 // 只会多一个能对不上的地方。
 type RefundFunding struct {
 	// LineType 是这笔出资的支付方式 code（如 `coffee_bean` / `ums_h5_alipay`），与
-	// payment_refund_fundings.line_type 同一套值——出资渠道词表已退场，见 payment/012。
+	// payment_refund_fundings.line_type 同一套值——出资渠道词表已退场。
 	LineType string `json:"lineType"`
 	Amount   int64  `json:"amount"`
 	// AccountEntryID 是 account-service 那笔反向账变的 ID。

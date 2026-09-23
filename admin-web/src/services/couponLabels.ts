@@ -1,7 +1,7 @@
 /**
  * 优惠券域那几个枚举码的中文文案。
  *
- * 取值来自 migrations/coupon/001_coupon_core.sql 里的 CHECK 约束（audit_status、status、
+ * 取值来自 migrations/coupon 里的 CHECK 约束（audit_status、status、
  * claim_type、redemption_type），不是接口给的——接口回的就是库里那些英文码。所以
  * **改枚举必须同时改迁移和这里**，加了新码而这里没登记，界面上就会退回显示原始码。
  *

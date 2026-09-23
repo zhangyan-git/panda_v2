@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// outboxDDL 是 message_outbox 的最小表结构，抄自 migrations/identity/003。
+// outboxDDL 是 message_outbox 的最小表结构，抄自 migrations/identity。
 //
 // 测试自己建表：仓库里没有任何一条测试会替它跑迁移，CI 给那块库是空的。抄一份
 // 而不是引 migrations 模块（那是另一个 go module）的代价是可能漂移，但漂移不会

@@ -22,7 +22,7 @@ import {
  * 「有没有文案」。前者能在后端加码时失败，后者只在漏写文案时失败——而多出来的那个码才是常见的。
  *
  * 这些集合来自 payment-service 的 internal/model/settlement.go，也就是
- * migrations/payment/008_settlement_core.sql 的 CHECK 约束。逐一对着那份迁移核过，所以
+ * migrations/payment 的 CHECK 约束。逐一对着那份迁移核过，所以
  * **迁移里加了码而这里没跟，这一份会红**。
  */
 describe('分账枚举文案表', () => {
@@ -147,7 +147,7 @@ describe('今天命中不了的范围档位', () => {
 /**
  * 范围引用的必填判据。
  *
- * 008 的 CHECK 是**充要条件**（`(scope_type='global') = (scope_ref='')`），两个方向都要管：
+ * `settlement_rules` 上那条 CHECK 是**充要条件**（`(scope_type='global') = (scope_ref='')`），两个方向都要管：
  * 选了全局却带着一个门店 id、或者选了门店却没给 id，两条都是 CHECK 违规，用户看到的会是一句
  * 没有线索的兜底。所以这个判据要被钉住。
  */
@@ -181,7 +181,7 @@ describe('比例合计', () => {
   const fixed = (ratioPercent: number) => ({ calcType: 'fixed', ratioPercent });
 
   it('只有按比例的项参与合计', () => {
-    // 固定额项与平台自留项的比例是 0（008 的 CHECK 钉着），它们本来就不该出现在这个和里。
+    // 固定额项与平台自留项的比例是 0（`settlement_rule_items` 上那条 CHECK 钉着），它们本来就不该出现在这个和里。
     expect(percentSumHundredths([percent(45), fixed(100), { calcType: 'remainder' }])).toBe(4500);
   });
 

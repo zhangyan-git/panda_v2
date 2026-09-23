@@ -18,7 +18,7 @@ import (
 //
 // # 它们守的是什么
 //
-// 008 把能钉在表上的约束都钉住了，这一批用例守的是**钉不住的那些**——也就是配错了不报错、
+// 能钉在表上的约束都钉住了，这一批用例守的是**钉不住的那些**——也就是配错了不报错、
 // 只是钱分错地方的那些：
 //
 //   - 比例合计超过 100%：computeSettlement 遇到它会静默整单归平台（那条「分出去的钱比收进来
@@ -182,7 +182,7 @@ func TestSettlementRuleValidation(t *testing.T) {
 			want:   ErrSettlementRuleScopeTypeInvalid,
 		},
 		{
-			// global ⇔ scope_ref='' 的其中一个方向：008 用 CHECK 钉住，漏到 SQL 上是一条
+			// global ⇔ scope_ref='' 的其中一个方向：settlement_rules 用 CHECK 钉住，漏到 SQL 上是一条
 			// 没有线索的 400 兜底。
 			name:   "全局档位却带了范围",
 			mutate: func(in *dto.SettlementRuleInput) { in.ScopeType = model.SettlementScopeGlobal },
@@ -235,7 +235,7 @@ func TestSettlementRuleValidation(t *testing.T) {
 			want:   ErrSettlementRuleItemPartyInvalid,
 		},
 		{
-			// 平台项不能是比例项：008 的 CHECK 把「算法与主体」绑死了，漏到 SQL 上是一条
+			// 平台项不能是比例项：settlement_rule_items 的 CHECK 把「算法与主体」绑死了，漏到 SQL 上是一条
 			// 按约束名分不出来的 CHECK 违规。
 			name: "平台项配成比例",
 			mutate: func(in *dto.SettlementRuleInput) {
@@ -337,7 +337,7 @@ func TestSettlementRuleValidation(t *testing.T) {
 			want: ErrSettlementRuleRemarkTooLong,
 		},
 		{
-			// 008 有一条部分唯一索引钉它，但撞索引会回一句「这一行和已有的撞了」——用户要
+			// settlement_rule_items_account_uniq 钉它，但撞索引会回一句「这一行和已有的撞了」——用户要
 			// 的是「第 1 项和第 3 项是同一个账户」，所以要在进库之前拦。
 			name: "同一个账户出现两次",
 			mutate: func(in *dto.SettlementRuleInput) {
@@ -575,7 +575,7 @@ func TestSettlementRuleRatioLandsExact(t *testing.T) {
 //
 // 它们不是「无所谓」的默认：状态空默认 enabled 意味着**新建的规则立刻参与命中**（这是绝大
 // 多数情况），把一条正在生效的规则关掉是一个明确动作，不该是「忘了传」的结果；分配模式空默认
-// normal 与 008 的列默认值一致。
+// normal 与 settlement_rules.allocation_mode 的列默认值一致。
 func TestSettlementRuleDefaults(t *testing.T) {
 	account := enabledAccount("ums")
 	svc, repo := newSettlementService(account)
@@ -606,7 +606,7 @@ func TestSettlementAccountValidation(t *testing.T) {
 		want   error
 	}{
 		{
-			// 017 起主体名是必填：账户号那列没了之后，它是这一行唯一给人看的名字。
+			// 主体名是必填：账户上那列没了之后，它是这一行唯一给人看的名字。
 			name:   "主体名空",
 			mutate: func(in *dto.SettlementAccountInput) { in.PartyName = " " },
 			want:   ErrSettlementAccountPartyNameRequired,
@@ -670,7 +670,7 @@ func TestSettlementAccountValidation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateAccount: %v", err)
 		}
-		// 银联商务按子商户号直接分，取不到「个人 openid」那个概念——008 的列默认值也是它。
+		// 银联商务按子商户号直接分，取不到「个人 openid」那个概念——settlement_accounts.receiver_type 的列默认值也是它。
 		if account.ReceiverType != model.SettlementReceiverMerchantID {
 			t.Fatalf("接收方类型 = %q，期望 %q", account.ReceiverType, model.SettlementReceiverMerchantID)
 		}

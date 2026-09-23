@@ -33,7 +33,7 @@ export default function BasicTab({ payment }: { payment: Payment }) {
     },
     { title: '金额', dataIndex: 'amount', render: (_, row) => money(row.amount) },
     // 从前这里还有一格「出资类型」，与下面的「支付方式」是两套词表。今天它们是同一个值
-    // （payments.funding_type 那一列已经删掉，见 payment/012），所以只剩下面那一格。
+    // （payments.funding_type 那一列已经删掉，见 migrations/payment），所以只剩下面那一格。
     { title: '主体', dataIndex: 'subject', render: (_, row) => dash(row.subject) },
     { title: '用户 ID', dataIndex: 'userId', copyable: true },
     {

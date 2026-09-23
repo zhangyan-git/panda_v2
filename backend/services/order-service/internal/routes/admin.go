@@ -55,7 +55,7 @@ func RegisterAdmin(
 	// 订单号。同样从长到短注册。
 	afterSaleList := protect("order:read", http.HandlerFunc(afterSales.AfterSales))
 	// 审核是分配用户资产的动作，单独一个权限码：能看申请不等于能同意退款。
-	// 权限码见 migrations/identity/017_order_after_sale.sql。
+	// 权限码见 migrations/identity。
 	afterSaleReview := protect("order:after-sale:audit", http.HandlerFunc(afterSales.AfterSales))
 
 	r.HandleFunc("/v1/admin/after-sales/{afterSaleNo}/approve", afterSaleReview.ServeHTTP)

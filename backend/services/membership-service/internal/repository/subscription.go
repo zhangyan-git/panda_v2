@@ -18,7 +18,7 @@ import (
 //
 // # 一条订阅怎么来的、怎么走到终态
 //
-// 表在 001 就建好了，但直到微信直连那一刀之前**没有读者也没有写者**：能创建一条订阅的只有
+// 这张表建库时就在，但直到微信直连那一刀之前**没有读者也没有写者**：能创建一条订阅的只有
 // 小程序端的签约（用户点「开通连续包月」→ 微信委托代扣签约 → 回头写 pending_sign/active），
 // 而那条链路依赖微信直连（api.mch.weixin.qq.com/papay/*）。**没有签约，就扣不了款**——开一条
 // 永远扣不到钱的订阅比没有订阅更糟，用户会以为续上了（见 cmd/main.go 开头那段）。那一刀落地
@@ -168,7 +168,7 @@ func (r *PostgresRepository) SubscriptionStats(ctx context.Context, now time.Tim
 // ListDueSubscriptions 取一批到点该扣的订阅，按到期时间升序。
 //
 // 判据与 model.Subscription.IsDue 逐字相同（`status='active' AND next_charge_at <= now`），
-// 走 001 上那条 `membership_subscriptions_charge_idx`（next_charge_at 的部分索引，WHERE
+// 走那条 `membership_subscriptions_charge_idx`（next_charge_at 的部分索引，WHERE
 // status='active'）——这条查询正是那条索引存在的理由。
 //
 // # 为什么没有 FOR UPDATE
@@ -412,8 +412,9 @@ type CreateSubscriptionOutcome struct {
 // 就会漏：两个并发请求各自读到「没有流水」、各自建一条，其中一条撞上库上的索引报 500——而
 // 它们本该是「同一次点击」，第二次的结果必须与第一次一模一样。
 //
-// 反查用的是 membership_changes 上那条 `(user_id, change_type, request_id)` 部分唯一索引
-// （004 就建好了，这一刀第一次真用上它）。**它同时是「这个 requestId 用过没有」的唯一凭据**
+// 反查用的是 membership_changes 上那条 `membership_changes_request_unique`
+// ——`(user_id, change_type, request_id)` 部分唯一索引（它建表时就在，这一刀第一次真用上）。
+// **它同时是「这个 requestId 用过没有」的唯一凭据**
 // ——订阅表上没有这一列，而那条流水与这条订阅是同一个事务写的。
 func (r *PostgresRepository) CreateSubscription(ctx context.Context, p CreateSubscriptionParams) (*CreateSubscriptionOutcome, error) {
 	var outcome *CreateSubscriptionOutcome
@@ -516,7 +517,8 @@ func (r *PostgresRepository) FindSubscriptionByChangeRequest(ctx context.Context
 // ——那个分叉由调用方判，见 CreateSubscription 里那段说明。
 func subscriptionByChangeRequest(ctx context.Context, q querier, userID, requestID string) (*SubscriptionRow, error) {
 	if strings.TrimSpace(requestID) == "" {
-		// 空 key 不可能命中：部分唯一索引的 WHERE 也把空串排除在外（004）。直接回「没有」，
+		// 空 key 不可能命中：membership_changes_request_unique 的 WHERE 也把空串排除在外。
+		// 直接回「没有」，
 		// 不去跑一条注定扫全表的查询。
 		return nil, ErrSubscriptionNotFound
 	}

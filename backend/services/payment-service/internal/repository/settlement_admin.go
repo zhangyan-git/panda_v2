@@ -51,7 +51,7 @@ var (
 	// WHERE status='enabled'，这句话要出现在页面的报错里。
 	ErrSettlementScopeConflict = errors.New("an enabled settlement rule already covers this scope")
 	// ErrSettlementAccountConflict：同一渠道下这个接收方号已经被别的启用账户登记
-	// （settlement_accounts_receiver_uniq）——017 之后这是账户表上唯一的一条唯一约束。
+	// （settlement_accounts_receiver_uniq）——这是账户表上唯一的一条唯一约束。
 	ErrSettlementAccountConflict = errors.New("settlement account conflicts with an existing one")
 	// ErrSettlementRuleItemConflict：同一账户在同一条规则里出现了两次。
 	ErrSettlementRuleItemConflict = errors.New("the same account appears twice in one rule")
@@ -77,7 +77,7 @@ var (
 // settlementAccountColumns 是账户在后台的形状。**不含 legacy_id**：那是老库 ObjectID 的对照键，
 // 只对迁移过来的行有意义，页面上没有它的位置。
 //
-// 没有 channel_id 这一列了：渠道与支付方式在 009 之后是代码里的目录，账户上存的是渠道名
+// 没有 channel_id 这一列了：渠道与支付方式不在库里，是代码里的目录，账户上存的是渠道名
 // （provider）。账户上也没有钱，所以没有金额列。
 const settlementAccountColumns = `id::text, party_name, party_type,
 	provider, receiver_type, receiver_id,
@@ -101,7 +101,7 @@ const settlementRuleItemColumns = `i.id::text, i.party_type, i.calc_type,
 
 // SettlementAccountRow 是一个接收方账户在后台的完整形状。
 //
-// 没有 account_no / receiver_name：两列在 017 里删了（见那条迁移的文件头）。这一行的名字就是
+// 没有 account_no / receiver_name：账户表上没有这两列。这一行的名字就是
 // PartyName，渠道那边要的号是 ReceiverID。
 type SettlementAccountRow struct {
 	ID           string
@@ -189,7 +189,7 @@ type SettlementRuleWrite struct {
 // SettlementRuleItemWrite 是规则项的一次写入。
 //
 // RatioHundredths 与 SettlementRuleItemRow 同名同义（百分数 × 100）。AccountID 为空表示平台项
-// ——008 的 CHECK 把「平台项没有账户」写死了，别的项没账户会被数据库拒掉。
+// ——settlement_rule_items 的 CHECK 把「平台项没有账户」写死了，别的项没账户会被数据库拒掉。
 type SettlementRuleItemWrite struct {
 	PartyType       string
 	CalcType        string
@@ -679,7 +679,7 @@ type settlementRuleSnapshot struct {
 }
 
 // settlementRuleItemSnapshot 是快照里的一项，存的是 account_id 而不是账户上的那些标签：账户名
-// 改了就改了，审计要能对着当时的那条账户查（而且 017 之后账户上也没有「账户号」可存了）。
+// 改了就改了，审计要能对着当时的那条账户查（而且账户上也没有「账户号」可存了）。
 // 项自己带 id：一项被删掉又加回来时，只有 id 能说明它们是同一条还是两条。
 type settlementRuleItemSnapshot struct {
 	PartyType       string `json:"party_type"`
@@ -753,7 +753,7 @@ type SettlementTaskRow struct {
 	Provider       string
 	Method         string
 	// ProviderTaskNo 是我们发给渠道的分账单号。**今天恒为空**：分账指令随下单报文下发，没有一次
-	// 单独的分账调用，也就没有单独的分账单号。列留着（008 建的），等真去查分账时用。
+	// 单独的分账调用，也就没有单独的分账单号。列留着，等真去查分账时用。
 	ProviderTaskNo        string
 	ProviderTransactionID string
 	Attempts              int
@@ -838,7 +838,7 @@ func (r *PostgresRepository) ListSettlementTasks(ctx context.Context, q dto.Sett
 
 // SettlementReceiverRow 是一条接收方明细，**全部是快照列**。
 //
-// 它不回查账户表补当前的名字与子商户号：008 的设计就是把这几个值冻结在行上（当初实际发出去的
+// 它不回查账户表补当前的名字与子商户号：这里的设计就是把这几个值冻结在行上（当初实际发出去的
 // 那个号），回头现查会让历史明细随着账户改名而变——而那条明细的意义正是「当时分给了谁」。
 type SettlementReceiverRow struct {
 	ID               string
@@ -971,7 +971,7 @@ func mapSettlementError(err error, notFound, inUse error) error {
 		case "settlement_rule_items_account_uniq", "settlement_rule_items_platform_uniq":
 			return ErrSettlementRuleItemConflict
 		default:
-			// 账户上那条 receiver_uniq（017 之后这是账户表上的**唯一**一条唯一约束）与任何
+			// 账户上那条 receiver_uniq（这是账户表上的**唯一**一条唯一约束）与任何
 			// 将来加上的唯一约束都归到这里：对用户来说都是「这一行和已有的撞了」。
 			return ErrSettlementAccountConflict
 		}

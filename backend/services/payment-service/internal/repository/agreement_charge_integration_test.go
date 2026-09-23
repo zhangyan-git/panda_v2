@@ -162,7 +162,7 @@ func (f *chargeFixture) chargeEvents(eventType string) []dto.AgreementChargeEven
 //
 // 这是这一整张表最要紧的一条：两个 worker 副本同时扫到同一份到期订阅时，进程内的锁帮不上忙
 // （老系统正是栽在这里），能挡住第二笔扣款的只有这条唯一键。而单号那一条更细——新开一行会带一个
-// 新单号，渠道那边就是**第二笔订单**，两笔单号不同、渠道无法去重，用户被扣两次（迁移 013 的文件头）。
+// 新单号，渠道那边就是**第二笔订单**，两笔单号不同、渠道无法去重，用户被扣两次（见 payment_agreement_charges.out_trade_no 的列注释）。
 func TestIntegrationCreateOrFindChargeIsOneRowPerPeriod(t *testing.T) {
 	f := newChargeFixture(t)
 
@@ -446,7 +446,7 @@ func TestIntegrationSettleChargeNotificationRefusesWhatItCannotTrust(t *testing.
 	}
 }
 
-// TestIntegrationChargeProviderTransactionIsUniquePerRow 钉住 014 那条唯一索引：**同一笔渠道
+// TestIntegrationChargeProviderTransactionIsUniquePerRow 钉住 payment_agreement_charges_transaction_unique：**同一笔渠道
 // 流水不许挂在两期上**。
 //
 // 它一旦发生，含义非常具体：同一笔钱被记成了两期。比漏记严重得多——漏记只是没扣，重复记是账面

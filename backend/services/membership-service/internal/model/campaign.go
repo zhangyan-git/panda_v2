@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-// 店铺码会员活动的状态。与 migrations/membership/006 里 membership_campaigns.status 的
+// 店铺码会员活动的状态。与 migrations/membership 里 membership_campaigns.status 的
 // CHECK 逐字一致（老系统三个取值照抄）。
 //
 // draft 是新建活动的初值（老后台也这样建），**要能被扫得再调一次启停接口**。disabled 是下架：

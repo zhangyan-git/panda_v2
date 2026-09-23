@@ -160,8 +160,8 @@ func scanPaymentListRow(row scanner) (*PaymentListRow, error) {
 
 // ListPayments 读一页支付单，按创建时间倒序。
 //
-// 默认排序（不带任何筛选）是这条查询的主用途——「最近发生了什么」。payment/006 的
-// payments_admin_list_idx (created_at DESC, id DESC) 就是照它建的。
+// 默认排序（不带任何筛选）是这条查询的主用途——「最近发生了什么」。payments_admin_list_idx
+// (created_at DESC, id DESC) 就是照它建的。
 //
 // 单号两个模糊条件吃不到索引（见 dto.PaymentQuery 的取舍说明），status / payment_method
 // 也吃不到；「先筛后排序」在这张还只有几十万行的表上是可接受的。

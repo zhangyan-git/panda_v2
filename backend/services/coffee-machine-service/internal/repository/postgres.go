@@ -105,7 +105,7 @@ func (r *postgresRepository) GetDevice(ctx context.Context, id string) (*model.D
 
 // GetDeviceBySerial 按机器序列号取设备。
 //
-// serial_unique 上建表时就带了 UNIQUE 约束（001_coffee_machine_core.sql），所以最多命中
+// serial_unique 上建表时就带了 UNIQUE 约束（见 migrations/coffee_machine），所以最多命中
 // 一行：不需要 LIMIT，也不需要决胜排序。空串的挡在 service 层，不落在这里——落到这里
 // 就成了一次「查不到」，而「没给序列号」与「没这台机器」是两回事。
 func (r *postgresRepository) GetDeviceBySerial(ctx context.Context, serialUnique string) (*model.Device, error) {

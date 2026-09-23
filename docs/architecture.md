@@ -14,14 +14,14 @@
 | `backend/services/coupon-service` | 券域：券类型、模板、批次、用户券 | `panda_coupon` |
 | `backend/services/coffee-machine-service` | 设备域：厂商与接入凭据、咖啡机设备与支付方式、饮品与供应关系、设备事件与余额流水 | `panda_coffee_machine` |
 | `backend/services/order-service` | 订单域：订单与订单行、支付分摊、售后单 | `panda_order` |
-| `backend/services/payment-service` | 资金域：支付单与资金行、渠道回调、记账流水——**「收钱的方式」不是它的数据，是 `internal/catalog` 里的常量表**（009 删掉了 `payment_channels` / `payment_methods` 两张表）；退款 / 对账 / 分账 / 结算单也归它。这四件事的表都建好了（退款与对账在 001/002，分账与结算在 008）；分账**建任务**那一刀已落地（发起支付时命中规则、算出金额、写出任务与接收方），退款 / 对账 / 结算单、以及向渠道发起分账仍**一行代码都没有**（见「分账与结算的归属」） | `panda_payment` |
+| `backend/services/payment-service` | 资金域：支付单与资金行、渠道回调、记账流水——**「收钱的方式」不是它的数据，是 `internal/catalog` 里的常量表**（本库不建 `payment_channels` / `payment_methods` 两张表）；退款 / 对账 / 分账 / 结算单也归它。这四件事的表都建好了（退款与对账、分账与结算的表都在 `migrations/payment`）；分账**建任务**那一刀已落地（发起支付时命中规则、算出金额、写出任务与接收方），退款 / 对账 / 结算单、以及向渠道发起分账仍**一行代码都没有**（见「分账与结算的归属」） | `panda_payment` |
 | `backend/services/account-service` | 资产账户域：福卡余额与不可变流水（发放 / 扣减 / 冲正） | `panda_account` |
 | `backend/services/lottery-service` | 抽奖域：门店开通、抽奖活动与奖池、期次与参与、开奖与中奖记录 | `panda_lottery` |
 | `backend/services/membership-service` | 会员域：套餐、会员资格与有效期、变更记录 | `panda_membership` |
 | `backend/services/partner-service` | 开放域：合作方账号与 API 密钥、开放接口入站（`/v1/openapi/*` 唯一入口）、两条设备回执通路（刷卡机与取货码） | `panda_partner` |
 | `backend/services/gateway-service` | 全站唯一入口，单二进制单路由表 | 无 |
 | `contracts/` | proto 定义与已提交的生成代码 | — |
-| `migrations/` | 十一套迁移：`Legacy`（单库时代 001–009，冻结）、`Identity`、`Merchant`、`Coupon`、`CoffeeMachine`、`Order`、`Payment`、`Account`、`Lottery`、`Membership`、`Partner` | — |
+| `migrations/` | 十一套迁移，合并后每套只剩一份 `001_<set>.sql`（`identity` / `coupon` / `membership` 另有一份 `002_<set>_seed.sql`）：`Legacy`（单库时代 001–009，冻结）、`Identity`、`Merchant`、`Coupon`、`CoffeeMachine`、`Order`、`Payment`、`Account`、`Lottery`、`Membership`、`Partner` | — |
 
 嵌套的 `go.mod` 是**独立模块**：在 `backend/` 里跑 `go test ./...` 不会碰到十一个
 服务模块。CI（`.github/workflows/check.yml`）对每个模块各跑一遍
@@ -126,7 +126,7 @@ DELETE），冲正走反向记录而不是原地改数，幂等靠 `request_id` 
 反过来支付服务也**不读订单库**（§5.9 给它的职责清单里没有「读订单」）——金额与归属由
 order-service 在锁内校验完，通过 gRPC 把权威金额交过来（见下面的服务间契约表）。
 
-**收钱的方式不建表。** `migrations/payment/009` 删掉了 `payment_channels` 与
+**收钱的方式不建表。** `migrations/payment` 里不建 `payment_channels` 与
 `payment_methods`：用户能选的四种方式跟着代码走。**前三种**（咖啡豆 / 银联商务小程序 /
 银联商务 H5）写在 `internal/catalog` 的常量表里；**第四种取货码不在那张表里**——钱在这台
 设备的咖啡余额里，由 partner-service 验签后转 order-service 直接落 `paid`，从不经过支付
@@ -145,7 +145,7 @@ order-service 在锁内校验完，通过 gRPC 把权威金额交过来（见下
 + 在 `.env` 里加一组变量，客户端与表约束都不用动（同族的渠道共用一份实现，见下面支付那一段）。
 
 分账、分润规则与结算单**不另建服务**，也落在这个库：它们与支付单是同一条资金链上的另几段。
-表已经建好（`migrations/payment/008_settlement_core.sql`：配置三张、执行三张、结算两张），
+表已经建好（`migrations/payment`：配置三张、执行三张、结算两张），
 三条边界（权限码、冻结快照、依赖方向）与那个已经补上的前置契约，记在下面的「分账与结算的归属」。
 
 两条边界值得单独说明：
@@ -197,8 +197,8 @@ order-service 在锁内校验完，通过 gRPC 把权威金额交过来（见下
 用户有几张卡」在抽奖库里查不到——参与时实时调 account-service 的 `DeductFortuneCards`，把
 回来的 `entry_id` 存成值引用。
 
-**门店名没有快照**：`lottery_activations` 原先有一列 `location_name`（开通那一刻的名字），
-2026-09-15 去掉了（`migrations/lottery/003`）。它换不来什么，却让「显示当前店名」和「按门店名
+**门店名没有快照**：`lottery_activations` 上没有 `location_name` 这类列（开通那一刻的名字
+不落库，`migrations/lottery`）。它换不来什么，却让「显示当前店名」和「按门店名
 搜」两件事只能二选一——名字一旦不落库，`ILIKE` 那条筛选在 SQL 里就做不了，而商户域的 gRPC 也
 没有「按名字查门店」（`ListStores` 只收 merchant_id）。留的是实时查，换掉的是那个交互：后台的
 筛选改成从门店下拉里选一家（传 `location_id`，走本来就有那条等值比较），名字由
@@ -209,8 +209,8 @@ order-service 在锁内校验完，通过 gRPC 把权威金额交过来（见下
 **订货 / 库存域已从 V2 删掉**（2026-09-22）。原先这里有 `panda_inventory` 与一整套
 「结余 + 只增流水」的表（`materials` / `warehouses` / `stock_levels` / `stock_movements` /
 入库单与出库单…），连同 `backend/services/inventory-service`、`migrations/inventory/`、
-`contracts/proto/inventory/`、网关那条上游与后台七页一起删了；身份库里那三个菜单与四枚权限码
-由 `migrations/identity/036` 收回。**这一门域将来要单独拆一个服务出去**，所以不是「先摘入口、
+`contracts/proto/inventory/`、网关那条上游与后台七页一起删了；身份库里也没有那三个菜单与四枚权限码
+（`migrations/identity` 不建）。**这一门域将来要单独拆一个服务出去**，所以不是「先摘入口、
 接口留着」——留在这里的只有那条判断本身，将来重做时按它走：库存是「结余 + 只增流水」的形状，
 `stock_movements` 带只追加触发器、且有一条指向 `stock_levels` 的复合外键，所以写的次序钉死
 （先 upsert 结余、再写流水）；作废不是删单，原流水一个字不动、另写一条反向的。
@@ -256,7 +256,7 @@ UPDATE / DELETE），`(order_id, change_type)` 上的唯一索引是**重投的�
 INSERT 冲突即可。`lottery_rounds` 上还有一条部分唯一索引
 `(campaign_id) WHERE status IN ('open','closed')`，保证一个活动同时只有一期在收人。
 
-**期次与活动都没有时间窗口**（2026-09-15 删掉，迁移 `004`）：一期**只有收满门槛**才会自动开奖，
+**期次与活动都没有时间窗口**（`migrations/lottery` 里没有起止时间列）：一期**只有收满门槛**才会自动开奖，
 没满就一直开着等，没有任何东西会因为时间到了把它开掉。所以一个 `open` 的期次不是「一直没被扫到」，
 而是**有意停在那里**，它的出路只有人工开奖或作废。开奖只有 `threshold` 与 `manual` 两个 trigger，
 `lottery_draws.trigger` 的 CHECK 与之逐字一致。
@@ -566,7 +566,7 @@ C 端顾客共 4 张表，都在 `panda_identity`：`users`（账号主体，手
 | `/v1/merchant/orders`、`/v1/merchant/orders/{id}` | order-service |
 
 各服务的中间件链是 `auth.Middleware` → `authz.MerchantMiddleware`。**没有 `RequirePermission`**：
-商户域没有权限码（`009` 已删商户角色表），能看见什么**只由数据范围表达**。
+商户域没有权限码（`migrations/009_drop_orphan_merchant_tables.sql` 已删商户角色表），能看见什么**只由数据范围表达**。
 
 ### 数据范围：档位单选，目标多选
 
@@ -595,7 +595,7 @@ C 端顾客共 4 张表，都在 `panda_identity`：`users`（账号主体，手
 （§5.2.3 的约束，加列会让「商户可见性」变成一张表一个说法）。`ScopeIDs`（原样的目标）
 也一路带着走，但它只用来表达「边界是怎么来的」，**过滤一律只看 `StoreIDs`**。
 
-产品口径（`004`）：品牌或门店被删时，`ResetScopeByTarget` 只从数组里**摘掉那一个目标**；
+产品口径（`migrations/004_brands_stores.sql`）：品牌或门店被删时，`ResetScopeByTarget` 只从数组里**摘掉那一个目标**；
 数组摘空之后，账号才**回落成 `merchant` 档**（即该商户全部门店），同档位还有别的目标
 时这一档原样保留。摘元素与判空写在**同一条** `UPDATE` 里——PostgreSQL 的 `UPDATE … SET`
 读的是更新前的行，两次 `array_remove` 求值看到的是同一个数组，拆成两条语句就会读到已经
@@ -860,7 +860,7 @@ payment-service 拿到后在建支付单的**同一个事务里**命中规则、
 `pending` 里混着还没付款的任务，所以**扫「待发起」必须连 `payments` 一起过滤**（只取
 `succeeded`），结算归集**只捞 succeeded 的明细**；状态机也为此多一个终态 `cancelled`
 （支付单进 failed / expired / closed 时写，任务与接收方一起，只能从 `pending` 进）。
-这几条的理由都写在 008 的文件头。
+这几条的理由都写在 `migrations/payment` 的「分账与结算」一节里。
 
 四件事里**只落了分账的「建任务」那一刀**（2026-09-18）：发起支付时命中规则、按
 percent / fixed / remainder 算出各家金额、在同一个事务里写 `settlement_tasks` +
@@ -924,10 +924,10 @@ percent / fixed / remainder 算出各家金额、在同一个事务里写 `settl
   「全额用豆付」**：混合出资（豆 + 渠道凑一单）没做；payment-service 的退款单也没做——纯豆
   单的退款由 account-service 自己在退款成功时冲正，见上面「售后与退款」那一段。**支付方式与渠道
   今天不是数据，是代码里的常量表**（`internal/catalog`）：后台那一页连同六个写接口、
-  `payment:manage` 那枚码、两张表和 `deploy/dev-seed/` 的种子一起删了（payment/009、
-  identity/032），因为原来那套要求运营填二三十个协议键——「要不要开咖啡豆支付」今天就是
+  `payment:manage` 那枚码与 `deploy/dev-seed/` 的种子都删了，两张表在两套迁移里也都不建
+  （`migrations/payment`、`migrations/identity`），因为原来那套要求运营填二三十个协议键——「要不要开咖啡豆支付」今天就是
   catalog 里的那一行，不是点一下后台。
-  福卡不是一种支付方式——它是下单赠送的抽奖凭证，只能抽奖、不能出资（order/003、payment/004 已收窄）。
+  福卡不是一种支付方式——它是下单赠送的抽奖凭证，只能抽奖、不能出资（`migrations/order` 与 `migrations/payment` 的出资列里都没有福卡这一档）。
 - **福卡到「发放 + 退款冻结 + 追回」为止**：余额、不可变流水、发放/扣减/冲正、订单完成
   自动入账，退款申请期间的冻结，以及三条收口——驳回/撤销 ⇒ 解冻、退款失败 ⇒ 解冻、
   **退款成功 ⇒ 追回**（解冻 + 冲正那几笔发放，见上面「售后与退款」那一段）。追不回来的

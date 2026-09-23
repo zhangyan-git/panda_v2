@@ -4,10 +4,8 @@ import "time"
 
 // MessageOutbox 对应 message_outbox 表，会员服务待发布消息事件。
 //
-// 与 identity/003、merchant/002、coupon/001、coffee_machine/001、order/001、payment/001、
-// account/001、lottery/001 里的同名表逐列一致，各库自带一份，跨库不共享表。
-// 九份拷贝由 migrations 包的 TestMessageTablesStayInSyncAcrossSets 按列序比对，
-// 不能加列不能换序。
+// 与其它九个库里的同名表逐列一致，各库自带一份，跨库不共享表。十份拷贝由 migrations
+// 包的 TestMessageTablesStayInSyncAcrossSets 按列序比对，不能加列不能换序。
 //
 // 对会员域它不是可选件：会员变更是**对外的事实源**，本身没有数据库外键能指过来，别的服务
 // 只能靠事件知道「这个人现在是不是会员」。而变更流水是 append-only 的，写进去就撤不回，

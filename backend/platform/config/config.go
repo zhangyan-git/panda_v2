@@ -178,7 +178,7 @@ type Config struct {
 	//
 	// 为什么 partner-service 需要它而别的服务不需要：合作方永远是从网关进来的，所以
 	// RemoteAddr 是网关自己；不配这一项时白名单里写的任何地址都匹配不上，结果是**全拒**
-	// （失败关闭，见 migrations/partner/001 与 internal/ingress/auth.go）。反过来，把 XFF
+	// （失败关闭，见 migrations/partner 与 internal/ingress/auth.go）。反过来，把 XFF
 	// 无条件下信也不行——那是请求头，谁都能写，白名单会变成一句空话。
 	//
 	// 留空是**合法**的：它等于「没有可信代理，只看 RemoteAddr」，也就是本地直连与
@@ -372,10 +372,10 @@ func Load(service string) (Config, error) {
 	// account-service 在其中：后台查福卡账户与流水是要权限码的（account:read），
 	// 授权在每个请求上现取，没有缓存可依赖。
 	// membership-service 也在其中（membership:read / manage / adjust 三枚）。
-	// payment-service 同理（payment:read 一枚，见 migrations/identity/026 与 routes/admin.go）。
+	// payment-service 同理（payment:read 一枚，见 migrations/identity 与 routes/admin.go）。
 	// 它也是**最后一个**接进来的服务——在此之前它的后台面根本不存在，所以它不在名单上不是
 	// 因为「不需要」，是因为「还没有」。
-	// partner-service 同理（partner:read / partner:manage 两枚，见 migrations/identity/028
+	// partner-service 同理（partner:read / partner:manage 两枚，见 migrations/identity
 	// 与 internal/routes/admin.go）。它同时也在上面那条令牌发送方链里——但两条链的理由不同：
 	// 这条是「后台要现取授权」，那条是「它要去调别人的 gRPC 面」。
 	if (service == "merchant-service" || service == "coupon-service" || service == "coffee-machine-service" || service == "order-service" || service == "account-service" || service == "lottery-service" || service == "membership-service" || service == "payment-service" || service == "partner-service") && userGRPCAddr == "" {
@@ -463,14 +463,14 @@ func Load(service string) (Config, error) {
 	}
 	// lottery-service 也要 merchant-service，而且是两条路都要：开通前问一次「这家店存在吗」
 	// （问不出来就不受理，否则会留下一条永远查无此店的开通记录），以及每次读列表时解一页
-	// 门店名——抽奖库只存门店 id（migrations/lottery/003），名字是现场问来的。地址缺席不是
+	// 门店名——抽奖库只存门店 id（migrations/lottery），名字是现场问来的。地址缺席不是
 	// 「少个可选依赖」：前者会让校验整条失效，后者会让每个列表页的门店名都是空的。
 	if service == "lottery-service" && merchantGRPCAddr == "" {
 		return Config{}, fmt.Errorf("MERCHANT_GRPC_ADDR is required for lottery-service")
 	}
 	// membership-service 也要 merchant-service，同样是两条路：后台开通会员前问一次「这家店
 	// 存在吗」（问不出来就不开通，否则会留下一条查无此店的**归属门店**），以及每次读会员列表
-	// 与详情时解一页门店名——会员库只存门店 id（migrations/membership/004），名字是现场问来
+	// 与详情时解一页门店名——会员库只存门店 id（migrations/membership），名字是现场问来
 	// 的。地址缺席不是「少个可选依赖」：前者会让那次校验整条失效，后者会让归属门店一列全是空。
 	if service == "membership-service" && merchantGRPCAddr == "" {
 		return Config{}, fmt.Errorf("MERCHANT_GRPC_ADDR is required for membership-service")

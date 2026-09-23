@@ -24,7 +24,7 @@ import (
 // `membership.campaign.claimed` 事件交 coupon-service 发。**券的两个字段只是承诺**——配了
 // 什么就发什么，实际发出去几张的账在券库（`user_coupons.campaign_claim_id`），本服务不写也
 // 查不到（跨库）。模板 id 是个裸 UUID，本服务连它存不存在都不知道，配错了要等发券那一刻由
-// 券服务记一条日志跳过；详见 migrations/membership/007。
+// 券服务记一条日志跳过；详见 migrations/membership。
 //
 // # 不生成小程序码
 //

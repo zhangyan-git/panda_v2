@@ -14,7 +14,8 @@ type OrderQuery struct {
 	Status  string
 	Source  string
 	// 只筛「有某类行」或「没有某类行」的订单（零值 = 不筛）。订单类型不存冗余列，它是派生
-	// 出来的（见迁移 001），所以每一个都是一个 EXISTS 子查询而不是一个等值条件。
+	// 出来的（见 migrations/order 里 orders 的表注释），所以每一个都是一个 EXISTS 子查询
+	// 而不是一个等值条件。
 	// 后台的「咖啡订单 / 幸运杯套订单 / 会员订单」三个列表各钉其中一项。
 	HasDrink      *bool
 	HasAddon      *bool
@@ -33,7 +34,7 @@ type OrderQuery struct {
 type OrderSummary struct {
 	ID      string `json:"id"`
 	OrderNo string `json:"orderNo"`
-	// UserID 可空：**设备单没有用户**（order/005），那一格是 null 而不是空串。线上刷卡机卖出去
+	// UserID 可空：**设备单没有用户**（migrations/order），那一格是 null 而不是空串。线上刷卡机卖出去
 	// 的那一单不属于任何用户，编成 "" 会让读的人以为「有一个用户，他的 id 是空」。
 	UserID            *string    `json:"userId"`
 	Source            string     `json:"source"`
@@ -90,7 +91,7 @@ type OrderDetail struct {
 //
 // PickupCode 是取杯号（屏幕上叫取杯码，同一个值），用户侧与后台都看得到：它本来就是取杯口
 // 屏幕上大字显示的短号，不是凭据。曾经这里以「凭据」为由对后台端置 nil，那建立在一次凭空
-// 的列拆分上（order/004 已合并回一列）。
+// 的列拆分上（migrations/order 已合并回一列）。
 type OrderLineView struct {
 	ID                     string    `json:"id"`
 	LineNo                 int       `json:"lineNo"`

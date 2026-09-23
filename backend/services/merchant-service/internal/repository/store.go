@@ -60,16 +60,16 @@ type StoreFilter struct {
 
 // storeSnapshot 理由同 brandSnapshot：photos 这类图片列表不进快照。
 // 归属（merchant_id/brand_id）必须记——门店改挂品牌会直接改变它属于谁。
-// 客户编码与 DMS 编码**进快照**，这是对 003 那次的一次有意加码：003 只在快照里放了
+// 客户编码与 DMS 编码**进快照**，这是对区划编码那一批的一次有意加码：快照里只放了
 // name/city/address，区划编码没进。理由是这两个编码与前缀那些字段不同——它们是
-// **对账键**（见 merchant/004），改一次就等于这一行指向了另一个真实客户。不进快照的话，
+// **对账键**（见 migrations/merchant），改一次就等于这一行指向了另一个真实客户。不进快照的话，
 // 一次「客户编码从 A 改成 B」的修改在审计里会记成 before == after，等于查不出来。
 // customer_type 跟着一起放：它和这两个编码在同一张表单上，拆开只会让读日志的人少看一列。
 //
 // **快照是子集，不是整行**：`Update` 会写的 remark / logo / 区划 / 电话 / 联系人 / 营业时间 /
 // 经纬度 / photos 都不在里面。所以「改了什么审计里都看得见」这句话不成立——这里只记归属、
 // 识别字段与状态。写下这条边界是因为上面那三列的理由（不进快照就等于查不出来）对 remark
-// 那些列**同样成立**，只是 003 起就接受了这个取舍；不写清楚，读日志的人会以为漏记了。
+// 那些列**同样成立**，只是这个取舍从建快照起就接受了；不写清楚，读日志的人会以为漏记了。
 type storeSnapshot struct {
 	MerchantID   string `json:"merchant_id"`
 	BrandID      string `json:"brand_id,omitempty"`
@@ -410,7 +410,7 @@ func (r *pgStoreRepo) SetAuditInTx(ctx context.Context, tx pgx.Tx, id, auditStat
 	//
 	// 驳回必须同时离开 active：消费方（coffee-machine-service 的 checkStore）只认
 	// status，光改 audit_status 的话被驳回的门店照样能接设备。status 的词表只有
-	// active/disabled（001 的列注释，无 CHECK 约束），所以驳回落到 disabled。
+	// active/disabled（stores.status 的列注释，无 CHECK 约束），所以驳回落到 disabled。
 	// 通过不动 status——新建门店本来就是 active，而「审核通过」不该覆盖管理员手工设的
 	// disabled（那是一个有意为之的停用）。
 	const q = `

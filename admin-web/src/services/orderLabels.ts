@@ -50,12 +50,12 @@ export const ORDER_SOURCE: Record<string, EnumMeta> = {
   miniapp: { text: '小程序', color: 'blue' },
   screen_qr: { text: '屏幕扫码', color: 'geekblue' },
   // 线下刷卡机设备回调建的单（partner-service 验签后经 gRPC 建单，直接落成已支付，没有
-  // 下单用户）。取值与 order/005 放宽后的 orders_source_check 逐字对应——那张表漏登记
+  // 下单用户）。取值与 orders_source_check 逐字对应——那张表漏登记
   // 时，来源列会退回显示原始码 `device`，筛选下拉里也没有这一项。
   device: { text: '设备下单', color: 'purple' },
   // 会员续费代扣建的单（membership-service 收到渠道扣款成功的通知后经 gRPC 建单，同样是
   // 钱已在别处收过、直接落成已支付）。文案照老后台那一列：它在业务阶段显示的就是
-  // 「自动续费」。取值与 order/009 放宽后的 orders_source_check 逐字对应。
+  // 「自动续费」。取值与 orders_source_check 逐字对应。
   renewal: { text: '自动续费', color: 'gold' },
 };
 

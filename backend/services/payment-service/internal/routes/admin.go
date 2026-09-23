@@ -7,19 +7,20 @@ import (
 	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/controller"
 )
 
-// 权限码，与 migrations/identity/026_payment_admin.sql 逐字一致。
+// 权限码，与 migrations/identity 的种子逐字一致。
 //
 // 今天只有 read 这一枚：支付方式与渠道收成代码里的常量之后，后台不再有「改配置」这件事
-// ——那枚 manage（027_payment_config_admin.sql 种的）在代码里已经没有引用点了。它留在身份库里
-// 不碍事，也**不要**顺手用它去管别的接口：这个服务对钱的写入口一个都没有（见下面那两行的说明）。
+// ——那枚 manage 当年是随「支付配置」页一起发的，页撤掉时码也一并收回，今天在身份库里
+// 已经不存在（`admin_permissions` 里查不到它）。**不要**因为「反正有这枚码」就顺手用它去管
+// 别的接口：这个服务对钱的写入口一个都没有（见下面那两行的说明）。
 //
 // 「为什么这枚也走实时授权、不读令牌里的旧 claims」写在 internal/client/admin_access.go。
 const permRead = "payment:read"
 
-// 分账那两枚权限码，与 migrations/identity/035_settlement_admin.sql 逐字一致。
+// 分账那两枚权限码，与 migrations/identity 的种子逐字一致。
 //
-// 它们**绝不并进 payment:read / payment:manage**：008 的文件头（第 11–13 行）把分账的授权
-// 单独列了一段——「谁能看支付单」与「谁能改分账配置」是两件事，前者是所有客服都要的，后者
+// 它们**绝不并进 payment:read / payment:manage**：migrations/payment 里「分账与结算」那一节
+// 把分账的授权单独列了一段——「谁能看支付单」与「谁能改分账配置」是两件事，前者是所有客服都要的，后者
 // 决定了钱分给谁。并进去之后，一次「给他开个支付单查询吧」会连带把分账的写权限一起给出去。
 //
 // payout 那一枚今天**没有**：分账是随支付一次下发、支付成功即成功的，没有一个「打款」动作

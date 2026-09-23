@@ -150,7 +150,7 @@ var (
 	// ErrDuplicateChange：这一单已经开通过或续期过了。
 	//
 	// 撞的是 membership_changes_order_unique：order_id 上、限 change_type 为 activate / renew
-	// 的部分唯一索引（见 migrations/membership/003）。**按 order_id 而不是 order_id+变更类型**
+	// 的部分唯一索引（见 migrations/membership）。**按 order_id 而不是 order_id+变更类型**
 	// 是有意的：重投一条 order.paid 走的是另一支（首次投递开通、重投续期），只按变更类型去重
 	// 拦不住它，那个人会拿到两期会员。
 	//
@@ -260,8 +260,9 @@ func mapPGError(err error) error {
 			case "membership_changes_order_unique":
 				return ErrDuplicateChange
 			case "membership_changes_request_unique":
-				// 同一次点击的第二次落库（004 那条 `(user_id, change_type, request_id)` 部分唯一
-				// 索引）。正常路径上撞不到它：签约在事务里先锁了会员行、再反查过这个 requestId。
+				// 同一次点击的第二次落库（`membership_changes_request_unique` 那条
+				// `(user_id, change_type, request_id)` 部分唯一索引）。正常路径上撞不到它：
+				// 签约在事务里先锁了会员行、再反查过这个 requestId。
 				// 撞上说明那次反查与这次插入之间还是被插了一行，而它的反面是**同一份协议签出两条
 				// 订阅**——所以先当「已经记过了」，由调用方再查一次那条订阅是好是坏。
 				return ErrDuplicateChange

@@ -50,7 +50,7 @@ type APIKeyInput struct {
 	// ExpiresAt 同上，RFC3339 或空。
 	ExpiresAt *string `json:"expiresAt"`
 	// IPWhitelist 是来源白名单，接受 CIDR 与裸地址。**空数组表示不限制**（不是全拒），
-	// 见 migrations/partner/001 上那一列的注释。
+	// 见 migrations/partner 上那一列的注释。
 	IPWhitelist []string `json:"ipWhitelist"`
 	// RateLimitPerMinute 为 0（没带）时用 ingress 的默认值。库上有 CHECK (> 0)，所以负数是
 	// 服务的校验错误，不是「不限流」。

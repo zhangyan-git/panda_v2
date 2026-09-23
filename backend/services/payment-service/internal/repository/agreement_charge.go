@@ -34,7 +34,7 @@ type CreateOrFindChargeParams struct {
 	// OutTradeNo 是**本次调用方现算出来的**商户单号，只有在这一行真的是新建的时候才会被用上
 	// ——已有那一行保留它自己那个号。调用方每次都算一个新值是无害的（算出来即丢弃），但这
 	// 意味着**它不能省**：省了的话新建那一行就没有号，而扣款结果通知回来时唯一的关联键就是
-	// 它（见迁移 013）。
+	// 它（见 payment_agreement_charges.out_trade_no 的列注释）。
 	OutTradeNo string
 	RequestID  string
 }
@@ -207,7 +207,7 @@ type ChargeNotificationParams struct {
 	// Provider 是**收到这条通知的那条渠道**（通知 URL 里那段），不是报文里说的任何东西。
 	Provider string
 	// OutTradeNo 是报文里的商户单号，也是定位这一期的**唯一**键——扣款通知里没有协议号、
-	// 没有期次（见迁移 013 的文件头）。
+	// 没有期次（见 payment_agreement_charges.out_trade_no 的列注释）。
 	OutTradeNo string
 	// ProviderTransactionID 是渠道侧的流水号，成功时非空。
 	ProviderTransactionID string
@@ -536,7 +536,7 @@ func chargeNotificationMetadata(p ChargeNotificationParams) map[string]any {
 // 按错误文本（PG 换措辞或换语言时那种判法会静默失效）。
 //
 // 唯一约束冲突**不翻**：out_trade_no 与 provider_transaction_id 那两条唯一索引一旦撞上，
-// 含义是「这一期的号被别人占了」，那是要人来看的事故（见迁移 014 的文件头），原样报出去比
+// 含义是「这一期的号被别人占了」，那是要人来看的事故（见 payment_agreement_charges.provider_transaction_id 的列注释），原样报出去比
 // 翻成一个业务错误更能让人停下。
 func mapChargeError(err error) error {
 	if err == nil {

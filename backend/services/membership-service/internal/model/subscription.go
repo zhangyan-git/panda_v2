@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-// 订阅状态。与 migrations/membership/001 里 membership_subscriptions.status 的 CHECK 逐字一致。
+// 订阅状态。与 migrations/membership 里 membership_subscriptions.status 的 CHECK 逐字一致。
 //
 // 生命周期：pending_sign →（签约成功）active。active ⇄ suspended（连续扣款失败到阈值停扣；
 // 停扣之后某一期又扣成了就回到 active）。active / suspended →（有一方说不续了）cancelled，
@@ -31,7 +31,7 @@ const (
 // 了或人不用了，再扣下去只是每天给客服添一条工单）。
 //
 // **停扣不是解约**：协议还挂在微信上，授权是用户给的，本服务不替用户撤回（见 ChangeSuspend 的
-// 说明与 migrations/membership/008 的文件头）。
+// 说明与 migrations/membership 里「变更记录」那一节）。
 const MaxConsecutiveChargeFailures = 3
 
 // Subscription 是一条连续包月的签约与扣款期次记录。
@@ -87,7 +87,7 @@ type Subscription struct {
 	// （签约场景、首月支付）的原料。三列都可空，空串表示「不是从这条路来的」。
 	//
 	// **今天没有任何代码写它们**：写入方是小程序端签约，而小程序端还没接（见
-	// migrations/membership/005 与 repository/subscription.go 的包说明）。页面不会因此显示
+	// migrations/membership 与 repository/subscription.go 的包说明）。页面不会因此显示
 	// 错东西——三个都为空正好推出「会员中心支付并签约」，那是这一档的默认答案。
 	OrderID         string    `db:"order_id"`
 	CoffeeOrderID   string    `db:"coffee_order_id"`

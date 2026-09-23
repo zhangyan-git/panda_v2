@@ -82,9 +82,11 @@ func Apply(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
 			//
 			// The cost: everything now runs in one transaction, so a migration
 			// cannot use a statement that refuses to run inside a transaction
-			// block (CREATE INDEX CONCURRENTLY and friends — payment/006 says as
-			// much). Strip only the lines that are nothing but the statement, so
-			// a BEGIN inside a dollar-quoted function body is left alone.
+			// block (CREATE INDEX CONCURRENTLY and friends). The note under
+			// "上生产的注意：事务里建索引" at the head of
+			// migrations/payment/001_payment.sql spells out the workaround.
+			// Strip only the lines that are nothing but the statement, so a
+			// BEGIN inside a dollar-quoted function body is left alone.
 			statements = stripTransactionControl(statements)
 			tx, err := conn.Begin(ctx)
 			if err != nil {

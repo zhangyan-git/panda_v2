@@ -133,7 +133,7 @@ func main() {
 	// 后台的登出与停用同样要落到这里才撤销得掉，所以这一处构造、两处注入。
 	userSessionRepo := repository.NewUserSessionRepository(pgxPool)
 	// 后台管理员走自己的会话表：admin_sessions 与 user_sessions 同形但外键指向
-	// admin_users，两套账号体系不共用一行（见 migrations/identity/031）。
+	// admin_users，两套账号体系不共用一行（见 migrations/identity）。
 	adminSessionRepo := repository.NewAdminSessionRepository(pgxPool)
 	adminAuthSvc := service.NewAdminAuthService(adminRepo, bindingRepo, adminSessionRepo, jwtSvc)
 	merchantAuthSvc := service.NewMerchantAuthService(merchantRepo, merchantAccess, jwtSvc)

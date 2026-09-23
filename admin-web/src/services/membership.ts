@@ -19,7 +19,7 @@ import type { PageQuery, PageResult } from './pagination';
  */
 
 // ——— 枚举 ———
-// 取值来自 membership-service model 的常量，也就是 migrations/membership/001 的 CHECK 约束。
+// 取值来自 membership-service model 的常量，也就是 migrations/membership 的 CHECK 约束。
 // 接口回的就是库里那些英文码。**改枚举必须同时改迁移和这里**，加了新码而这里没登记，
 // 界面上就退回显示原始码。文案表在 services/membershipLabels.ts。
 
@@ -57,7 +57,7 @@ export type MembershipStatus = 'active' | 'frozen' | 'expired' | 'revoked';
  * expire 要到期扫描），照登是因为迁移里的 CHECK 已经把它们写全了——登记一个今天到不了的码，
  * 好过将来那一格原样显示 `unsubscribe`。
  *
- * charge_failed 与 suspend 是 008 从**已经落地**的代扣链路补进来的，两个都写得出来：一期扣款
+ * charge_failed 与 suspend 来自**已经落地**的代扣链路，两个都写得出来：一期扣款
  * 没扣到写前者（到期日不动），连续失败到上限、停掉自动续费写后者。漏登它们的后果是时间线与
  * 筛选下拉里直接显示英文码。
  */

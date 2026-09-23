@@ -49,7 +49,7 @@
 //
 //  3. **调用日志没有保留期清理**：partner_call_logs 是只增表，而它会按流量增长（报文各自
 //     截断在 8 KiB）。到期删除需要一个 worker 与一条保留策略，本轮没做——这一条写在
-//     migrations/partner/001 的文末。
+//     migrations/partner 的文末。
 package main
 
 import (

@@ -98,7 +98,7 @@ export type OrderSummary = {
   /**
    * 取杯号：这一单饮品行那个短号。没付成功或没有饮品行时为 null。
    *
-   * 用户侧叫取杯号，取杯口屏幕上叫取杯码，是**同一个值**，不是凭据（见 order/004）。
+   * 用户侧叫取杯号，取杯口屏幕上叫取杯码，是**同一个值**，不是凭据（见 migrations/order）。
    */
   pickupCode: string | null;
   createdAt: string;
@@ -146,7 +146,7 @@ export type OrderLine = {
 export type OrderPaymentLine = {
   id: string;
   lineNo: number;
-  /** 支付方式的 code，与 orders.payment_method 同一个值（词表已退场，见 migrations/order/008）。 */
+  /** 支付方式的 code，与 orders.payment_method 同一个值（词表已退场，见 migrations/order）。 */
   lineType: string;
   amount: number;
   status: PaymentLineStatus;

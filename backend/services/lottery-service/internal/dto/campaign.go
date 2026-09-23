@@ -9,8 +9,8 @@ import "time"
 // 删掉重插，而那次删除会被外键拒绝。带上 id 就是原地 UPDATE，中奖记录里那两列名字快照
 // （original_ / current_prize_name）本来就等着这一刻。
 //
-// 这里原先还有 sortOrder / prizeKind / couponTemplateId / quantity 四个字段，
-// 2026-09-15 随 migrations/lottery/005 一起删了。
+// 奖品只有名字、封面、海报与领取说明这几件：sortOrder / prizeKind / couponTemplateId /
+// quantity 这四个字段都不存在。
 type PrizeRequest struct {
 	ID                string `json:"id"`
 	Name              string `json:"name"`
@@ -118,7 +118,7 @@ type RoundResponse struct {
 // 而那个页面可能是三十秒前加载的，这期间期次可能已经达标关闭、已经被自动开奖、甚至
 // 已经被作废。对不上就回 409，而不是替一个已经变了的局面决定谁中奖。
 //
-// 与 account-service 人工调整余额那条路（identity/021）是同一条思路：全系统唯一能凭空
+// 与 account-service 人工调整余额那条路（migrations/identity）是同一条思路：全系统唯一能凭空
 // 决定资产归属的动作，必须先证明自己看的是当前状态。
 type DrawRequest struct {
 	Reason                   string `json:"reason"`

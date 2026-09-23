@@ -787,7 +787,7 @@ type AgreementChargeNotifier interface {
 // # 它没有「协议号」
 //
 // 报里有 contract_id，但那不是本地那份协议的号——真正的关联键是 OutTradeNo（我们自己发给
-// 渠道的商户单号）。这条链路上一期扣款只有这一个键能对上（见迁移 013 的文件头）：微信报里
+// 渠道的商户单号）。这条链路上一期扣款只有这一个键能对上（见 payment_agreement_charges.out_trade_no 的列注释）：微信报里
 // 没有协议号、也没有期次。所以这个结构**刻意不提供 AgreementNo 字段**，免得调用方拿一个
 // 找不到东西的键去查库，再得到一句语焉不详的「查无此约」。
 type AgreementChargeNotification struct {

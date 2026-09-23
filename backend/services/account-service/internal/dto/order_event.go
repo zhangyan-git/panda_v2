@@ -40,7 +40,7 @@ type OrderFortuneGrant struct {
 	CampaignName string `json:"campaignName"`
 	// Amount 恒 > 0。
 	Amount int64 `json:"amount"`
-	// EntryKey 是这一笔的幂等键（形状见 migrations/account/001 的列注释）。
+	// EntryKey 是这一笔的幂等键（形状见 migrations/account 的列注释）。
 	EntryKey string `json:"entryKey"`
 }
 

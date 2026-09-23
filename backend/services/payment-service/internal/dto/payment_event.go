@@ -48,7 +48,7 @@ type PaymentEventPayload struct {
 	// **只有这一个值**。从前这里还发一个 fundingType（出资渠道词表 wechat/unionpay/
 	// coffee_bean/wallet/other），下游只能靠它写 line_type，于是加一种支付方式要同时在两套
 	// 词表里找档位——支付宝在词表里没有档，只能落 `other`，后台把一笔支付宝单显示成「其他」。
-	// 那套词表连同 payments.funding_type 一列已经退场（见 payment/012），五处 line_type 全部
+	// 那套词表连同 payments.funding_type 一列已经退场，五处 line_type 全部
 	// 存这个 code。要判「这笔钱走不走渠道」，看的是这种方式有没有渠道，不是看词表值。
 	PaymentMethod string `json:"paymentMethod"`
 	// Fundings 是逐笔出资分摊。为空时 order-service 按「单笔、方式 = PaymentMethod、

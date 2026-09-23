@@ -561,7 +561,7 @@ func (r *PostgresRepository) ReleaseAfterSale(ctx context.Context, params Releas
 // 两条铁律，都写在这段代码的形状里：
 //
 //  1. **先解冻，再冲正。** 顺序反过来写的那一瞬间 frozen_balance > balance，
-//     fortune_card_accounts_frozen_within_balance 那条 CHECK 当场炸（migrations/account/003
+//     fortune_card_accounts_frozen_within_balance 那条 CHECK 当场炸（migrations/account
 //     的注释就是为这一步留的）。
 //  2. **部分冲正是常态。** 申请退款之前就已经被抽掉的卡追不回来——冻结时按可用余额钳过
 //     （见 FreezeAfterSale），冻结额本来就小于发放额。所以冲正总额以冻结额为上限，逐笔

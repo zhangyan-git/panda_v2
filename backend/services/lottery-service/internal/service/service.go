@@ -102,7 +102,7 @@ type FortuneCards interface {
 
 // Stores 是商户域门店事实里本服务用到的那一部分。
 //
-// 抽奖库只存门店 id（见 migrations/lottery/003），所以「这家店存在吗」与「这几家店叫什么」
+// 抽奖库只存门店 id（见 migrations/lottery），所以「这家店存在吗」与「这几家店叫什么」
 // 都要现场问商户域。接口只有两个方法，对应 client.StoreClient 的两个动作；测试传一个能
 // 摆出「门店不存在」与「问不到」两种结果的假的。
 type Stores interface {
@@ -128,9 +128,9 @@ var (
 	ErrTargetNotPositive    = errors.New("participantTarget must be positive")
 	// 奖品。一个活动一个奖品，所以没有「奖池不能为空」这一条——缺名字就等于没给奖品。
 	//
-	// 这里原先还有 ErrPrizesRequired / ErrPrizeKindInvalid / ErrPrizeQuantityInvalid /
-	// ErrPrizeSortOrderConflict 四条，2026-09-15 随 migrations/lottery/005 一起删了：奖池
-	// 只剩一行，类型列没了，名额也恒为 1 不再是入参。
+	// ErrPrizesRequired / ErrPrizeKindInvalid / ErrPrizeQuantityInvalid /
+	// ErrPrizeSortOrderConflict 这四条都不存在：奖池只剩一行，类型列没有，名额也恒为 1
+	// 不再是入参。
 	ErrPrizeIDInvalid     = errors.New("prize id must be a uuid when present")
 	ErrPrizeNameRequired  = errors.New("prize name is required")
 	ErrPrizeCoverRequired = errors.New("prize cover image is required")

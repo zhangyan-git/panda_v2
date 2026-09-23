@@ -195,7 +195,7 @@ export default function LotteryCampaignsPage() {
       // 自带的 locationName。与开通页同一写法。
       //
       // 这里原先是一个「填完整门店 ID」的输入框，而那等于筛不了：uuid 没人背得出来，复制
-      // 还得先有个地方能拿到它。名字不落库（migrations/lottery/003），SQL 里没有一列能做
+      // 还得先有个地方能拿到它。名字不落库（migrations/lottery），SQL 里没有一列能做
       // ILIKE，商户域的 gRPC 也只有 ListStores（只收 merchantId）和 ResolveScopeNames
       // （只收 id）——所以这一列能筛的只有 id，而 id 只能从下拉里选。
       title: '门店',

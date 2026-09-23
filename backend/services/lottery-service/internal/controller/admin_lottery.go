@@ -16,7 +16,7 @@ import (
 //
 // 四棵树：activations（开通）、campaigns（活动与奖池）、rounds（期次、开奖、作废）、
 // wins（中奖记录）。权限码由装配处挂在每一条路由上——**能看 ≠ 能改 ≠ 能开奖**，
-// 三个码分开（见 migrations/identity/022_lottery_admin.sql）。
+// 三个码分开（见 migrations/identity）。
 type AdminLotteryController struct{ lottery *service.LotteryService }
 
 const (

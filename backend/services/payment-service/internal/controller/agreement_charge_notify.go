@@ -14,7 +14,7 @@ import (
 // 与 AgreementNotifyPath 是并排的两段而不是一段加后缀：微信那边这两条通知的 notify_url 是
 // **分别配在两次不同的调用上的**（签约配签约的地址、扣款配这一笔自己的地址），所以它们本来
 // 就是两个地址。而这里最贵的一次事故正是这两条撞在一起——老系统的续费扣款与签约回调共用一条
-// 路由，回调按 out_trade_no 去查订阅表、那个号从来没写进那张表，于是永久重推（见迁移 013）。
+// 路由，回调按 out_trade_no 去查订阅表、那个号从来没写进那张表，于是永久重推（商户单号才是扣款通知唯一的关联键，见 payment_agreement_charges.out_trade_no 的列注释）。
 const AgreementChargeNotifyPath = "/v1/payments/agreement-charge-notify"
 
 // AgreementChargeNotifyController 接收扣款结果通知。

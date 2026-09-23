@@ -518,8 +518,7 @@ func decodeBody(w http.ResponseWriter, r *http.Request, body any) bool {
 // 四类，都是**撞上了库里的现状**而不是填错了哪一栏：
 //
 //   - 同档位已有启用中的规则（部分唯一索引 settlement_rules_scope_uniq）
-//   - 同一渠道下接收方号重复（settlement_accounts_receiver_uniq；017 删掉账户号那条唯一索引之后
-//     它是账户表上唯一的一条）
+//   - 同一渠道下接收方号重复（settlement_accounts_receiver_uniq，账户表上唯一的一条唯一约束）
 //   - 同一账户在同一条规则里出现两次（部分唯一索引 settlement_rule_items_account_uniq，
 //     与上面那条 400 的 ErrSettlementRuleItemAccountTwice 是同一件事的两个入口：service 先
 //     拦一道，漏到库上还有索引兜着）

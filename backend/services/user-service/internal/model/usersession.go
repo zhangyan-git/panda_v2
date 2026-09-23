@@ -5,7 +5,7 @@ import "time"
 // UserSession 是一枚已签发的 Refresh Token 在库里的那一行。
 //
 // 两张表共用它：user_sessions（小程序顾客，UserID 是 users.id）与 admin_sessions
-// （平台管理员，UserID 是 admin_users.id，见 identity/031）。两表同形，字段含义
+// （平台管理员，UserID 是 admin_users.id，见 migrations/identity）。两表同形，字段含义
 // 逐字相同，所以没有第二个结构体；**读代码时要注意 UserID 指向哪张账号表，
 // 取决于这一行是从哪个仓库取回来的**。
 //

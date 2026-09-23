@@ -10,7 +10,7 @@ package model
 
 import "time"
 
-// 套餐状态。与 migrations/membership/001 里 membership_plans.status 的 CHECK 逐字一致。
+// 套餐状态。与 migrations/membership 里 membership_plans.status 的 CHECK 逐字一致。
 //
 // 只有 active 的套餐能被购买。draft 是还没配完，disabled 是下架——**两者都不影响已经
 // 买出去的会员**，因为 memberships 上存了成交快照（见 model.Membership 那一段）。

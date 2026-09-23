@@ -148,7 +148,7 @@ type CreateSubscriptionRequest struct {
 	RequestID string `json:"requestId"`
 	// CoffeeOrderID / CampaignClaimID 是「这次签约从哪来」，可留空。
 	//
-	// 签约场景（后台列表上那一列）由它们现推，不落库（见 migrations/membership/005）：从一杯
+	// 签约场景（后台列表上那一列）由它们现推，不落库（见 migrations/membership）：从一杯
 	// 咖啡的订单页进来的传前者，从店铺码活动页进来的传后者，在会员中心直接点的两个都不传。
 	// 两者都给时**咖啡订单优先**——那是用户当下真正在做的事，与老系统同一条口径。
 	//

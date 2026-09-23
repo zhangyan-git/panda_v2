@@ -440,7 +440,7 @@ func (s *PaymentService) markPending(ctx context.Context, payment *model.Payment
 		FundingLines: []repository.FundingLine{{
 			LineNo: 1,
 			// 出资行存的就是**支付方式的 code**（那套「出资渠道」词表
-			// 已经退场，见 payment/012）。所以这一行说的是「用户点的支付宝」，不是「走了 UMS」。
+			// 已经退场）。所以这一行说的是「用户点的支付宝」，不是「走了 UMS」。
 			LineType: payment.PaymentMethod,
 			// 出资额等于支付单的应付额：本轮没有混合出资，重复一遍是为了让出资行
 			// 单独拿出来也能算账，而不是要靠 payment_id 去 join 才知道每笔多少。
@@ -544,7 +544,7 @@ func (s *PaymentService) createAccountPayment(ctx context.Context, payment *mode
 
 	// 豆已经扣走了，先把这件事登记到支付单上，再去结算。**这一步不能省，也不能并进结算
 	// 那个事务**：它是唯一能让「扣了豆、结算没成」这张单在本地留下痕迹的东西，并进去的话
-	// 结算一失败，这条留痕跟着回滚，那笔账变就再没有线索指向它（见 005 迁移）。
+	// 结算一失败，这条留痕跟着回滚，那笔账变就再没有线索指向它（见 payments.account_entry_id 的列注释）。
 	//
 	// 写失败**不阻断**结算：结算那个事务自己也会把 account_entry_id 写进 payment_fundings，
 	// 那才是权威的出资留痕。这一步要覆盖的只是结算失败的那个窗口，写到那一步都失败是两次

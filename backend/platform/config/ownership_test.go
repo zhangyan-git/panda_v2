@@ -153,7 +153,7 @@ func TestOwnershipConfiguration(t *testing.T) {
 		// face authorizes live like every other console-backed service.
 		//
 		// It also dials merchant-service, and that one is not decoration: 抽奖 stores a
-		// store's id and nothing else (migrations/lottery/003), so the store's name is
+		// store's id and nothing else (migrations/lottery), so the store's name is
 		// resolved live for every listing and the store's existence is checked before an
 		// activation is accepted. Each case below omits exactly one requirement.
 		{name: "lottery needs user gRPC address", service: "lottery-service", env: "production", merchantGRPC: merchantGRPC, accountGRPC: accountGRPC, token: token, wantErr: true},

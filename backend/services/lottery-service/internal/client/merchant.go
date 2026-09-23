@@ -19,7 +19,7 @@ import (
 // 这家店」。coffee-machine-service 的 StoreResolver、user-service 的 MerchantGRPCClient
 // 走的都是同一条路。
 //
-// 抽奖库只存门店 id（见 migrations/lottery/003）：名字是商户域的事实，本服务不留第二份。
+// 抽奖库只存门店 id（见 migrations/lottery）：名字是商户域的事实，本服务不留第二份。
 // 于是「显示」与「校验」这两件事都落在这个客户端上——一个是每次列表读一页名字，一个是
 // 开通前问一次存在性。
 type StoreClient struct {

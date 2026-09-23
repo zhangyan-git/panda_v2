@@ -34,8 +34,8 @@ describe('枚举文案表', () => {
   });
 
   it('覆盖 orders.source 的四个取值', () => {
-    // device 是 order/005 放宽 CHECK 之后的第三个取值（线下刷卡机设备回调建的单），
-    // renewal 是 order/009 之后的第四个（会员续费代扣建的单）。这里原先钉的是两个值
+    // orders_source_check 今天有四个取值：device 是线下刷卡机设备回调建的单，
+    // renewal 是会员续费代扣建的单。这里原先钉的是两个值
     // ——那份清单本身就是**不完整**的，测试把它钉住了，于是漏登记一直没被发现。
     //
     // 这条也顺带钉住 order.ts 的 OrderSource：那个联合类型与这张表要一一对应，多一个
@@ -48,7 +48,7 @@ describe('枚举文案表', () => {
   });
 
   // order_payment_lines.line_type 不在这里：它存的是支付方式的 code，那套文案与支付域共用
-  // 一份，见 paymentMethodLabels.test.ts。这里的「出资渠道」词表已经退场（order/008）。
+  // 一份，见 paymentMethodLabels.test.ts。这里的「出资渠道」词表已经退场（migrations/order）。
   it('覆盖 order_payment_lines.status 的五个取值', () => {
     expect(Object.keys(PAYMENT_LINE_STATUS).sort()).toEqual([
       'failed', 'released', 'reserved', 'reversed', 'succeeded',

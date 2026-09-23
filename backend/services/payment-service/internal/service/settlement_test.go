@@ -43,7 +43,7 @@ func fixedItem(party string, amount int64) repository.SettlementRuleItem {
 // TestComputeSettlement 是分账算法的表驱动用例。
 //
 // 每一条都顺带核一遍恒等式 base = 平台 + Σ接收方——它是这张表上唯一**跨越两张表的**不变量
-// （008 文件头写着 CHECK 表达不了），而算错它的后果是结算时才发现的几分钱差额。
+// （这条不变量跨两张表，CHECK 表达不了），而算错它的后果是结算时才发现的几分钱差额。
 func TestComputeSettlement(t *testing.T) {
 	cases := []struct {
 		name string
@@ -194,7 +194,7 @@ func TestComputeSettlement(t *testing.T) {
 				got[receiver.PartyType] += receiver.Amount
 				total += receiver.Amount
 				if receiver.Amount <= 0 {
-					t.Errorf("接收方 %s 的金额是 %d：008 要求不建 0 元的行", receiver.PartyType, receiver.Amount)
+					t.Errorf("接收方 %s 的金额是 %d：settlement_receivers.amount > 0，不建 0 元的行", receiver.PartyType, receiver.Amount)
 				}
 				if receiver.AccountID == "" || receiver.ReceiverID == "" {
 					t.Errorf("接收方 %s 缺账户或渠道号：回退时要按它指回渠道", receiver.PartyType)
@@ -216,7 +216,7 @@ func TestComputeSettlement(t *testing.T) {
 					platform, total, platform+total, tc.base)
 			}
 			if platform < 0 {
-				t.Errorf("平台金额 = %d：008 的 CHECK 要求它非负", platform)
+				t.Errorf("平台金额 = %d：settlement_tasks.platform_amount 的 CHECK 要求它非负", platform)
 			}
 		})
 	}
@@ -225,7 +225,7 @@ func TestComputeSettlement(t *testing.T) {
 // TestComputeSettlementKeepsTheRatioSnapshot 钉住落进接收方行的那个比例。
 //
 // 两种算法记的东西不一样，而这是**账**：比例项记当初生效的比例，固定额项记 0（金额在 amount
-// 上）——008 的列注释这么分的。记错了不会让任何一笔钱算错，但会让「当初凭什么分这么多」在
+// 上）——settlement_receivers.ratio 的列注释这么分的。记错了不会让任何一笔钱算错，但会让「当初凭什么分这么多」在
 // 数据上读不出来。
 func TestComputeSettlementKeepsTheRatioSnapshot(t *testing.T) {
 	receivers, _, _, err := computeSettlement(7000, model.SettlementAllocationNormal,
@@ -301,7 +301,7 @@ func TestCreatePaymentSettlesTheReceiversInTheSameTransaction(t *testing.T) {
 }
 
 // TestCreatePaymentWithoutARuleSettlesEverythingToThePlatform：没配规则不是错误，是一个正常的
-// 业务事实——任务照样建（整单归平台），与 008 的存照一致。
+// 业务事实——任务照样建（整单归平台），与 settlement_tasks 的存照一致。
 func TestCreatePaymentWithoutARuleSettlesEverythingToThePlatform(t *testing.T) {
 	repo := &fakeRepository{}
 	svc := newTestService(t, repo, &stubProvider{result: provider.CreateResult{Result: provider.ResultSuccess}}, testMethodCode)

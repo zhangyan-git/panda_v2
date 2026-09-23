@@ -103,7 +103,7 @@ func NewDeviceBalanceRepository(pool *pgxpool.Pool) DeviceBalanceRepository {
 //
 // 与后台调整（AdminRepository.AdjustBalance）的两处不同是**有意的**：
 //   - type 写 deduct 而不是 adjust：后台那次是管理员手工改数，这次是「这台机器上
-//     卖出去了一杯」，流水表上两者要能分开（口径见 migrations/coffee_machine/001 的
+//     卖出去了一杯」，流水表上两者要能分开（口径见 migrations/coffee_machine 的
 //     type CHECK）。
 //   - **不写审计**。审计记的是「谁在后台点了什么」，这条路上没有操作人——操作人是
 //     机器前面的那个人，而他在我们库里没有账号（orders.user_id 在这一单上也是空的）。
@@ -279,7 +279,7 @@ func lookupDeduction(ctx context.Context, q rowQuerier, requestID, deviceID stri
 	if err != nil {
 		return nil, err
 	}
-	// 两个字面量与上面 INSERT 里那两个字面量必须一样（流水表的 type CHECK 见 001）：
+	// 两个字面量与上面 INSERT 里那两个字面量必须一样（device_balance_ledger 的 type CHECK）：
 	// deduct 是这条路写的，那台机器必须是同一台。
 	if entryType != "deduct" || entryDeviceID != deviceID {
 		return nil, fmt.Errorf("%w: request %q", ErrRequestIDUsedByAnotherEntry, requestID)

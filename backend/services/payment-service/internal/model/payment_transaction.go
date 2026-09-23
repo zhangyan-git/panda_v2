@@ -26,7 +26,7 @@ type PaymentTransaction struct {
 	Amount        int64  `db:"amount"`
 	// 走哪条渠道，值是渠道名（同 payments.provider），账户出资的那条流水是空串。
 	//
-	// 这里**从前也没有外键**（见 001），理由今天反而变成了它的常态：流水是对账基准，
+	// 这里**从前也没有外键**，理由今天反而变成了它的常态：流水是对账基准，
 	// 而渠道已经不在库里了——它写在这里是一个**事实的快照**，不是一个引用。
 	Provider              string  `db:"provider"`
 	ProviderTransactionID string  `db:"provider_transaction_id"`

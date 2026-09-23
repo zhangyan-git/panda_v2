@@ -20,7 +20,7 @@ import { EMPTY_SETTLEMENT_REFS, loadSettlementRefs, refName, type SettlementRefs
  *
  * # 这一页上的每一格都是当时那一刻的事实
  *
- * 分账任务的接收方明细全是**快照列**（008 的设计）：比例、金额、主体名、子商户号都是建任务那一刻
+ * 分账任务的接收方明细全是**快照列**（`settlement_receivers` 的设计）：比例、金额、主体名、子商户号都是建任务那一刻
  * 冻结下来的。账户后来改了名、门店后来换了品牌，这里的数字都不跟着变——这是对的，「当时分给了
  * 谁」不该随现在的配置而变。所以这一页**不回查**规则与账户补当前值（只有规则名是 LEFT JOIN 出来
  * 的展示列）。
@@ -136,7 +136,7 @@ export default function SettlementTasksPage() {
     },
     {
       // 空档位**不是异常**：没命中任何规则的那一笔就是这样（scope_type 是 `DEFAULT ''`，
-      // 与 scope_ref 一起表示「这笔没走规则」，见 008）。所以空的时候给个「—」而不是一枚
+      // 与 scope_ref 一起表示「这笔没走规则」）。所以空的时候给个「—」而不是一枚
       // 写着一横的灰标签——标签是给「有个档位值、只是我没见过」留的。
       title: '范围档位',
       dataIndex: 'scopeType',
@@ -150,7 +150,7 @@ export default function SettlementTasksPage() {
       },
     },
     {
-      // 全局档的范围引用是空串（008 的 CHECK 是充要条件），显示成「全部」而不是「—」：
+      // 全局档的范围引用是空串（`settlement_rules` 上那条 CHECK 是充要条件），显示成「全部」而不是「—」：
       // 那不是缺值，那是这条规则管所有店铺。
       title: '范围',
       dataIndex: 'scopeRef',

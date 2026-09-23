@@ -17,7 +17,7 @@ export default function FundingsTab({ detail }: { detail: PaymentDetail }) {
     { title: '行号', dataIndex: 'lineNo', width: 60 },
     {
       // 这一列从前叫「出资类型」，是另一套词表；今天 lineType 就是支付方式的 code
-      // （与支付单上的 methodCode 同一个值，见 payment/012），所以标题跟着改成同一个说法，
+      // （与支付单上的 methodCode 同一个值，见 migrations/payment），所以标题跟着改成同一个说法，
       // 中文名也与订单页共用 paymentMethodLabels 那一份。
       title: '支付方式',
       dataIndex: 'lineType',

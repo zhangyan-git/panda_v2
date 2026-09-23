@@ -78,7 +78,7 @@ type SettlementRuleItemInput struct {
 	CalcType     string  `json:"calcType"`
 	RatioPercent float64 `json:"ratioPercent"`
 	FixedAmount  int64   `json:"fixedAmount"`
-	// AccountID 为空表示平台项。008 的 CHECK 把「平台项没有账户」写死了，所以平台项只能空、
+	// AccountID 为空表示平台项。settlement_rule_items 的 CHECK 把「平台项没有账户」写死了，所以平台项只能空、
 	// 非平台项必须有。
 	AccountID string `json:"accountId"`
 	SortOrder int    `json:"sortOrder"`
@@ -106,7 +106,7 @@ type SettlementRuleInput struct {
 // SettlementAccountQuery 是账户列表的筛选条件。
 type SettlementAccountQuery struct {
 	// Keyword 一个词搜两样（主体名 / 子商户号）。运营手上那串是什么，他自己多半也说不清，
-	// 而两个框会让人每个都试一遍。账户号那一项随 017 删列一并消失。
+	// 而两个框会让人每个都试一遍。账户表上已经没有账户号这一列了。
 	Keyword   string
 	PartyType string
 	Provider  string
@@ -118,7 +118,7 @@ type SettlementAccountQuery struct {
 
 // SettlementAccount 是账户在页面上的形状。
 //
-// **没有账户号与接收方名**（017 删的两列）：主体名就是这一行给人看的名字，而它在规则项的
+// **没有账户号与接收方名**（账户表上没有这两列）：主体名就是这一行给人看的名字，而它在规则项的
 // 账户下拉、分账接收方快照与列表里都是同一个名字。渠道侧只需要一个号，那是 ReceiverID。
 type SettlementAccount struct {
 	ID           string    `json:"id"`
@@ -135,11 +135,11 @@ type SettlementAccount struct {
 
 // SettlementAccountInput 是创建与更新一个账户的请求体。
 type SettlementAccountInput struct {
-	// PartyName 必填（017 起）：它是这一行给人看的名字，账户号那列没了之后没东西给它兜底。
+	// PartyName 必填：它是这一行给人看的名字，账户表上没有账户号那列，没东西给它兜底。
 	PartyName string `json:"partyName"`
 	PartyType string `json:"partyType"`
-	// Provider 是渠道名（catalog 里的那个值，如 `ums`）。**不是 uuid**：渠道与支付方式在 009
-	// 之后是代码里的目录，库里没有可指向的那张表。
+	// Provider 是渠道名（catalog 里的那个值，如 `ums`）。**不是 uuid**：渠道与支付方式不在库里，
+	// 它们是代码里的目录，没有可指向的那张表。
 	Provider     string `json:"provider"`
 	ReceiverType string `json:"receiverType"`
 	ReceiverID   string `json:"receiverId"`
@@ -222,7 +222,7 @@ type SettlementTask struct {
 
 // SettlementReceiver 是一条接收方明细，**全部是快照列**。
 //
-// 它不回查账户补当前的名字与号：008 的设计是把这几个值冻结在行上（当初实际发出去的那个号），
+// 它不回查账户补当前的名字与号：这张表的设计是把这几个值冻结在行上（当初实际发出去的那个号），
 // 回头现查会让历史明细随着账户改名而变——而那条明细的意义正是「当时分给了谁」。
 type SettlementReceiver struct {
 	ID        string `json:"id"`

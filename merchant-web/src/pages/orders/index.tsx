@@ -57,7 +57,7 @@ const OrdersPage: React.FC = () => {
     },
     {
       // 取杯号紧挨着订单号：接电话时手上要的就是这两个——「我的号是多少」是最高频的问题。
-      // 取杯口屏幕上叫它取杯码，是**同一个值**，不是凭据（见 order/004）。
+      // 取杯口屏幕上叫它取杯码，是**同一个值**，不是凭据（见 migrations/order）。
       title: '取杯号',
       dataIndex: 'pickupCode',
       width: 100,

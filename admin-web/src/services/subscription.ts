@@ -15,7 +15,7 @@ import type { PageQuery, PageResult } from './pagination';
  */
 
 // ——— 枚举 ———
-// 取值来自 membership-service 的 model（也就是 001 迁移里的 CHECK）。加了新码而这里没登记，
+// 取值来自 membership-service 的 model（也就是 migrations/membership 里各表的 CHECK）。加了新码而这里没登记，
 // 界面上就退回显示原始码。
 
 /** 订阅状态。`pending_sign` 是「已下单、等签约结果」的中间态——列表默认不显示它。 */

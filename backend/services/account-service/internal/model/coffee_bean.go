@@ -18,7 +18,7 @@ const (
 	BeanEntryTypeReverse = "reverse"
 )
 
-// 咖啡豆账变起因的对象类型，对应 reference_type。与 migrations/account/006 的列注释
+// 咖啡豆账变起因的对象类型，对应 reference_type。与 migrations/account 的列注释
 // 是同一套说法：本列记的是「为什么余额变了」，与事件日志（message_outbox）不是一回事。
 const (
 	// BeanReferenceTypeManual 是后台人工调整。
@@ -82,7 +82,7 @@ type CoffeeBeanEntry struct {
 }
 
 // BeanAdjustKey / BeanConsumeKey / BeanReverseKey 是咖啡豆流水 entry_key 的三种形状，
-// 与 migrations/account/005、006 的列注释是同一套说法。
+// 与 coffee_bean_entries.entry_key 的列注释是同一套说法。
 //
 // 它们必须全局唯一（那把唯一索引是幂等性的全部依据），所以进键的都是 UUID 而不是序号：
 // 重发一次后台调整、重试一次扣减、重投一条 order.after_sale.refunded，都撞在同一个键上，

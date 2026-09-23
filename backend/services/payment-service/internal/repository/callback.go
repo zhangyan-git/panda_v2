@@ -498,7 +498,7 @@ func paymentEvent(payment *model.Payment, fundings []*model.PaymentFunding) (str
 		Amount:    payment.Amount,
 		// 一个值：用户选的那一种支付方式（catalog 的 code，如 `ums_h5_alipay`）。从前这里
 		// 还发一个 fundingType（出资渠道词表），下游只能靠它落 order_payment_lines.line_type，
-		// 于是支付宝只能落 `other`。那套词表已经退场，见 payment/012。
+		// 于是支付宝只能落 `other`。那套词表已经退场。
 		PaymentMethod:         payment.PaymentMethod,
 		ProviderTransactionID: payment.ProviderTransactionID,
 		FailureCode:           payment.FailureCode,
@@ -538,7 +538,7 @@ func notificationReason(p SettleNotificationParams) string {
 //
 // 普通业务路径不会走到这里：createAccountPayment 扣完豆立刻结算，中间只隔一次写库。
 // 能留下这种行的只有那两次写库之间出的岔子——进程被 kill、库抖动、或者这张单在结算前
-// 正好被超时关单收走（见 005 迁移）。这张单上的豆已经真的扣走了，所以它必须被结算，
+// 正好被超时关单收走（见 payments.account_entry_id 的列注释）。这张单上的豆已经真的扣走了，所以它必须被结算，
 // 而不是被人发现。
 //
 // 扫描走 payments_overdue_account_funding_idx，与关单扫描同一个形状；**不带 FOR UPDATE**：
@@ -596,7 +596,7 @@ func (r *PostgresRepository) FindOverdueAccountFundedPayments(ctx context.Contex
 // 真正改状态的是 SettlePayment 自己的事务，在那里锁行才算数。查单本身要出网、可能慢上几秒，
 // 在这个查询里先锁住等于让一次网络调用一直握着行锁。
 //
-// 扫描走 payments_pending_reconcile_idx (updated_at) WHERE status = 'pending'（010 迁移）。
+// 扫描走 payments_pending_reconcile_idx (updated_at) WHERE status = 'pending'。
 func (r *PostgresRepository) ListStalePendingPayments(ctx context.Context, staleBefore time.Time, limit int) ([]model.Payment, error) {
 	rows, err := r.pool.Query(ctx, `SELECT `+paymentColumns+` FROM payments
 		WHERE status = 'pending' AND provider <> '' AND updated_at <= $1
@@ -629,7 +629,7 @@ func (r *PostgresRepository) ListStalePendingPayments(ctx context.Context, stale
 // **不发事件**：支付单过期不是一次支付结果，订单有自己的超时关单。对 order-service 来说
 // 「这笔支付没成」与「这笔支付从没发生过」是一样的，它不需要知道。
 //
-// **豆已经扣过的不关**（account_entry_id IS NOT NULL，见 005 迁移）。关单会把这张单的
+// **豆已经扣过的不关**（account_entry_id IS NOT NULL，见 payments.account_entry_id 的列注释）。关单会把这张单的
 // 出资行标成 released——那是对「钱从来没动过」的描述，而这里的钱已经动了；把它关掉，那笔
 // 扣减就再没有任何一条路径能把它推到成功，只能等人拿着账变去补。它们由补偿任务结算
 // （FindOverdueAccountFundedPayments → service.SettleOverdueAccountPayments），那条路在

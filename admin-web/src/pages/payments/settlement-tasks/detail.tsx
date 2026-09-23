@@ -39,13 +39,13 @@ import { EMPTY_SETTLEMENT_REFS, loadSettlementRefs, refName, type SettlementRefs
  *
  * # 接收方全是快照
  *
- * 比例、金额、主体名、渠道接收方号都是**建任务那一刻冻结下来的**（008 的设计），不回查账户与
+ * 比例、金额、主体名、渠道接收方号都是**建任务那一刻冻结下来的**（`settlement_receivers` 的设计），不回查账户与
  * 规则补当前值。所以账户后来改了名，这里显示的仍是当时那个名字——那不是数据旧了，那正是这条
  * 明细要回答的问题：当时分给了谁。
  *
  * # 时间字段
  *
- * `finishedAt` 只在分账成功后有值。008 的列注释写着：银联商务一次下发**没有「完结」那一步**，
+ * `finishedAt` 只在分账成功后有值。`settlement_tasks.finished_at` 那一列的注释写着：银联商务一次下发**没有「完结」那一步**，
  * 所以 `succeeded` 时就一并置上它——用一列而不是把状态劈成两半。
  */
 
@@ -306,7 +306,7 @@ export default function SettlementTaskDetailPage() {
       dataIndex: 'ratioPercent',
       width: 90,
       align: 'right',
-      // 固定额项记 0（008 的 CHECK 钉着），显示成 % 会让人以为它分不到。
+      // 固定额项记 0（`settlement_receivers` 上那条 CHECK 钉着），显示成 % 会让人以为它分不到。
       render: (_, row) => (row.ratioPercent > 0 ? formatPercent(row.ratioPercent) : '—'),
     },
     {

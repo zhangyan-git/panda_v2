@@ -105,7 +105,7 @@ const merchantUserColumns = `u.id, u.merchant_id, u.username, u.password_hash, u
 	u.created_at, u.updated_at,
 	'{}'::text[]`
 
-// FindByUsername 按全局唯一 username 查询（003 迁移加约束）；
+// FindByUsername 按全局唯一 username 查询（merchant_users.username 上的唯一约束）；
 // 不过滤 status，登录链路需要区分「账号已禁用」和「账号不存在」
 func (r *pgMerchantUserRepo) FindByUsername(ctx context.Context, username string) (*model.MerchantUser, error) {
 	q := `SELECT ` + merchantUserColumns + `
@@ -274,7 +274,7 @@ func (r *pgMerchantUserRepo) UpdateScope(ctx context.Context, id, scopeType stri
 // ResetScopeByTarget 品牌/门店删除时收回它：把那个 id 从各账号的范围里摘掉。
 //
 // 摘完范围为空（这个账号原本只指向它）的账号回落成商户档——这正是范围只能有一个目标
-// 时每一个被回收的账号都会走到的结果（004 的产品口径：回收为 scope_type=merchant）。
+// 时每一个被回收的账号都会走到的结果（产品口径：回收为 scope_type=merchant）。
 // 还有别的目标的账号保持原档位，只是少了一个目标。
 //
 // 一条语句做完：先摘后判空必须看到**同一个**数组，分两条的话第二条读的是已经更新过的行，

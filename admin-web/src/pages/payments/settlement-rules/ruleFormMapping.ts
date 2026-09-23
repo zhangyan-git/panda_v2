@@ -23,7 +23,7 @@ import { scopeNeedsRef } from '../../../services/settlementLabels';
  *
  * # 三个字段互相排斥
  *
- * 008 与 service 都钉着：比例项不能带固定额、固定额项不能带比例、平台项不能带账户。表单里
+ * service 与 `settlement_rule_items` 上那条 CHECK 都钉着：比例项不能带固定额、固定额项不能带比例、平台项不能带账户。表单里
  * 三个字段是**按算法条件渲染**的，切换算法之后旧值会留在一个不再渲染的输入框里——那是这种
  * 表单最容易出现的半截组合，所以在提交时按当前算法把它们归零，而不是等用户自己去清空一个
  * 已经看不见的框。
@@ -81,7 +81,7 @@ export const itemToPayload = (
 /**
  * 规则上的范围引用该发什么。
  *
- * 全局档**绝不能带引用**（008 的 CHECK 是充要条件：`scope_type='global' ⇔ scope_ref=''`），
+ * 全局档**绝不能带引用**（`settlement_rules` 上那条 CHECK 是充要条件：`scope_type='global' ⇔ scope_ref=''`），
  * 其余四档必须给一个 uuid。所以按档位把它归零，而不是靠人记得清空——换档位时表单里那个框
  * 会换一个控件重新渲染，旧值留着是常态。换档位时页面还会主动清一次（见 index.tsx 里
  * scopeType 的 onChange）：**提交时这条是最后的兜底，不是唯一的一道**。
