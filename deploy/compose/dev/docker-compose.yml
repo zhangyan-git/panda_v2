@@ -156,6 +156,13 @@ services:
       # 变量名里必须有 USERS：default_language 属于 [users] 段（defaults.ini:471 起），
       # 写成 GF_DEFAULT_LANGUAGE 不会报错、只是被忽略，界面照旧全英文。
       GF_USERS_DEFAULT_LANGUAGE: zh-Hans
+      # 配色。同属 [users] 段，前缀一样必须是 GF_USERS_；写 GF_DEFAULT_THEME
+      # 同样不报错、只是被忽略，界面照旧深色。取值只有 dark / light 两个。
+      #
+      # 只对「还没选过主题的人」生效——它写的是默认值，不是强制值。已经点过右上角
+      # 那个主题开关的浏览器把选择存在 localStorage 里，会盖过这里；换浏览器或清掉
+      # 站点数据才会看到浅色。
+      GF_USERS_DEFAULT_THEME: light
     ports: ["3000:3000"]
     volumes:
       - grafana-data:/var/lib/grafana
