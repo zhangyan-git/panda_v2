@@ -41,15 +41,54 @@ func templateMethodNotAllowed(w http.ResponseWriter, allow ...string) {
 	api.Error(w, http.StatusMethodNotAllowed, api.CodeMethodNotAllowed, "method not allowed")
 }
 
+// moneyFieldLabels 把 service 报出来的**请求字段名**换回运营在表单上看到的那几个字。
+//
+// service 的 checkMoney 只拿得到 dto 的字段名（faceValue…），它把字段名包进错误里是为了
+// 让调用方能定位该改哪一格；但字段名不是给用户看的话。认不出来的键原样带出去——宁可露出
+// 一个英文键，也不要编一个可能对不上的中文名。
+var moneyFieldLabels = map[string]string{
+	"faceValue":         "面值",
+	"minPurchaseAmount": "最低消费",
+	"purchasePrice":     "购买价格",
+}
+
+// templateError 把 service 的哨兵错误翻成人话再回给调用方。
+//
+// service 里那几个 errors.New 是**给日志看的**标识串。直接把 err.Error() 丢进响应，运营
+// 在后台看到的就是一句「invalid coupon template」——不知道该改哪里。用户看到的话在这一层
+// 翻译，与 lottery-service 的分工一致（service 的错误串留给日志）。
+//
+// 这四种都只可能由**调用方参数不对**触发，所以统一 400；正常走后台表单不会碰到。
 func templateError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, service.ErrInvalidTemplate), errors.Is(err, service.ErrInvalidTemplateAmount), errors.Is(err, service.ErrInvalidAudit), errors.Is(err, service.ErrInvalidTemplateStatus):
-		api.Error(w, 400, "INVALID_ARGUMENT", err.Error())
+	// 先判 Amount：它被 service 用 %w 包了字段名，落到下面那条会丢掉「哪一格不对」。
+	case errors.Is(err, service.ErrInvalidTemplateAmount):
+		api.Error(w, 400, "INVALID_ARGUMENT", "优惠券模板的金额不合法："+moneyFieldText(err))
+	case errors.Is(err, service.ErrInvalidTemplate):
+		api.Error(w, 400, "INVALID_ARGUMENT", "优惠券模板参数不合法：请检查名称、有效期、领取与核销规则")
+	case errors.Is(err, service.ErrInvalidAudit):
+		api.Error(w, 400, "INVALID_ARGUMENT", "审核结论只能是「通过」或「驳回」")
+	case errors.Is(err, service.ErrInvalidTemplateStatus):
+		api.Error(w, 400, "INVALID_ARGUMENT", "优惠券模板状态不合法")
 	case errors.Is(err, pgx.ErrNoRows):
 		api.Error(w, 404, api.CodeNotFound, "template not found")
 	default:
 		api.Error(w, 500, "INTERNAL_ERROR", "template operation failed")
 	}
+}
+
+// moneyFieldText 从 `invalid coupon template amount: faceValue` 里取出字段名，翻成表单上的
+// 标签。取不出来（没包字段名）时返回一句兜底，而不是一个空串接在冒号后面。
+func moneyFieldText(err error) string {
+	field := strings.TrimSpace(strings.TrimPrefix(err.Error(), service.ErrInvalidTemplateAmount.Error()))
+	field = strings.TrimSpace(strings.TrimPrefix(field, ":"))
+	if label, ok := moneyFieldLabels[field]; ok {
+		return label
+	}
+	if field == "" {
+		return "字段未指明"
+	}
+	return field
 }
 func (c *AdminCouponController) Templates(w http.ResponseWriter, r *http.Request) {
 	// 按路径段判断：mux 只做精确匹配，{id} 路由不会把 /stats 之类的后缀

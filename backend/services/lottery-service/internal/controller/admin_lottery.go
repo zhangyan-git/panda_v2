@@ -335,6 +335,7 @@ func (c *AdminLotteryController) listRounds(w http.ResponseWriter, r *http.Reque
 	}
 	rows, total, err := c.lottery.ListRounds(r.Context(), dto.RoundQuery{
 		CampaignID: strings.TrimSpace(query.Get("campaignId")),
+		RoundNo:    strings.TrimSpace(query.Get("roundNo")),
 		Status:     strings.TrimSpace(query.Get("status")),
 		Page:       page,
 		PageSize:   pageSize,
@@ -375,11 +376,19 @@ func (c *AdminLotteryController) draw(w http.ResponseWriter, r *http.Request, ac
 	if outcome.Draw == nil {
 		// 零人参与：这一期按作废处理，没有开奖记录。回一句说清楚的话而不是一个空的开奖
 		// 响应——「开奖成功但没有任何记录」会让管理员以为哪里出错了。
+		//
+		// 「已开出下一期」只在**真的开出来了**的时候说。rollCampaign 只在活动 enabled 时
+		// 开期，暂停 / 草稿 / 已结束一律返回 nil；无条件带这句话，活动暂停时它就是一句假话
+		// ——管理员照着它去找下一期，列表里没有，只能怀疑是自己看错了。
+		msg := "本期无人参与，已直接作废并开出下一期"
+		if outcome.NextRound == nil {
+			msg = "本期无人参与，已直接作废；活动当前不在进行中，未开出下一期"
+		}
 		api.Success(w, map[string]any{
 			"roundId": roundID,
 			"status":  outcome.Round.Status,
 			"drawId":  "",
-			"message": "本期无人参与，已直接作废并开出下一期",
+			"message": msg,
 		})
 		return
 	}

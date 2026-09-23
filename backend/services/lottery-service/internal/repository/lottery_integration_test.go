@@ -1126,6 +1126,53 @@ func TestActivatingTheSameLocationTwiceIsRefused(t *testing.T) {
 	}
 }
 
+// TestListRoundsFiltersByRoundNoExactly 钉住期次号筛选是**等值**的。
+//
+// 这个筛选是后台「完整期次号」那个搜索框唯一的去处。它原先根本没往下传——框填了等于没填，
+// 列表原样返回，也不报错。所以这里要同时钉两头：筛得到，以及不会多捞。
+func TestListRoundsFiltersByRoundNoExactly(t *testing.T) {
+	f := newLotteryFixture(t, 3, 1)
+	ctx := testContext(t)
+
+	rows, total, err := f.repo.ListRounds(ctx, dto.RoundQuery{
+		RoundNo: f.round.RoundNo, Page: 1, PageSize: 20,
+	})
+	if err != nil {
+		t.Fatalf("按期次号读期次: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("完整期次号 %q 应当正好命中期，拿到 total=%d len=%d", f.round.RoundNo, total, len(rows))
+	}
+	if rows[0].Round.RoundNo != f.round.RoundNo {
+		t.Fatalf("命中的是 %q，期望 %q", rows[0].Round.RoundNo, f.round.RoundNo)
+	}
+
+	// **前缀不命中**——这条才是「等值」与「模糊」的分界。活动短名是期次号的前缀
+	// （`{code}-{seq:04d}`），筛选取成 ILIKE 就会把这一期的期次也捞出来，而那正是运营
+	// 照着客服给的号去查时会踩的坑：查 ED8-0001 却连 ED8-00010 一起出来了。
+	rows, total, err = f.repo.ListRounds(ctx, dto.RoundQuery{
+		RoundNo: f.campaign.Code, Page: 1, PageSize: 20,
+	})
+	if err != nil {
+		t.Fatalf("按活动短名读期次: %v", err)
+	}
+	if total != 0 || len(rows) != 0 {
+		t.Fatalf("活动短名 %q 只是期次号的前缀，等值筛不该命中，拿到 total=%d len=%d", f.campaign.Code, total, len(rows))
+	}
+
+	// 不存在的期次号：**空集，不是错误**。后台把它渲染成空态那一页；回 404 的话页面会
+	// 弹一条报错，而「查一个不存在的号」是客服每天都在做的事。
+	rows, total, err = f.repo.ListRounds(ctx, dto.RoundQuery{
+		RoundNo: f.round.RoundNo + "X", Page: 1, PageSize: 20,
+	})
+	if err != nil {
+		t.Fatalf("按不存在的期次号读期次: %v", err)
+	}
+	if total != 0 || len(rows) != 0 {
+		t.Fatalf("不存在的期次号应当读空，拿到 total=%d len=%d", total, len(rows))
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

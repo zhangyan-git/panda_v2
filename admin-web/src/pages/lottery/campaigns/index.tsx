@@ -33,6 +33,7 @@ import { FULL_PAGE_PARAMS } from '../../../services/pagination';
 import { requestErrorMessage } from '../../../services/requestError';
 import { uploadImage } from '../../../services/upload';
 import { scrollableModalBody } from '../../../components/common/modalProps';
+import { allowedCampaignTransitions, CAMPAIGN_CREATE_CHOICES, campaignActionLabel } from './transitions';
 
 /**
  * 抽奖活动列表。
@@ -81,6 +82,17 @@ const EMPTY_PRIZE: CampaignForm['prize'] = {
   coverImage: '',
   posterImage: '',
   claimInstructions: '',
+};
+
+/**
+ * 状态下拉里的文案。比列表里的 Tag 多一句解释：列表那一列只是陈述事实，而这一格选下去
+ * 是要改库的——「草稿」和「草稿（不开期）」对运营不是同一句话。
+ */
+const STATUS_FIELD_LABEL: Record<CampaignStatus, string> = {
+  draft: '草稿（不开期）',
+  enabled: '进行中（开始开期收人）',
+  paused: '已暂停',
+  ended: '已结束',
 };
 
 export default function LotteryCampaignsPage() {
@@ -290,11 +302,11 @@ export default function LotteryCampaignsPage() {
     {
       title: '操作',
       valueType: 'option',
-      // fixed 的列必须显式给宽度，且下面的 scroll.x 必须等于各列宽度之和（见下面的 1250）。
-      // 190 是量出来的：三个 link 按钮（详情 / 编辑 / 暂停）并排内容宽约 174，加左右各
-      // 8px 内边距。**钉右列宽度给窄了的后果是表格 scrollWidth 被顶大**，与 scroll.x
-      // 声明的数对不上（这个仓库踩过）。
-      width: 190,
+      // fixed 的列必须显式给宽度，且下面的 scroll.x 必须等于各列宽度之和（见下面的 1310）。
+      // 250 是量出来的：最多四个 link 按钮（详情 / 编辑 / 暂停 / 结束，见下面这一列的分支）
+      // 并排内容宽约 232，加左右各 8px 内边距。**钉右列宽度给窄了的后果是表格 scrollWidth
+      // 被顶大**，与 scroll.x 声明的数对不上（这个仓库踩过）。
+      width: 250,
       fixed: 'right',
       render: (_, row) => {
         const actions: React.ReactNode[] = [
@@ -313,29 +325,41 @@ export default function LotteryCampaignsPage() {
               编辑
             </Button>,
           );
-          // 只给「进行中」的提供暂停、给「已暂停」的提供恢复。草稿与已结束不在这里动：
-          // 草稿要先编辑成启用，已结束是终态。
-          if (row.status === 'enabled') {
-            actions.push(
-              <Popconfirm
-                key="pause"
-                title="暂停这个活动？"
-                description="暂停后不再开新期，正在跑的这一期会走完并正常开奖。已开出的中奖记录不受影响。"
-                okText="暂停"
-                cancelText="取消"
-                onConfirm={() => setStatus(row, 'paused')}
-              >
-                <Button type="link" size="small" danger>
-                  暂停
-                </Button>
-              </Popconfirm>,
-            );
-          } else if (row.status === 'paused') {
-            actions.push(
-              <Button key="resume" type="link" size="small" onClick={() => setStatus(row, 'enabled')}>
-                恢复
-              </Button>,
-            );
+          // 生命周期动作整份来自 transitions.ts（后端 checkCampaignTransition 的镜像）。
+          // 原先这里写死成「进行中给暂停、已暂停给恢复」，于是草稿既没有入口变进行中、
+          // 也没有任何状态能结束——后端一直允许这两条，只是没人画按钮。
+          //
+          // 「改回草稿」不给行内按钮：它是低频的「这个活动我先撤下来」，编辑弹窗里有。
+          // 行内一律最多四个按钮（详情/编辑/一个生命周期动作/结束），这一列钉了宽度。
+          for (const to of allowedCampaignTransitions(row.status).filter((s) => s !== 'draft')) {
+            const label = campaignActionLabel(row.status, to);
+            // 结束不可逆、暂停会停掉后续的期次，两个都要问一声；启用/恢复是普通动作。
+            if (to === 'ended' || to === 'paused') {
+              actions.push(
+                <Popconfirm
+                  key={to}
+                  title={to === 'ended' ? '结束这个活动？' : '暂停这个活动？'}
+                  description={
+                    to === 'ended'
+                      ? '结束后不可逆：不再开新的期次，也改不回进行中。已经开出的中奖记录不受影响。'
+                      : '暂停后不再开新期，正在跑的这一期会走完并正常开奖。已开出的中奖记录不受影响。'
+                  }
+                  okText={label}
+                  cancelText="取消"
+                  onConfirm={() => setStatus(row, to)}
+                >
+                  <Button type="link" size="small" danger>
+                    {label}
+                  </Button>
+                </Popconfirm>,
+              );
+            } else {
+              actions.push(
+                <Button key={to} type="link" size="small" onClick={() => setStatus(row, to)}>
+                  {label}
+                </Button>,
+              );
+            }
           }
         }
         return actions;
@@ -368,10 +392,11 @@ export default function LotteryCampaignsPage() {
         actionRef={actionRef}
         rowKey="id"
         columns={columns}
-        // 1250 = 160+120+160+160+90+100+170+100+190，各列 width 之和（原「活动窗口」列的
-        // 200 随窗口一起删了，「奖池名额」列的 100 随名额恒为 1 一起删了）。**钉右列不变量**：
-        // 下面「操作」列的 width 与这里必须同批改，对不上表格就会横向溢出。
-        scroll={{ x: 1250 }}
+        // 1310 = 160+120+160+160+90+100+170+100+250，各列 width 之和（原「活动窗口」列的
+        // 200 随窗口一起删了，「奖池名额」列的 100 随名额恒为 1 一起删了；操作列 190→250，
+        // 因为「结束」进门后最多四个按钮）。**钉右列不变量**：下面「操作」列的 width 与这里
+        // 必须同批改，对不上表格就会横向溢出。
+        scroll={{ x: 1310 }}
         search={{ labelWidth: 'auto' }}
         options={false}
         request={async (params) => {
@@ -450,6 +475,16 @@ export default function LotteryCampaignsPage() {
           try {
             if (editing) {
               await updateCampaign(editing.id, payload);
+              // **状态改道走它自己的接口**：后端 UpdateCampaign 有意忽略请求体里的 Status
+              // （见 lottery-service/internal/service/campaign.go——一次「改个名字」的提交
+              // 不该顺手改生命周期），生命周期只有 SetCampaignStatus 一个入口。
+              //
+              // 不补这一次调用，这一格就是哑的：选了「进行中」，保存回 200，活动还是草稿，
+              // 而且**没有任何提示**。上面的 payload 里仍然带着 status，那是给新建用的，
+              // 编辑这一路后端看都不看。
+              if (values.status !== editing.status) {
+                await updateCampaignStatus(editing.id, values.status);
+              }
             } else {
               await createCampaign(payload);
             }
@@ -522,15 +557,19 @@ export default function LotteryCampaignsPage() {
           rules={[{ required: true, message: '请输入参与门槛' }]}
           fieldProps={{ precision: 0 }}
         />
+        {/*
+          状态。**编辑时只列当前状态与它的合法去向**——列一个后端注定拒绝的目标，等于让人
+          点一次 409。选项表来自 transitions.ts（后端 checkCampaignTransition 的镜像）。
+
+          新建时列 STATUS_CHOICES —— 后端 CreateCampaign 认请求里的 status（要 enabled 就
+          顺手开第一期），与 UpdateCampaign 忽略它正好相反。唯一被它拒掉的是 paused。
+        */}
         <ProFormSelect
           name="status"
           label="状态"
-          options={[
-            { label: '草稿（不开期）', value: 'draft' },
-            { label: '进行中（开始开期收人）', value: 'enabled' },
-            { label: '已暂停', value: 'paused' },
-            { label: '已结束', value: 'ended' },
-          ]}
+          options={(editing ? [editing.status, ...allowedCampaignTransitions(editing.status)] : CAMPAIGN_CREATE_CHOICES).map(
+            (value) => ({ label: STATUS_FIELD_LABEL[value], value }),
+          )}
           rules={[{ required: true, message: '请选择状态' }]}
         />
         <ProFormTextArea

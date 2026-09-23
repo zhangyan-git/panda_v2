@@ -52,6 +52,14 @@ func (s *LotteryService) CreateCampaign(ctx context.Context, req dto.CampaignReq
 	if err != nil {
 		return nil, err
 	}
+	// 「新建一个暂停中的活动」：它既没有在跑的期次，也没有人见过它，暂停这个词描述的是一个
+	// 没发生过的动作。要留着就先建成 draft。
+	//
+	// 这条**只属于建单**，所以写在这里而不是 campaignParams 里——那个函数是建单与编辑共用
+	// 的，而编辑这条路紧接着就把 Status 覆盖成库里那一份（见 UpdateCampaign）。
+	if params.Status == model.CampaignPaused {
+		return nil, ErrCampaignStatusTransition
+	}
 	// 开通记录必须存在——否则活动会挂在一个不存在的门店上（外键会拒，但那是一条 23503，
 	// 在这里先给一句人话）。
 	if _, err := s.repository.GetActivationView(ctx, activationID); err != nil {
@@ -83,6 +91,10 @@ func (s *LotteryService) UpdateCampaign(ctx context.Context, id string, req dto.
 	if err != nil {
 		return nil, err
 	}
+	// 先把请求体里的 Status 清掉再校验：这个字段在这一条路上**不被读取**（下面一行用库里
+	// 那一份覆盖掉它），而「校验一个马上要丢掉的值」是会真伤人的——`campaignParams` 里
+	// 每一条 status 规矩都能把一个只改了名字的提交打成 400，且报的还是状态相关的错。
+	req.Status = ""
 	params, err := s.campaignParams(req, existing.ActivationID, actor)
 	if err != nil {
 		return nil, err
@@ -291,11 +303,10 @@ func (s *LotteryService) campaignParams(req dto.CampaignRequest, activationID st
 		if err != nil {
 			return repository.CampaignParams{}, err
 		}
-		if parsed == model.CampaignPaused {
-			// 「新建一个暂停中的活动」：它既没有在跑的期次，也没有人见过它，暂停这个词
-			// 描述的是一个没发生过的动作。要留着就建 draft。
-			return repository.CampaignParams{}, ErrCampaignStatusTransition
-		}
+		// 「不能建成一个暂停中的活动」那条规矩**不在这里**：这个函数建单与编辑共用，
+		// 而编辑紧接着就把 Status 覆盖成库里那一份（见 UpdateCampaign）。校验放在这里，
+		// 一次「把状态改成已暂停」的编辑提交会被自己那个谁都不读的字段打成 400——
+		// 连名字都没存下去。规矩本身仍在，只是挪到了 CreateCampaign。
 		status = parsed
 	}
 

@@ -121,6 +121,8 @@ export default function LotteryRoundsPage() {
 
   const columns: ProColumns<Round>[] = [
     {
+      // 等值筛，不做模糊：期次号是 `{活动短名}-{四位序号}`，客服念给运营的永远是完整的一串，
+      // 「ED8-0001」不该把 ED8-00010 也捞进来。发出去的键是 roundNo（见下面 request）。
       title: '期次号',
       dataIndex: 'roundNo',
       copyable: true,
@@ -284,6 +286,9 @@ export default function LotteryRoundsPage() {
           const query: RoundQuery = {
             page: params.current,
             pageSize: params.pageSize,
+            // 期次号是等值筛（后端 `r.round_no = $n`）。原先这个键根本没往下传，框填了等于
+            // 没填——列表原样返回，也不报错。
+            roundNo: exact(params.roundNo),
             campaignId: exact(params.campaignId),
             status: exact(params.status) as RoundQuery['status'],
           };

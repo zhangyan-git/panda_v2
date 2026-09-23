@@ -354,6 +354,9 @@ func (r *PostgresRepository) ListRounds(ctx context.Context, q dto.RoundQuery) (
 	if q.CampaignID != "" {
 		w.add("r.campaign_id = $%d", q.CampaignID)
 	}
+	if q.RoundNo != "" {
+		w.add("r.round_no = $%d", q.RoundNo)
+	}
 	if q.Status != "" {
 		w.add("r.status = $%d", q.Status)
 	}

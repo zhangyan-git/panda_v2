@@ -49,6 +49,10 @@ type CampaignQuery struct {
 // RoundQuery 是期次列表的筛选条件。
 type RoundQuery struct {
 	CampaignID string
+	// 期次号，**等值**匹配。期次号自带活动短名与序号（`{code}-{seq:04d}`），客服手里拿到
+	// 的永远是完整的一串，所以这里不做模糊；写成 ILIKE 只会让「查 ED8-0001」顺带把
+	// ED8-0001x 也捞出来。
+	RoundNo string
 	// open / closed / drawn / cancelled，空表示不筛。
 	Status   string
 	Page     int

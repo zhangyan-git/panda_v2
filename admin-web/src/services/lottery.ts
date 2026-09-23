@@ -457,6 +457,8 @@ export type CampaignQuery = PageQuery & {
 
 export type RoundQuery = PageQuery & {
   campaignId?: string;
+  /** 期次号，等值匹配（后端 `r.round_no = $n`）。客服手里拿到的是完整的一串。 */
+  roundNo?: string;
   status?: RoundStatus;
 };
 
