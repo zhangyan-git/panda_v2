@@ -35,6 +35,7 @@ import {
 import { fenToYuan, yuanToFen } from '../../../services/money';
 import { FULL_PAGE_PARAMS } from '../../../services/pagination';
 import { requestErrorMessage } from '../../../services/requestError';
+import { scrollableModalBody } from '../../../components/common/modalProps';
 
 /**
  * 会员套餐：卖了什么。
@@ -346,7 +347,7 @@ export default function MembershipPlansPage() {
           // 关窗必须**同时**清掉 editing（理由见上面那两行注释），提交成功后也走这里。
           if (!next) setEditing(undefined);
         }}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         initialValues={
           editing
             ? {

@@ -38,6 +38,7 @@ import {
   listRoleMenus,
   type MenuNode,
 } from '../../services/menu';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 const RolesPage: React.FC = () => {
   const access = useAccess();
@@ -240,7 +241,7 @@ const RolesPage: React.FC = () => {
         title={editing ? '编辑角色' : '新建角色'}
         open={modalOpen}
         onOpenChange={setModalOpen}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         initialValues={
           editing
             ? {

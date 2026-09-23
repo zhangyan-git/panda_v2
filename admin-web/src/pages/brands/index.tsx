@@ -37,6 +37,7 @@ import { listMerchants } from '../../services/merchant';
 import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 import { deletionErrorMessage, requestErrorMessage } from '../../services/requestError';
 import { uploadImage } from '../../services/upload';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 const STATUS_TAG: Record<BrandStatus, { color: string; label: string }> = {
   active: { color: 'green', label: '启用' },
@@ -236,7 +237,7 @@ const BrandsPage: React.FC = () => {
         title={editing ? `编辑品牌「${editing.name}」` : '新建品牌'}
         open={formOpen}
         onOpenChange={setFormOpen}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         initialValues={
           editing
             ? {
@@ -307,7 +308,7 @@ const BrandsPage: React.FC = () => {
         }
         open={auditOpen}
         onOpenChange={setAuditOpen}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         onFinish={async (values) => {
           if (!auditTarget) return false;
           try {

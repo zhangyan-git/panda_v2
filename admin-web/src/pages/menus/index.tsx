@@ -22,6 +22,7 @@ import {
   type MenuNode,
 } from '../../services/menu';
 import { requestErrorMessage } from '../../services/requestError';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 type MenuRow = MenuNode & { children?: MenuRow[] };
 
@@ -173,6 +174,7 @@ const MenusPage: React.FC = () => {
       <ModalForm<MenuInput & { parentId?: string }>
         key={editing?.id ?? `new-${defaultParent}`}
         title={editing ? '编辑菜单' : '新建菜单'}
+        modalProps={{ ...scrollableModalBody }}
         open={modalOpen}
         onOpenChange={(v) => {
           setModalOpen(v);

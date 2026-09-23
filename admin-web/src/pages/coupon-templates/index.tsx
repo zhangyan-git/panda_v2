@@ -49,6 +49,7 @@ import { requestErrorMessage } from '../../services/requestError';
 import { uploadImage } from '../../services/upload';
 import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 import { useAccess } from '@umijs/max';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 // 发券弹窗的表单值。templateName 只是把「发给哪个模板」显示出来，不进提交载荷：
 // 模板由行内按钮决定，不允许手填 ID。
@@ -652,7 +653,7 @@ export default function CouponTemplatesPage() {
         // 点确定却按 editing.id 提交 —— 而后端 PUT 是全量覆盖，
         // 结果是把 A 的整份字段写到 B 行上。key 换行即换实例，destroyOnClose 兜底。
         key={editing?.id ?? 'new'}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         onFinish={async (values) => {
           // 表单里金额是元，后端要的是分的整数，toPayload 里统一换算；
           // claimLimitMode 是后端必填项，漏了会 400。
@@ -881,7 +882,7 @@ export default function CouponTemplatesPage() {
         title={`发放优惠券${issueTarget ? `「${issueTarget.name}」` : ''}`}
         // initialValues 只在首次挂载生效：不销毁重建的话，第二次点开另一个模板，
         // 表单里留着的还是上一次的模板名。
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         onFinish={async (values) => {
           if (!issueTarget) return false;
           // 走 refresh：失败时它已经弹过后端给的理由，这里跟着返回 false，

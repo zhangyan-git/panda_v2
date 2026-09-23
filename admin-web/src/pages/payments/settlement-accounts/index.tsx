@@ -24,6 +24,7 @@ import {
   type SettlementChannel,
 } from '../../../services/settlement';
 import { PARTY_TYPE, RECEIVER_TYPE, RECORD_STATUS } from '../../../services/settlementLabels';
+import { scrollableModalBody } from '../../../components/common/modalProps';
 
 /**
  * 分账账户：**钱分到谁的哪个子商户号上**。
@@ -292,6 +293,7 @@ export default function SettlementAccountsPage() {
         open={editing !== undefined}
         width={640}
         modalProps={{
+          ...scrollableModalBody,
           destroyOnClose: true,
           maskClosable: false,
           onCancel: () => setEditing(undefined),

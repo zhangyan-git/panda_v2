@@ -14,6 +14,7 @@ import {
 import { requestErrorMessage } from '../../../../services/requestError';
 import BasicTab from './BasicTab';
 import ChangesTab from './ChangesTab';
+import { scrollableModalBody } from '../../../../components/common/modalProps';
 
 type TabKey = 'basic' | 'changes';
 
@@ -253,7 +254,7 @@ export default function MembershipDetailPage() {
         title="调整到期时间"
         open={expireOpen}
         onOpenChange={setExpireOpen}
-        modalProps={{ destroyOnClose: true, maskClosable: false }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true, maskClosable: false }}
         onFinish={async (values) => {
           if (!membership) return false;
           const expireAt = toRFC3339(values.expireAt);

@@ -22,6 +22,7 @@ import {
   type ManufacturerStatus,
 } from '../../../services/coffeeMachine';
 import { requestErrorMessage } from '../../../services/requestError';
+import { scrollableModalBody } from '../../../components/common/modalProps';
 
 const STATUS_TAG: Record<ManufacturerStatus, { color: string; label: string }> = {
   active: { color: 'green', label: '启用' },
@@ -161,7 +162,7 @@ const ManufacturersPage: React.FC = () => {
         title={editing ? `编辑厂商「${editing.name}」` : '新建厂商'}
         open={formOpen}
         onOpenChange={setFormOpen}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         initialValues={
           editing
             ? {

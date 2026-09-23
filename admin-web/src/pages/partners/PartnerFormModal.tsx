@@ -13,6 +13,7 @@ import {
   type PartnerInput,
 } from '../../services/partner';
 import { requestErrorMessage } from '../../services/requestError';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 /**
  * 新增 / 编辑一家合作方。
@@ -60,7 +61,7 @@ export default function PartnerFormModal({ open, editing, onOpenChange, onSaved 
       onOpenChange={onOpenChange}
       // destroyOnClose + 调用处的 key：缺了它们，编完 A 再点 B 会把 A 的值带进 B 的表单里
       // （仓库里 10 个弹窗页都为此修过）。这里的后果具体是「把 A 的联系人电话写到 B 上」。
-      modalProps={{ destroyOnClose: true, width: 640 }}
+      modalProps={{ ...scrollableModalBody, destroyOnClose: true, width: 640 }}
       initialValues={
         editing
           ? {

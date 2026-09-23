@@ -14,6 +14,7 @@ import { paymentMethodLabel } from '../../services/paymentMethodLabels';
 import { requestErrorMessage } from '../../services/requestError';
 import { listStores } from '../../services/store';
 import CompositionTags from './CompositionTags';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 /**
  * 订单列表，四个页面共用这一份：全部订单 + 按行类型分的三类（咖啡 / 幸运杯套 / 会员）。
@@ -412,7 +413,7 @@ export default function OrdersTable({ category }: { category: OrderCategory }) {
         onOpenChange={(open) => {
           if (!open) setCancelling(undefined);
         }}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         onFinish={async (values) => {
           if (!cancelling) return true;
           try {

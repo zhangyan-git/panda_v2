@@ -45,6 +45,7 @@ import {
 } from '../../../services/lotteryLabels';
 import { FULL_PAGE_PARAMS } from '../../../services/pagination';
 import { requestErrorMessage } from '../../../services/requestError';
+import { scrollableModalBody } from '../../../components/common/modalProps';
 
 /**
  * 期次列表 + 人工开奖 / 作废。
@@ -298,7 +299,7 @@ export default function LotteryRoundsPage() {
         onOpenChange={(open) => {
           if (!open) setDrawing(undefined);
         }}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         onFinish={async (values) => {
           if (!drawing) return true;
           try {

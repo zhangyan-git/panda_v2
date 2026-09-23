@@ -30,6 +30,7 @@ import { deletionErrorMessage, requestErrorMessage } from '../../services/reques
 import { uploadImage } from '../../services/upload';
 
 import type { AuditStatus } from '../../services/brand';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 /**
  * 表单值 = 后端入参 + 级联框自己的编码路径。
@@ -288,7 +289,7 @@ const StoresPage: React.FC = () => {
         onOpenChange={setFormOpen}
         width={720}
         grid
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         initialValues={
           editing
             ? {
@@ -441,7 +442,7 @@ const StoresPage: React.FC = () => {
         }
         open={auditOpen}
         onOpenChange={setAuditOpen}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         onFinish={async (values) => {
           if (!auditTarget) return false;
           try {

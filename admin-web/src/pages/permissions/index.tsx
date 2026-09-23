@@ -19,6 +19,7 @@ import {
 } from '../../services/iam';
 import { FULL_PAGE_PARAMS } from '../../services/pagination';
 import { requestErrorMessage } from '../../services/requestError';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 type PermissionRow = Permission & { isGroup?: boolean; children?: PermissionRow[] };
 
@@ -196,7 +197,7 @@ const PermissionsPage: React.FC = () => {
         // 少了这两行，「编辑 A → 取消 → 编辑 B」表单里留着的还是 A 的字段值，
         // 点确定却按 editing.id 提交 —— 后端是全量覆盖，等于把 A 写到 B 上。
         key={editing?.id ?? 'new'}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         initialValues={
           editing
             ? {

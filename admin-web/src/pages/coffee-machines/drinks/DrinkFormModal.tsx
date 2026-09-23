@@ -18,6 +18,7 @@ import {
 import { fenToYuan, yuanToFen } from '../../../services/money';
 import { requestErrorMessage } from '../../../services/requestError';
 import { uploadImage } from '../../../services/upload';
+import { scrollableModalBody } from '../../../components/common/modalProps';
 
 /**
  * 饮品的新建 / 编辑表单。两个入口共用：饮品管理页的新建按钮，和设备详情页饮品 tab 的
@@ -96,7 +97,7 @@ export default function DrinkFormModal({
       title={editing ? `编辑饮品「${editing.productName}」` : '新建饮品'}
       open={open}
       onOpenChange={onOpenChange}
-      modalProps={{ destroyOnClose: true }}
+      modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
       initialValues={
         editing
           ? {

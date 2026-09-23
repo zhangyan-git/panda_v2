@@ -51,6 +51,7 @@ import { fenToYuan, formatSignedYuan, formatYuan, yuanToFen } from '../../servic
 import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 import { requestErrorMessage } from '../../services/requestError';
 import { listStores, type Store } from '../../services/store';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 /**
  * 状态展示。deleted 是用户自己注销后留下的终态，后台不能把他改回去——
@@ -684,7 +685,7 @@ export default function MiniappUsersPage() {
         title={`调整咖啡豆余额「${detail?.nickname || detail?.phone || detail?.id || ''}」`}
         open={beanAdjustOpen}
         onOpenChange={setBeanAdjustOpen}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         onFinish={async (values) => {
           if (!detail) return false;
           // 表单里是元，发出去的是分。判断放在换算之后：`0` 与「换成分不足 1 分」的
@@ -809,7 +810,7 @@ export default function MiniappUsersPage() {
         title={`给「${detail?.nickname || detail?.phone || detail?.id || ''}」开通会员`}
         open={grantOpen}
         onOpenChange={setGrantOpen}
-        modalProps={{ destroyOnClose: true, maskClosable: false }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true, maskClosable: false }}
         onFinish={async (values) => {
           if (!detail) return false;
           const expireAt = toRFC3339(values.expireAt);

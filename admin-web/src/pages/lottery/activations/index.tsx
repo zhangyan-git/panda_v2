@@ -24,6 +24,7 @@ import { ACTIVATION_STATUS, roundProgressLabel } from '../../../services/lottery
 import { FULL_PAGE_PARAMS } from '../../../services/pagination';
 import { requestErrorMessage } from '../../../services/requestError';
 import { listStores, type Store } from '../../../services/store';
+import { scrollableModalBody } from '../../../components/common/modalProps';
 
 /**
  * 开通门店抽奖。
@@ -337,7 +338,7 @@ export default function LotteryActivationsPage() {
         title="开通门店抽奖"
         open={activating}
         onOpenChange={setActivating}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         onFinish={async (values) => {
           const payload: ActivateInput = {
             locationId: values.locationId,

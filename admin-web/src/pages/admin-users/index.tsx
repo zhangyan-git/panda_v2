@@ -27,6 +27,7 @@ import {
 } from '../../services/iam';
 import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 import { requestErrorMessage } from '../../services/requestError';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 const AdminUsersPage: React.FC = () => {
   const access = useAccess();
@@ -204,6 +205,7 @@ const AdminUsersPage: React.FC = () => {
       {/* 新建管理员 */}
       <ModalForm<{ username: string; password: string; name?: string; email?: string }>
         title="新建管理员"
+        modalProps={{ ...scrollableModalBody }}
         open={createOpen}
         onOpenChange={setCreateOpen}
         onFinish={async (values) => {

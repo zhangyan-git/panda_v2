@@ -6,6 +6,7 @@ import {
 import { message, Typography } from 'antd';
 import { requestErrorCode, requestErrorMessage } from '../../services/requestError';
 import { reviewAfterSale, type AfterSale } from '../../services/order';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 /**
  * 审核一张退款申请：通过或驳回。两个入口共用——退款申请列表的行操作，以及订单详情里
@@ -53,7 +54,7 @@ export default function ReviewModal({
       key={afterSale?.id ?? 'none'}
       open={open}
       onOpenChange={onOpenChange}
-      modalProps={{ destroyOnClose: true }}
+      modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
       title={
         afterSale
           ? `${isApprove ? '通过' : '驳回'}退款申请 ${afterSale.afterSaleNo}`

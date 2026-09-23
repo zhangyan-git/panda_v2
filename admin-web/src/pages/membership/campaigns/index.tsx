@@ -31,6 +31,7 @@ import {
   type CampaignQuery,
   type CampaignStatus,
 } from '../../../services/campaign';
+import { scrollableModalBody } from '../../../components/common/modalProps';
 
 /**
  * 店铺码会员活动：门店里那张码扫进来送多少天会员。
@@ -357,6 +358,7 @@ export default function MembershipCampaignsPage() {
         open={!!editing}
         width={520}
         modalProps={{
+          ...scrollableModalBody,
           destroyOnClose: true,
           maskClosable: false,
           onCancel: () => setEditing(null),
@@ -542,6 +544,7 @@ export default function MembershipCampaignsPage() {
         open={!!claimsFor}
         width={900}
         modalProps={{
+          ...scrollableModalBody,
           destroyOnClose: true,
           onCancel: () => setClaimsFor(undefined),
           footer: null,

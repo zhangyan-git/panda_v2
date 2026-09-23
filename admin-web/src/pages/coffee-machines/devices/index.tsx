@@ -45,6 +45,7 @@ import { formatDateTime, toRFC3339 } from '../../../services/datetime';
 import { FULL_PAGE_PARAMS } from '../../../services/pagination';
 import { requestErrorMessage } from '../../../services/requestError';
 import { listStores, type Store } from '../../../services/store';
+import { scrollableModalBody } from '../../../components/common/modalProps';
 
 const STATUS_TAG: Record<DeviceStatus, { color: string; label: string }> = {
   active: { color: 'green', label: '在架' },
@@ -532,7 +533,7 @@ const DevicesPage: React.FC = () => {
         title={editing ? `编辑设备「${editing.deviceName || editing.serialUnique}」` : '新建设备'}
         open={formOpen}
         onOpenChange={setFormOpen}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         initialValues={
           editing ? toFormValues(editing) : { qrcodeType: 'miniprogram', showVip: true }
         }

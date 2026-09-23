@@ -9,6 +9,7 @@ import { getMiniappUser } from '../../services/miniappUser';
 import { FULL_PAGE_PARAMS } from '../../services/pagination';
 import { requestErrorMessage } from '../../services/requestError';
 import { useAccess } from '@umijs/max';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 // 接口给的面值/最低消费是「分」的整数，列表和详情都按元展示。
 // 与 pages/coupon-templates 的换算方向相反（那边是录入），但口径必须一致：
@@ -221,7 +222,7 @@ export default function UserCouponsPage() {
       title={actionTarget ? actionTitle(actionTarget.type) : ''}
       // initialValues 只在首次挂载生效，上一个券填的原因会留到下一个券：
       // 没有 initialValues 也仍然要 destroyOnClose，否则输入框内容不重置。
-      modalProps={{ destroyOnClose: true }}
+      modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
       onFinish={async (values) => {
         if (!actionTarget) return false;
         const { coupon, type } = actionTarget;

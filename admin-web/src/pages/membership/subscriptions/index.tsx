@@ -27,6 +27,7 @@ import {
   type SubscriptionQuery,
   type SubscriptionStats,
 } from '../../../services/subscription';
+import { scrollableModalBody } from '../../../components/common/modalProps';
 
 /**
  * 包月订阅管理：谁签了连续包月、这一期扣了没。
@@ -485,6 +486,7 @@ export default function MembershipSubscriptionsPage() {
         open={!!cancelTarget}
         width={420}
         modalProps={{
+          ...scrollableModalBody,
           destroyOnClose: true,
           maskClosable: false,
           onCancel: () => setCancelTarget(undefined),

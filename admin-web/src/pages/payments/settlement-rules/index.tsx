@@ -56,6 +56,7 @@ import {
 } from '../../../services/settlementLabels';
 import { EMPTY_SETTLEMENT_REFS, loadSettlementRefs, refName, type SettlementRefs } from '../settlementRefs';
 import { emptyItem, itemToForm, itemToPayload, ruleScopeRef } from './ruleFormMapping';
+import { scrollableModalBody } from '../../../components/common/modalProps';
 
 /**
  * 分账规则：**这类业务、这个范围上的钱怎么分**。
@@ -544,6 +545,7 @@ export default function SettlementRulesPage() {
         // 窄了就会折行——折了行就等于回到原来那种「一路往下滚」的形态。
         width={1000}
         modalProps={{
+          ...scrollableModalBody,
           destroyOnClose: true,
           maskClosable: false,
           onCancel: () => setEditing(null),

@@ -16,6 +16,7 @@ import {
 } from '../../services/partner';
 import { requestErrorMessage } from '../../services/requestError';
 import { DEFAULT_RATE_LIMIT_PER_MINUTE, formatIPWhitelist, parseIPWhitelist } from './keyAccess';
+import { scrollableModalBody } from '../../components/common/modalProps';
 
 /**
  * 签发 / 修改一把密钥。两条路共用一张表单，因为**可填的格子完全相同**（后端也是同一个
@@ -78,7 +79,7 @@ export default function KeyFormModal({
       // destroyOnClose + 调用处的 key：缺了它们，改完 A 再点 B，A 的值会留在复用同一个 Form
       // 实例的表单里（仓库里 10 个弹窗页都踩过这个坑），而这里的后果具体是「把上一把的 IP
       // 白名单写到下一把上」——一条能直接把对方打出去的改动。
-      modalProps={{ destroyOnClose: true, width: 620 }}
+      modalProps={{ ...scrollableModalBody, destroyOnClose: true, width: 620 }}
       initialValues={
         editing
           ? {
