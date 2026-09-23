@@ -375,7 +375,12 @@ func TestListEntriesFiltersAndPaging(t *testing.T) {
 	userID, orderID, orderNo := newAccountIDs()
 	otherUser, otherOrder, _ := newAccountIDs()
 
-	occurredAt := time.Now().UTC().Add(-time.Hour)
+	// 夹具的时间先对齐到微秒。occurred_at 是 timestamptz，PostgreSQL 只存到微秒，
+	// 而且是**四舍五入**：下面那条断言比的是「窗口里取回来的还是不是写进去那一笔」，
+	// 所以要先把时间降到列能表示的精度上，否则它测的就成了调用方的时钟精度。
+	// Linux 上 time.Now() 带纳秒位，写进去读回来就不再 Equal（macOS 的时钟恰好微秒
+	// 对齐，本机一直看不出这件事）。
+	occurredAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	for i, key := range []string{model.BaseGrantKey(orderID), model.BonusGrantKey(orderID, "campaign-2")} {
 		if _, err := repo.GrantOrderFortune(context.Background(), GrantParams{
 			UserID:     userID,
