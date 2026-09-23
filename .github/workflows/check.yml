@@ -122,9 +122,19 @@ jobs:
           ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
           ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
         ports: ['2379:2379']
-        options: >-
-          --health-cmd "etcdctl endpoint health"
-          --health-interval 5s --health-timeout 5s --health-retries 20
+        # Deliberately no --health-cmd, unlike the three above.
+        #
+        # This image is built from scratch: it contains the etcd and etcdctl
+        # binaries and nothing else — no /bin/sh. `docker create --health-cmd`
+        # has no exec form, it always becomes ["CMD-SHELL", …], so every probe
+        # died with `exec: "/bin/sh": stat /bin/sh: no such file or directory`
+        # and the container never reached healthy. That did not fail the etcd
+        # tests: it failed the job at "Initialize containers", before checkout,
+        # for all twelve matrix entries at once.
+        #
+        # Readiness is waited for explicitly in a step below instead — from the
+        # runner side, over the published port, where the HTTP endpoint is
+        # enough and no shell inside the image is involved.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -147,6 +157,24 @@ jobs:
             -c "CREATE DATABASE panda_account" \
             -c "CREATE DATABASE panda_lottery" \
             -c "CREATE DATABASE panda_membership"
+      # The other three services block the job until they report healthy; etcd
+      # cannot (see the note on its service above), so it is waited for here.
+      # Without this the first etcd call in a test would race the container's
+      # ~1s startup and fail as a connection refused, which reads like a broken
+      # registry rather than a container that had not finished booting.
+      - name: Wait for etcd
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:2379/health >/dev/null; then
+              echo "etcd is ready after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "etcd never became ready; last response:"
+          curl -sv http://127.0.0.1:2379/health || true
+          exit 1
       - name: Apply this module's migrations
         if: matrix.migration_set != ''
         run: |
