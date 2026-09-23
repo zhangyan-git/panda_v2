@@ -190,3 +190,37 @@ func TestProbeWithoutDependenciesStaysReady(t *testing.T) {
 		t.Fatal("a probe with nothing to check must not withdraw readiness")
 	}
 }
+
+// Stop 是「这个副本判死」，live 与 ready 一起转 false。
+//
+// 两者必须一起转，因为两个探针喂的是编排器的两个不同决定：readyz 只管要不要继续往这台
+// 发流量，livez 才管要不要把它回收重建。只转 ready 的副本不再接流量、却也永远不会被重启，
+// 是一台占着资源不干活的僵尸。runtime 的 WorkerFailure 正是靠这一下让 worker 死掉的副本
+// 被换掉。
+func TestStopMarksTheInstanceDeadOnBothProbes(t *testing.T) {
+	s := New()
+	s.SetReady(true)
+	if got := s.Status(); !got.Live || !got.Ready {
+		t.Fatalf("Status() = %+v, want both live and ready", got)
+	}
+	s.Stop()
+	if got := s.Status(); got.Live || got.Ready {
+		t.Fatalf("Status() = %+v after Stop, want neither", got)
+	}
+}
+
+// 判死之后，依赖探测的后续成功不能把它救回来。
+//
+// 这不是假想：探针自己就是一个 Worker，与死掉的那个各跑各的。别的 worker 崩掉、这个副本
+// 已经判死之后，探针仍会按 15s 的节奏继续跑，Postgres 好好的于是每次都说「依赖可达」。
+// 如果 Success 能翻回 ready，判死就会被自己进程里的另一根线程撤销——恢复路径当场失效。
+func TestStopIsNotUndoneByALaterSuccessfulProbe(t *testing.T) {
+	s := New()
+	s.SetReady(true)
+	s.Stop()
+	// 与 Probe.observe 写的是同一个方法。
+	s.SetDependenciesReachable(true)
+	if got := s.Status(); got.Live || got.Ready {
+		t.Fatalf("Status() = %+v, want an instance already stopped to stay dead", got)
+	}
+}

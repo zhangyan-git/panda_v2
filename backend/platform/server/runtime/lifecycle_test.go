@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -387,5 +388,125 @@ func TestLifecycleDrainWithoutRegistrationIsANoop(t *testing.T) {
 	l := New(Options{})
 	if err := l.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain err = %v, want nil", err)
+	}
+}
+
+// exitingWorker 起跑之后一直等，直到测试放行才返回。用它而不是「Run 里直接 return」
+// 是为了让测试确定：直接 return 的话，BeforeStart 里那个 select 会在 workerStarted 与
+// workerDone 之间任选一个，测试本身就成了竞态。
+type exitingWorker struct {
+	started chan struct{}
+	release chan struct{}
+	err     error
+	panics  bool
+}
+
+func (w *exitingWorker) Run(ctx context.Context) error {
+	close(w.started)
+	select {
+	case <-w.release:
+		if w.panics {
+			panic("worker blew up")
+		}
+		return w.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// worker 自己停了必须报出来，三种停法都要报：返回错误、返回 nil、panic。
+//
+// 前两种放在一起是刻意的：判据必须是「ctx 还没被取消」，不能是「err 非 nil」。
+// 一个没被要求停就返回 nil 的 Run，与返回错误的那个一样已经不再干活了。
+func TestLifecycleReportsWorkerThatStopsOnItsOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		panics bool
+	}{
+		{name: "returns an error", err: errors.New("boom")},
+		{name: "returns nil"},
+		{name: "panics", panics: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			worker := &exitingWorker{started: make(chan struct{}), release: make(chan struct{}), err: tc.err, panics: tc.panics}
+			type failure struct {
+				worker Runner
+				err    error
+			}
+			reported := make(chan failure, 1)
+			l := New(Options{
+				Workers: []Runner{worker},
+				WorkerFailure: func(w Runner, err error) {
+					reported <- failure{worker: w, err: err}
+				},
+			})
+			if err := l.BeforeStart(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			<-worker.started
+			close(worker.release)
+
+			select {
+			case got := <-reported:
+				if got.worker != Runner(worker) {
+					t.Fatalf("reported worker = %T, want %T", got.worker, worker)
+				}
+				// panic 那一档带出来的是 recoverRun 包过的值加栈，内容不固定，只判它确实
+				// 是 panic 而不是被吞成了 nil——这正是要防的：原来的 recoverRun 把 panic
+				// 变成 error 之后就没下文了。
+				if tc.panics {
+					if got.err == nil || !strings.Contains(got.err.Error(), "worker blew up") {
+						t.Fatalf("reported error = %v, want the recovered panic value", got.err)
+					}
+				} else if !errors.Is(got.err, tc.err) {
+					t.Fatalf("reported error = %v, want %v", got.err, tc.err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("WorkerFailure was not called for a worker that stopped on its own")
+			}
+			// 收尾。worker 已经退了，AfterStop 会把它的错误聚合出来——这里测的不是那个。
+			_ = l.AfterStop(context.Background())
+		})
+	}
+}
+
+// 停机不算故障：workerCancel 先跑，Run 随之返回 context.Canceled。
+//
+// 这一条报错的话，每一次滚动发布都会把整套正常退出的副本判死重启——比原来的静默
+// 停摆还糟。
+func TestLifecycleDoesNotReportWorkerStoppedByShutdown(t *testing.T) {
+	worker := &exitingWorker{started: make(chan struct{}), release: make(chan struct{})}
+	reported := make(chan Runner, 1)
+	l := New(Options{
+		Workers:       []Runner{worker},
+		WorkerFailure: func(w Runner, _ error) { reported <- w },
+	})
+	if err := l.BeforeStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-worker.started
+	if err := l.AfterStop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case w := <-reported:
+		t.Fatalf("WorkerFailure reported %T for an orderly shutdown", w)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// 没配 WorkerFailure 时不能炸：Options 上它是可选的，多数测试与自定义适配器都不传。
+func TestLifecycleWorkerFailureIsOptional(t *testing.T) {
+	worker := &exitingWorker{started: make(chan struct{}), release: make(chan struct{}), err: errors.New("boom")}
+	l := New(Options{Workers: []Runner{worker}})
+	if err := l.BeforeStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-worker.started
+	close(worker.release)
+	// 没有钩子可等，只能等 worker 确实退干净：AfterStop 读到它的错误即说明走到过那一行。
+	if err := l.AfterStop(context.Background()); err == nil {
+		t.Fatal("worker error should still be aggregated on stop")
 	}
 }

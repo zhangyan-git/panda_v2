@@ -215,6 +215,30 @@ func RunWithOptions(cfg config.Config, options runtime.Options) error {
 			Check: func(ctx context.Context) error { return db.Ping(ctx) },
 		}))
 	}
+	// 后台 worker 意外退出 = 这个副本不再履行它的定期职责，而 HTTP 面看不出任何异常。
+	//
+	// 判死，而不是只把就绪置 false：就绪探针转 503 只会让这个副本停止收流量，编排器
+	// **不会重启它**——那是一个不接流量的僵尸，开奖、关单、对账永远不会再发生。live
+	// 一起转 false 才会让编排器回收并重建。
+	//
+	// 与上面「Redis / RabbitMQ 掉线不算不就绪」不冲突，两者是相反的：那两条说的是
+	// **外部依赖**缺失，服务降级但仍然正确，重启也没用；这里说的是**本进程**的一根
+	// 线程死了，重启是唯一的恢复路径。
+	//
+	// 不在这里再记一条日志：runtime 的 workerFailed 已经按 Error 记了，带 worker
+	// 类型与 panic 栈，服务名由资源属性带上。
+	//
+	// 保留调用方注入的那一个，而不是直接覆盖：RunWithOptions 是组合根，但「监控」这件事
+	// 不该是独占的——服务想额外做点什么（上报、埋点）是合理的，而被这里的赋值悄悄吃掉
+	// 会是个查不出来的哑炮。注入的先跑：Stop 把一个瞬时动作置成 false，先跑后跑都不影响
+	// 它之后的恢复路径，但先跑能让回调看到的还是一台「活着」的实例。
+	injectedWorkerFailure := options.WorkerFailure
+	options.WorkerFailure = func(worker runtime.Runner, err error) {
+		if injectedWorkerFailure != nil {
+			injectedWorkerFailure(worker, err)
+		}
+		h.Stop()
+	}
 	if options.HTTPRoutes != nil {
 		options.HTTPRoutes(httpRouter)
 	}

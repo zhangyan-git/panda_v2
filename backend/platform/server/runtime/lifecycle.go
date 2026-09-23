@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"runtime/debug"
 	"slices"
 	"sync"
@@ -36,8 +37,22 @@ type Options struct {
 	// ConsumerInbox makes the consumer idempotent. Redelivery is normal — a
 	// broker reconnect or a crash between handling and ack both produce it — so
 	// a consumer that writes state needs this to avoid applying it twice.
-	ConsumerInbox    messaging.Inbox
-	Workers          []Runner
+	ConsumerInbox messaging.Inbox
+	Workers       []Runner
+	// WorkerFailure is called once when a Worker's Run returns on its own --
+	// that is, not because shutdown canceled it. A panic inside Run arrives here
+	// too, turned into an error by recoverRun.
+	//
+	// It exists because nothing else in the process notices. /readyz probes
+	// dependencies, not workers, so a worker that has died leaves behind a pod
+	// that reports healthy while the work it was doing has quietly stopped
+	// happening -- no lottery drawn, no order expired, no payment reconciled,
+	// and no signal anywhere until someone looks.
+	//
+	// What to do about it is an orchestration decision (drain the instance, or
+	// have it restarted), which is why the runtime only reports the event and
+	// the caller decides; see the wiring in server.go.
+	WorkerFailure    func(worker Runner, err error)
 	Messaging        io.Closer
 	MessagingCleanup io.Closer
 	Registry         registry.Registry
@@ -80,6 +95,7 @@ type Lifecycle struct {
 	publisher                                                          messaging.Publisher
 	consumer                                                           messaging.Consumer
 	workers                                                            []Runner
+	workerFailure                                                      func(Runner, error)
 	messaging                                                          io.Closer
 	messagingCleanup                                                   io.Closer
 	registry                                                           registry.Registry
@@ -108,7 +124,7 @@ type Lifecycle struct {
 func New(options Options) *Lifecycle {
 	return &Lifecycle{
 		db: options.Database, redis: options.Cache, publisher: options.Publisher,
-		consumer: options.Consumer, workers: append([]Runner(nil), options.Workers...), messaging: options.Messaging, messagingCleanup: options.MessagingCleanup, registry: options.Registry,
+		consumer: options.Consumer, workers: append([]Runner(nil), options.Workers...), workerFailure: options.WorkerFailure, messaging: options.Messaging, messagingCleanup: options.MessagingCleanup, registry: options.Registry,
 		providers: options.Observability, instance: options.Instance, handler: options.ConsumerHandler,
 		httpRoutes: options.HTTPRoutes, grpcRoutes: options.GRPCRoutes,
 		startupTimeout: options.StartupTimeout, shutdownTimeout: options.ShutdownTimeout,
@@ -287,7 +303,19 @@ func (l *Lifecycle) BeforeStart(ctx context.Context) error {
 		l.mu.Unlock()
 		go func(worker Runner, ctx context.Context, done chan error, started chan struct{}) {
 			close(started)
-			done <- recoverRun(func() error { return worker.Run(ctx) })
+			err := recoverRun(func() error { return worker.Run(ctx) })
+			// A canceled context means shutdown asked for this, so a return here
+			// is expected. Anything else is the worker having stopped by itself
+			// -- report it before parking the error on done, because the reader
+			// at the other end only runs at shutdown. Reading ctx.Err() rather
+			// than the error value is deliberate: a worker that returns nil
+			// without being asked to stop has stopped just as surely as one that
+			// returned an error, and only the context distinguishes the two from
+			// an orderly shutdown.
+			if ctx.Err() == nil {
+				l.workerFailed(worker, err)
+			}
+			done <- err
 		}(worker, workerCtx, workerDone, workerStarted)
 		select {
 		case <-workerStarted:
@@ -484,6 +512,26 @@ func (l *Lifecycle) AfterStop(ctx context.Context) error {
 	close(l.stopDone)
 	l.mu.Unlock()
 	return result
+}
+
+// workerFailed reports a worker that stopped without being asked to.
+//
+// The log line comes first on purpose. The callback is allowed to make the
+// process unavailable -- server.go's wiring does exactly that -- and once it
+// has, this instance is on its way out; the log is what survives to answer
+// "when did this replica stop doing its job", which is the question nobody can
+// answer today.
+//
+// Error level rather than Warn: this is not a degraded-but-working state, it is
+// a replica that has permanently stopped performing part of its job. It is also
+// what makes the event reachable in the log pipeline, which collects error
+// paths.
+func (l *Lifecycle) workerFailed(worker Runner, err error) {
+	slog.Error("runtime: worker stopped unexpectedly",
+		"worker", fmt.Sprintf("%T", worker), "error", err)
+	if l.workerFailure != nil {
+		l.workerFailure(worker, err)
+	}
 }
 
 func recoverRun(run func() error) (err error) {
