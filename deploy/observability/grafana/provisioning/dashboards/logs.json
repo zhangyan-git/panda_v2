@@ -1,0 +1,55 @@
+{
+  "uid": "panda-logs",
+  "title": "全链路日志",
+  "description": "按 trace_id / 服务名检索一次请求沿途的日志。日志由各服务经 OTLP 发给 collector，落 OpenSearch 的 ss4o_logs-default-namespace 索引；带 ctx 的那条调用会自带 trace_id 与 span_id，所以同一个 trace_id 能把跨服务的那几行串起来。",
+  "tags": ["panda", "logs"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "q",
+        "label": "查询",
+        "type": "textbox",
+        "description": "Lucene 语法。查一次请求的全部日志：traceId:\"810e82...\"；查某个服务：resource.service.name:\"payment-service\"；查报错：severity.text:ERROR",
+        "query": "*",
+        "current": { "text": "*", "value": "*" },
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "logs",
+      "title": "日志",
+      "datasource": { "type": "elasticsearch", "uid": "opensearch" },
+      "gridPos": { "h": 23, "w": 24, "x": 0, "y": 0 },
+      "maxDataPoints": 1000,
+      "interval": "1m",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "elasticsearch", "uid": "opensearch" },
+          "query": "${q:raw}",
+          "timeField": "@timestamp",
+          "metrics": [{ "type": "logs", "id": "1", "settings": { "limit": "500" } }],
+          "bucketAggs": []
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      }
+    }
+  ]
+}

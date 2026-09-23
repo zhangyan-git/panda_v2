@@ -1,0 +1,15 @@
+# 面板文件的加载入口。没有这个文件时 Grafana 只会往日志里写一句
+# "can't read dashboard provisioning files from directory"，然后照常起来——
+# 症状是面板列表永远是空的，而不看日志根本不知道是缺了这个文件。
+apiVersion: 1
+providers:
+  - name: panda
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    # 改完 json 最多 30 秒生效，不用重启容器。
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

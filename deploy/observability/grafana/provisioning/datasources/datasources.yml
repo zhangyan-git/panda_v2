@@ -9,7 +9,32 @@ datasources:
     type: tempo
     access: proxy
     url: http://tempo:3200
+  # 日志数据源。**用内置的 elasticsearch 插件，不要写 grafana-opensearch-datasource**：
+  # 那个插件自 Grafana 10 起不再随核心发布，要单独 grafana-cli 安装，而本机拉不到
+  # 插件仓库（实测挂到超时）。写成它的话，数据源会「创建成功但每次查询都报
+  # Unable to find datasource plugin」，日志面板整片是空的，看着像没数据。
+  # OpenSearch 的检索 API 与 ES 兼容，内置插件直接连得上（健康检查 OK、能查 ss4o 索引）。
+  # uid 写死，面板文件按它引用；改名会让所有面板一起失联。
   - name: OpenSearch
-    type: grafana-opensearch-datasource
+    uid: opensearch
+    type: elasticsearch
     access: proxy
     url: http://opensearch:9200
+    jsonData:
+      timeField: "@timestamp"
+      # 日志面板靠这两个字段决定「哪一列是正文、哪一列是级别」。不配的话正文会
+      # 退化成整行 JSON，级别也没有颜色。
+      logMessageField: body
+      logLevelField: severity.text
+      # 不让插件去探测版本：它探测到的 distribution 是 opensearch，而内置插件只认
+      # elasticsearch，会拒连。写死成 OpenSearch 报的那个版本号，走兼容路径。
+      esVersion: "2.15.0"
+      # 这个数据源**不要**写 interval。它看着像「最小时间间隔」，其实是
+      # 「按日期命名的索引叫什么粒度」（logs-2026.09.23 那种），插件会把它
+      # 当成索引模式的一部分去校验。写 interval: "1m" 的后果是所有查询直接
+      # 500：日志里是 Failed creating index pattern / unsupported interval '1m'，
+      # 面板整片报错——比它想解决的桶爆炸还糟。
+      #
+      # 桶宽该在哪治：面板侧（同一个 provisioning 目录下 logs.json 的
+      # maxDataPoints / interval），以及 OpenSearch 侧抬 search.max_buckets
+      # （compose 里的 opensearch-settings）。

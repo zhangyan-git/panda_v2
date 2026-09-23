@@ -71,6 +71,34 @@ services:
       timeout: 10s
       retries: 20
 
+  # 把 search.max_buckets 从默认的 65535 抬到 100000。
+  #
+  # 默认值在「1 秒一桶查 24 小时」时会正好撞上：24*3600+1 = 86401 > 65535，
+  # OpenSearch 直接拒掉整个查询，Grafana 面板上表现为整片 **No data**——
+  # 看着像「这段时间没日志」，实际是查询根本没执行。
+  #
+  # 真正的止血在面板侧：Grafana 的自动间隔已经兜到 1m（见
+  # observability/grafana/provisioning/datasources/datasources.yml 的 interval），
+  # 24 小时最多 1441 个桶。这里再抬一层上限，挡的是不走那个面板的调用——
+  # Explore、OpenSearch Dashboards、手写的 curl。
+  #
+  # 集群设置本身是持久的，但数据卷重建就没了；放在这里每次 up 都跑一遍，
+  # 跑完即退，不常驻。镜像复用 opensearch 自己那个：本机拉不到任何新镜像，
+  # 而 curl 它里面本来就有（上面 healthcheck 就在用）。
+  opensearch-settings:
+    image: opensearchproject/opensearch:2.15.0
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        curl -fsS -XPUT http://opensearch:9200/_cluster/settings
+        -H 'Content-Type: application/json'
+        -d '{"persistent":{"search.max_buckets":100000}}'
+    restart: "no"
+
   tempo:
     image: grafana/tempo:2.6.1
     command: ["-config.file=/etc/tempo/tempo.yaml"]
@@ -122,6 +150,12 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-replace-me}
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # 界面语言。镜像里自带 zh-Hans 语言包（/usr/share/grafana/public/locales/），
+      # 不改就是 en-US——界面全英文，而面板标题、变量名是我们自己写的中文，
+      # 中英混排看着像没翻完。面板内容不受影响，只翻 Grafana 自己的那一层。
+      # 变量名里必须有 USERS：default_language 属于 [users] 段（defaults.ini:471 起），
+      # 写成 GF_DEFAULT_LANGUAGE 不会报错、只是被忽略，界面照旧全英文。
+      GF_USERS_DEFAULT_LANGUAGE: zh-Hans
     ports: ["3000:3000"]
     volumes:
       - grafana-data:/var/lib/grafana
