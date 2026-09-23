@@ -12,18 +12,21 @@ import (
 )
 
 // accessFixture 装一条与生产同形的链路：一个 active 商户、一个 active 账号，
-// 账号挂在 m1 下的 b1 品牌、b1 有 s1/s2 两个点位，m1 另有一个不属 b1 的 s3。
-func accessFixture(scopeType, scopeID string) (*MerchantAccessService, *fakeMerchantUserRepo, *fakeMerchantResourceAccess) {
+// 账号挂在 m1 下的 b1/b2 品牌、b1 有 s1/s2 两个点位、b2 有 s4，m1 另有一个
+// 不属任何品牌的 s3。
+func accessFixture(scopeType string, scopeIDs ...string) (*MerchantAccessService, *fakeMerchantUserRepo, *fakeMerchantResourceAccess) {
 	merchants := newFakeMerchantAccess()
 	users := newFakeMerchantUserRepo()
 	resources := newFakeMerchantResourceAccess()
 
 	merchants.seed("m1", "active")
-	resources.brandOwners["b1"] = "m1"
+	resources.brandOwners["b1"], resources.brandOwners["b2"] = "m1", "m1"
 	resources.storeOwners["s1"], resources.storeOwners["s2"], resources.storeOwners["s3"] = "m1", "m1", "m1"
+	resources.storeOwners["s4"] = "m1"
 	resources.storeBrands["s1"], resources.storeBrands["s2"] = "b1", "b1"
+	resources.storeBrands["s4"] = "b2"
 	users.users["u1"] = &model.MerchantUser{
-		ID: "u1", MerchantID: "m1", Status: "active", ScopeType: scopeType, ScopeID: scopeID,
+		ID: "u1", MerchantID: "m1", Status: "active", ScopeType: scopeType, ScopeIDs: scopeIDs,
 	}
 	authSvc := NewMerchantAuthService(users, merchants, nil)
 	return NewMerchantAccessService(users, authSvc, resources), users, resources
@@ -35,21 +38,32 @@ func TestResolveExpandsEveryScopeLevelIntoStoreIDs(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		scopeType string
-		scopeID   string
+		scopeIDs  []string
 		want      []string
-		wantID    string
+		wantIDs   []string
 	}{
-		{name: "merchant", scopeType: "merchant", want: []string{"s1", "s2", "s3"}},
-		{name: "brand", scopeType: "brand", scopeID: "b1", want: []string{"s1", "s2"}, wantID: "b1"},
-		{name: "store", scopeType: "store", scopeID: "s2", want: []string{"s2"}, wantID: "s2"},
+		{name: "merchant", scopeType: "merchant", want: []string{"s1", "s2", "s3", "s4"}},
+		{name: "brand", scopeType: "brand", scopeIDs: []string{"b1"}, want: []string{"s1", "s2"}, wantIDs: []string{"b1"}},
+		{name: "store", scopeType: "store", scopeIDs: []string{"s2"}, want: []string{"s2"}, wantIDs: []string{"s2"}},
+		// 多选：展开出来的是并集，去重后按 id 排序。目标本身也跟着走，
+		// 「这个边界有几个来源」不能被展开结果盖掉——两个品牌合起来只落一个点位时，
+		// 展开结果看起来像单选，而用户勾的是两个。
+		{
+			name: "brand over several targets is their union", scopeType: "brand",
+			scopeIDs: []string{"b1", "b2"}, want: []string{"s1", "s2", "s4"}, wantIDs: []string{"b1", "b2"},
+		},
+		{name: "store over several targets is their union", scopeType: "store", scopeIDs: []string{"s2", "s4"}, want: []string{"s2", "s4"}, wantIDs: []string{"s2", "s4"}},
 		// 空串是历史行里真实存在的值（列可空）。读成商户档是唯一安全的收法：
 		// 它仍被 merchant_id 锚住，而读成「不过滤」就是全平台。
-		{name: "blank falls back to merchant", scopeType: "", want: []string{"s1", "s2", "s3"}},
-		// 商户档的 scope_id 即便库里存了值也不采用。
-		{name: "merchant ignores a stray scope id", scopeType: "merchant", scopeID: "b1", want: []string{"s1", "s2", "s3"}},
+		{name: "blank falls back to merchant", scopeType: "", want: []string{"s1", "s2", "s3", "s4"}},
+		// 商户档的 scope_ids 即便库里存了值也不采用。
+		{name: "merchant ignores stray targets", scopeType: "merchant", scopeIDs: []string{"b1"}, want: []string{"s1", "s2", "s3", "s4"}},
+		// 品牌档但一个目标都没有：展开成空集（而不是回落到全量）。空集是 fail-closed
+		// 的那一边，与商家档的「全部门店」差着一整个商户的数据。
+		{name: "brand with no target expands to nothing", scopeType: "brand", want: []string{}, wantIDs: []string{}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			svc, _, _ := accessFixture(tt.scopeType, tt.scopeID)
+			svc, _, _ := accessFixture(tt.scopeType, tt.scopeIDs...)
 			access, err := svc.Resolve(context.Background(), "u1", "m1")
 			if err != nil {
 				t.Fatal(err)
@@ -58,8 +72,16 @@ func TestResolveExpandsEveryScopeLevelIntoStoreIDs(t *testing.T) {
 			if wantType == "" {
 				wantType = "merchant"
 			}
-			if access.MerchantID != "m1" || access.ScopeType != wantType || access.ScopeID != tt.wantID || !reflect.DeepEqual(access.StoreIDs, tt.want) {
+			wantIDs := tt.wantIDs
+			if wantIDs == nil {
+				wantIDs = []string{}
+			}
+			if access.MerchantID != "m1" || access.ScopeType != wantType ||
+				!reflect.DeepEqual(access.ScopeIDs, wantIDs) || !reflect.DeepEqual(access.StoreIDs, tt.want) {
 				t.Fatalf("边界不对: %+v", access)
+			}
+			if access.StoreIDs == nil {
+				t.Fatal("空范围必须是空切片而不是 nil")
 			}
 		})
 	}
@@ -193,7 +215,7 @@ func TestScopeOfDoesNotRecheckTheAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScopeOf 不应重复判定: %v", err)
 	}
-	if !reflect.DeepEqual(access.StoreIDs, []string{"s1", "s2", "s3"}) {
+	if !reflect.DeepEqual(access.StoreIDs, []string{"s1", "s2", "s3", "s4"}) {
 		t.Fatalf("ScopeOf 应照常展开: %+v", access)
 	}
 	// 导出的入口自己也要能挡住「没有商户可锚」的入参。
@@ -202,32 +224,50 @@ func TestScopeOfDoesNotRecheckTheAccount(t *testing.T) {
 	}
 }
 
-// 商户端要显示「你的数据范围」。商户档没有目标可解析，回空串由前端配文案；
-// 范围目标被删掉时也留空——展示数据不该把一次登录态查询变成错误。
-func TestMerchantScopeName(t *testing.T) {
+// 商户端要显示「你的数据范围」。商户档没有目标可解析，回空切片由前端配文案；
+// 范围目标被删掉时留一个空串占位——展示数据不该把一次登录态查询变成错误。
+func TestMerchantScopeNames(t *testing.T) {
 	svc, _, resources := accessFixture("brand", "b1")
 	resources.brandNames["b1"] = "一号品牌"
+	resources.brandNames["b2"] = "二号品牌"
 	resources.storeNames["s1"] = "一号门店"
 
 	for _, tt := range []struct {
 		name  string
 		scope MerchantAccess
-		want  string
+		want  []string
 	}{
-		{name: "merchant tier has no target", scope: MerchantAccess{ScopeType: "merchant"}, want: ""},
-		{name: "brand", scope: MerchantAccess{ScopeType: "brand", ScopeID: "b1"}, want: "一号品牌"},
-		{name: "store", scope: MerchantAccess{ScopeType: "store", ScopeID: "s1"}, want: "一号门店"},
-		{name: "deleted target stays blank", scope: MerchantAccess{ScopeType: "brand", ScopeID: "gone"}, want: ""},
+		{name: "merchant tier has no target", scope: MerchantAccess{ScopeType: "merchant", ScopeIDs: []string{}}, want: []string{}},
+		{name: "brand", scope: MerchantAccess{ScopeType: "brand", ScopeIDs: []string{"b1"}}, want: []string{"一号品牌"}},
+		{name: "store", scope: MerchantAccess{ScopeType: "store", ScopeIDs: []string{"s1", "s2"}}, want: []string{"一号门店", ""}},
+		{
+			name:  "several targets keep their order",
+			scope: MerchantAccess{ScopeType: "brand", ScopeIDs: []string{"b1", "gone", "b2"}},
+			want:  []string{"一号品牌", "", "二号品牌"},
+		},
+		{
+			// 名称与目标必须同序等长：少一项就会让「b2 的名字」贴到「b1 这个 id」上，
+			// 界面上显示的范围与实际过滤的范围从此对不上。
+			name:  "deleted target keeps its slot",
+			scope: MerchantAccess{ScopeType: "brand", ScopeIDs: []string{"gone"}},
+			want:  []string{""},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := svc.MerchantScopeName(context.Background(), tt.scope)
-			if err != nil || got != tt.want {
-				t.Fatalf("got %q, %v; want %q", got, err, tt.want)
+			got, err := svc.MerchantScopeNames(context.Background(), tt.scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got %q; want %q", got, tt.want)
+			}
+			if len(got) != len(tt.scope.ScopeIDs) {
+				t.Fatalf("名称应与目标同序等长: %v / %v", tt.scope.ScopeIDs, got)
 			}
 		})
 	}
 
-	if _, err := svc.MerchantScopeName(context.Background(), MerchantAccess{ScopeType: "region"}); !errors.Is(err, ErrScopeTypeInvalid) {
+	if _, err := svc.MerchantScopeNames(context.Background(), MerchantAccess{ScopeType: "region"}); !errors.Is(err, ErrScopeTypeInvalid) {
 		t.Fatalf("未知档位应报错, got %v", err)
 	}
 }

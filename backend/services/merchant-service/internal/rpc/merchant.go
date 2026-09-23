@@ -26,7 +26,7 @@ type ownershipReader interface {
 	FindStoreMerchantID(ctx context.Context, id string) (string, error)
 	FindStore(ctx context.Context, id string) (*model.Store, error)
 	ScopeNames(ctx context.Context, brandIDs, storeIDs []string) (map[string]string, map[string]string, error)
-	StoreIDsByScope(ctx context.Context, merchantID, scopeType, scopeID string) ([]string, error)
+	StoreIDsByScope(ctx context.Context, merchantID, scopeType string, scopeIDs []string) ([]string, error)
 }
 
 // MerchantService serves the internal calls user-service makes: the merchant
@@ -123,8 +123,8 @@ func (s *MerchantService) ResolveScopeNames(ctx context.Context, req *merchantv1
 // answer becomes the boundary every downstream service filters on.
 //
 // The request is validated rather than trusted: an unknown scope type or a
-// brand/store level without a scope id is InvalidArgument, not a widened or
-// empty answer. Both mistakes would otherwise surface downstream as "this
+// brand/store level without a single scope id is InvalidArgument, not a widened
+// or empty answer. Both mistakes would otherwise surface downstream as "this
 // account can see nothing", which is indistinguishable from a legitimate empty
 // scope and would be debugged in the wrong service.
 func (s *MerchantService) ListStoreIDs(ctx context.Context, req *merchantv1.ListStoreIDsRequest) (*merchantv1.ListStoreIDsResponse, error) {
@@ -136,22 +136,22 @@ func (s *MerchantService) ListStoreIDs(ctx context.Context, req *merchantv1.List
 		return nil, status.Error(codes.InvalidArgument, "merchant_id is required")
 	}
 	scopeType := req.GetScopeType()
-	scopeID := req.GetScopeId()
+	scopeIDs := req.GetScopeIds()
 	switch scopeType {
 	case auth.ScopeTypeMerchant:
-		// 商户档的 scope_id 应当为空。带上一个却没被用上，说明调用方对范围的
+		// 商户档的 scope_ids 应当为空。带上一组却没被用上，说明调用方对范围的
 		// 理解和这里不一致，宁可报错也不要静默按商户全量返回。
-		if scopeID != "" {
-			return nil, status.Error(codes.InvalidArgument, "scope_id must be empty for merchant scope")
+		if len(scopeIDs) > 0 {
+			return nil, status.Error(codes.InvalidArgument, "scope_ids must be empty for merchant scope")
 		}
 	case auth.ScopeTypeBrand, auth.ScopeTypeStore:
-		if scopeID == "" {
-			return nil, status.Error(codes.InvalidArgument, "scope_id is required for brand and store scope")
+		if len(scopeIDs) == 0 {
+			return nil, status.Error(codes.InvalidArgument, "scope_ids is required for brand and store scope")
 		}
 	default:
 		return nil, status.Error(codes.InvalidArgument, "unknown scope_type")
 	}
-	ids, err := s.access.StoreIDsByScope(ctx, merchantID, scopeType, scopeID)
+	ids, err := s.access.StoreIDsByScope(ctx, merchantID, scopeType, scopeIDs)
 	if err != nil {
 		// 认不出的档位在上面已经挡掉，走到这里的只可能是存储故障。
 		return nil, status.Error(codes.Internal, "merchant service error")

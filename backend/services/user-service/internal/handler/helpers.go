@@ -64,3 +64,15 @@ func requireConsumer(w http.ResponseWriter, r *http.Request) (auth.Identity, boo
 func loginIP(r *http.Request) string {
 	return ratelimit.ClientIP(r)
 }
+
+// nonNilStrings 把 nil 切片换成空切片再交给 JSON。
+//
+// nil 序列化成 null，空切片序列化成 []，而这一层下面每条路径都已经保证「没有范围」是
+// 空切片而不是 nil。若在这里把那个区别漏出去，前端就要为一个不存在的状态写分支，
+// 而多写的那条分支迟早会被当成真状态去用。
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}

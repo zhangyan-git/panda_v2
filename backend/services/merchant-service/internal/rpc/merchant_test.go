@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -63,7 +64,7 @@ func (f fakeAccess) ScopeNames(context.Context, []string, []string) (map[string]
 	return f.brandNames, f.storeNames, nil
 }
 
-func (f fakeAccess) StoreIDsByScope(context.Context, string, string, string) ([]string, error) {
+func (f fakeAccess) StoreIDsByScope(context.Context, string, string, []string) ([]string, error) {
 	return f.storeIDs, f.scopeErr
 }
 
@@ -248,14 +249,18 @@ func TestResolveScopeNamesAnswersListings(t *testing.T) {
 
 // recordingAccess notes whether the repository was consulted, so a validation
 // test can assert it was not: an unexpanded scope must be refused, never
-// answered from a default.
+// answered from a default. It also keeps the boundary it was handed, so a test
+// can pin that the whole set of targets crossed the wire rather than just its
+// first element.
 type recordingAccess struct {
 	fakeAccess
-	called *bool
+	called   *bool
+	gotScope []string
 }
 
-func (r recordingAccess) StoreIDsByScope(context.Context, string, string, string) ([]string, error) {
+func (r *recordingAccess) StoreIDsByScope(_ context.Context, _, _ string, scopeIDs []string) ([]string, error) {
 	*r.called = true
+	r.gotScope = scopeIDs
 	return r.storeIDs, r.scopeErr
 }
 
@@ -288,7 +293,7 @@ func TestListStoreIDsExpandsScope(t *testing.T) {
 	t.Run("empty scope arrives as an empty answer", func(t *testing.T) {
 		client, _ := testServer(t, fakeMerchants{}, fakeAccess{})
 		resp, err := client.ListStoreIDs(serviceCtx, &merchantv1.ListStoreIDsRequest{
-			MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeId: "b-empty",
+			MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIds: []string{"b-empty"},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -298,10 +303,30 @@ func TestListStoreIDsExpandsScope(t *testing.T) {
 		}
 	})
 
+	// 一组目标要整组过线：仓储按它们展开成并集，少传一个就是少看得见一片点位，
+	// 而调用方那边显示的范围不会有任何变化。
+	t.Run("several targets cross the wire as a set", func(t *testing.T) {
+		called := false
+		access := &recordingAccess{called: &called, fakeAccess: fakeAccess{storeIDs: []string{"s1", "s2", "s4"}}}
+		client, _ := testServer(t, fakeMerchants{}, access)
+		resp, err := client.ListStoreIDs(serviceCtx, &merchantv1.ListStoreIDsRequest{
+			MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIds: []string{"b1", "b2"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !called || !reflect.DeepEqual(access.gotScope, []string{"b1", "b2"}) {
+			t.Fatalf("仓储收到的范围=%v want [b1 b2]", access.gotScope)
+		}
+		if got := resp.GetStoreIds(); len(got) != 3 {
+			t.Fatalf("store_ids=%v", got)
+		}
+	})
+
 	t.Run("a storage failure stays opaque", func(t *testing.T) {
 		client, _ := testServer(t, fakeMerchants{}, fakeAccess{scopeErr: errors.New(`pq: relation "stores" does not exist`)})
 		_, err := client.ListStoreIDs(serviceCtx, &merchantv1.ListStoreIDsRequest{
-			MerchantId: "m1", ScopeType: auth.ScopeTypeStore, ScopeId: "s1",
+			MerchantId: "m1", ScopeType: auth.ScopeTypeStore, ScopeIds: []string{"s1"},
 		})
 		if got := status.Code(err); got != codes.Internal {
 			t.Fatalf("code=%v want Internal", got)
@@ -323,17 +348,18 @@ func TestListStoreIDsRefusesUnexpandableScope(t *testing.T) {
 		request *merchantv1.ListStoreIDsRequest
 	}{
 		{"no merchant", &merchantv1.ListStoreIDsRequest{ScopeType: auth.ScopeTypeMerchant}},
-		{"merchant scope carrying a scope id", &merchantv1.ListStoreIDsRequest{
-			MerchantId: "m1", ScopeType: auth.ScopeTypeMerchant, ScopeId: "b1",
+		// 商户档带目标：调用方对范围的理解与这里不一致，宁可不答也不要静默按全量返回。
+		{"merchant scope carrying scope ids", &merchantv1.ListStoreIDsRequest{
+			MerchantId: "m1", ScopeType: auth.ScopeTypeMerchant, ScopeIds: []string{"b1"},
 		}},
-		{"brand scope without a scope id", &merchantv1.ListStoreIDsRequest{MerchantId: "m1", ScopeType: auth.ScopeTypeBrand}},
-		{"store scope without a scope id", &merchantv1.ListStoreIDsRequest{MerchantId: "m1", ScopeType: auth.ScopeTypeStore}},
+		{"brand scope without scope ids", &merchantv1.ListStoreIDsRequest{MerchantId: "m1", ScopeType: auth.ScopeTypeBrand}},
+		{"store scope without scope ids", &merchantv1.ListStoreIDsRequest{MerchantId: "m1", ScopeType: auth.ScopeTypeStore}},
 		{"unknown scope type", &merchantv1.ListStoreIDsRequest{MerchantId: "m1", ScopeType: "region"}},
 		{"missing scope type", &merchantv1.ListStoreIDsRequest{MerchantId: "m1"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			client, _ := testServer(t, fakeMerchants{}, recordingAccess{called: &called})
+			client, _ := testServer(t, fakeMerchants{}, &recordingAccess{called: &called})
 			_, err := client.ListStoreIDs(serviceCtx, tt.request)
 			if got := status.Code(err); got != codes.InvalidArgument {
 				t.Fatalf("code=%v want InvalidArgument", got)

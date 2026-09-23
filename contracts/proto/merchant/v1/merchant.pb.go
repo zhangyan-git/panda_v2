@@ -1652,7 +1652,7 @@ func (x *ResolveScopeNamesResponse) GetStoreNames() map[string]string {
 // tables, so every consumer downstream can filter on a plain list of ids instead
 // of re-deriving what "brand-scoped" means.
 //
-// merchant_id is not optional and is not derived from scope_id: a brand id or a
+// merchant_id is not optional and is not derived from scope_ids: a brand id or a
 // store id from another tenant must not widen the answer, so every branch of the
 // query is anchored on it.
 type ListStoreIDsRequest struct {
@@ -1662,9 +1662,10 @@ type ListStoreIDsRequest struct {
 	// rather than treated as merchant-level — guessing wide on an unrecognized
 	// value is how a typo becomes a full listing.
 	ScopeType string `protobuf:"bytes,2,opt,name=scope_type,json=scopeType,proto3" json:"scope_type,omitempty"`
-	// scope_id is the brand or store; it must be empty at merchant level and
-	// present otherwise.
-	ScopeId       string `protobuf:"bytes,3,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
+	// scope_ids are the brands or stores; the list must be empty at merchant level
+	// and non-empty otherwise. Several targets widen the answer to their union —
+	// a merchant account may be authorized for more than one brand or store.
+	ScopeIds      []string `protobuf:"bytes,3,rep,name=scope_ids,json=scopeIds,proto3" json:"scope_ids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1713,11 +1714,11 @@ func (x *ListStoreIDsRequest) GetScopeType() string {
 	return ""
 }
 
-func (x *ListStoreIDsRequest) GetScopeId() string {
+func (x *ListStoreIDsRequest) GetScopeIds() []string {
 	if x != nil {
-		return x.ScopeId
+		return x.ScopeIds
 	}
-	return ""
+	return nil
 }
 
 // ListStoreIDsResponse carries ids only. Callers need the set to filter their own
@@ -1882,13 +1883,13 @@ const file_merchant_v1_merchant_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a=\n" +
 	"\x0fStoreNamesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"p\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"r\n" +
 	"\x13ListStoreIDsRequest\x12\x1f\n" +
 	"\vmerchant_id\x18\x01 \x01(\tR\n" +
 	"merchantId\x12\x1d\n" +
 	"\n" +
-	"scope_type\x18\x02 \x01(\tR\tscopeType\x12\x19\n" +
-	"\bscope_id\x18\x03 \x01(\tR\ascopeId\"3\n" +
+	"scope_type\x18\x02 \x01(\tR\tscopeType\x12\x1b\n" +
+	"\tscope_ids\x18\x03 \x03(\tR\bscopeIds\"3\n" +
 	"\x14ListStoreIDsResponse\x12\x1b\n" +
 	"\tstore_ids\x18\x01 \x03(\tR\bstoreIds*\x89\x01\n" +
 	"\x0eMerchantStatus\x12\x1f\n" +

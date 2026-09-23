@@ -40,7 +40,7 @@ func (f *scopeRepoFake) FindByID(context.Context, string) (*model.Store, error) 
 func TestMerchantStoreListPutsScopeOnBothQueries(t *testing.T) {
 	repo := &scopeRepoFake{}
 	svc := NewMerchantStoreService(repo)
-	scope := auth.StoreScope{MerchantID: "m1", ScopeType: auth.ScopeTypeBrand, ScopeID: "b1", StoreIDs: []string{"s1", "s2"}}
+	scope := auth.StoreScope{MerchantID: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIDs: []string{"b1"}, StoreIDs: []string{"s1", "s2"}}
 
 	// 请求方带上的商户字段必须被范围覆盖，而不是与之并存或取胜。
 	if _, _, err := svc.List(context.Background(), scope, repository.StoreFilter{MerchantID: "m2", Name: "x", StoreIDs: []string{"s9"}}, 1, 20); err != nil {
@@ -70,7 +70,7 @@ func TestMerchantStoreListTreatsNilScopeAsNothingAuthorized(t *testing.T) {
 }
 
 func TestMerchantStoreGetRejectsStoresOutsideTheScope(t *testing.T) {
-	scope := auth.StoreScope{MerchantID: "m1", ScopeType: auth.ScopeTypeStore, ScopeID: "s1", StoreIDs: []string{"s1"}}
+	scope := auth.StoreScope{MerchantID: "m1", ScopeType: auth.ScopeTypeStore, ScopeIDs: []string{"s1"}, StoreIDs: []string{"s1"}}
 
 	repo := &scopeRepoFake{store: &model.Store{ID: "s1", MerchantID: "m1"}}
 	if _, err := NewMerchantStoreService(repo).Get(context.Background(), scope, "s1"); err != nil {

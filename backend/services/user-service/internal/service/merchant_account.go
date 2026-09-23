@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -53,20 +55,27 @@ func (s *MerchantAccountService) ListUsers(ctx context.Context, merchantID strin
 	return users, total, nil
 }
 
-// decorateScopeNames fills in each account's scope display name. The names come
+// decorateScopeNames fills in each account's scope display names. The names come
 // from the merchant database, so one RPC answers the whole batch instead of a
 // join the identity database can no longer make. A scope that no longer exists
 // is absent from the answer and simply leaves that account's name empty:
 // display data must not turn a listing into an error.
+//
+// ScopeNames comes back in the same order and with the same length as ScopeIDs:
+// the two are read side by side, and a name that is dropped or reordered pairs
+// with the wrong target. An id that cannot be resolved keeps its slot as an
+// empty string rather than being squeezed out of the slice.
 func (s *MerchantAccountService) decorateScopeNames(ctx context.Context, users ...*model.MerchantUser) error {
 	var brandIDs, storeIDs []string
 	for _, u := range users {
-		switch {
-		case u == nil || u.ScopeID == "":
-		case u.ScopeType == "brand":
-			brandIDs = append(brandIDs, u.ScopeID)
-		case u.ScopeType == "store":
-			storeIDs = append(storeIDs, u.ScopeID)
+		if u == nil {
+			continue
+		}
+		switch u.ScopeType {
+		case "brand":
+			brandIDs = append(brandIDs, u.ScopeIDs...)
+		case "store":
+			storeIDs = append(storeIDs, u.ScopeIDs...)
 		}
 	}
 	if len(brandIDs) == 0 && len(storeIDs) == 0 {
@@ -80,48 +89,48 @@ func (s *MerchantAccountService) decorateScopeNames(ctx context.Context, users .
 		if u == nil {
 			continue
 		}
-		switch u.ScopeType {
-		case "brand":
-			u.ScopeName = brandNames[u.ScopeID]
-		case "store":
-			u.ScopeName = storeNames[u.ScopeID]
+		names := make([]string, 0, len(u.ScopeIDs))
+		for _, id := range u.ScopeIDs {
+			switch u.ScopeType {
+			case "brand":
+				names = append(names, brandNames[id])
+			case "store":
+				names = append(names, storeNames[id])
+			}
 		}
+		u.ScopeNames = names
 	}
 	return nil
 }
 
-func (s *MerchantAccountService) validateScope(ctx context.Context, merchantID, scopeType, scopeID string) error {
+// validateScope 逐个核对范围目标确实属于这个商户。
+//
+// 锚点是**每一个**目标，不是第一个：账号 A 的范围里混进一个 B 商户的品牌 id，展开出来的
+// 点位集合就跨了商户，而这条错误在界面上看不出来（列表里只是多了一个陌生的名字）。
+// 品牌档与门店档只差一个查询函数，分成两段写会让「新增一档」变成抄一整段。
+func (s *MerchantAccountService) validateScope(ctx context.Context, merchantID, scopeType string, scopeIDs []string) error {
 	switch scopeType {
-	case "", "merchant":
+	case "merchant":
 		return nil
-	case "brand":
-		if scopeID == "" {
+	case "brand", "store":
+		if len(scopeIDs) == 0 {
 			return ErrScopeIDRequired
 		}
-		merchantResourceID, err := s.resources.FindBrandMerchantID(ctx, scopeID)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+		owner := s.resources.FindBrandMerchantID
+		if scopeType == "store" {
+			owner = s.resources.FindStoreMerchantID
+		}
+		for _, id := range scopeIDs {
+			merchantResourceID, err := owner(ctx, id)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return ErrScopeOutOfMerchant
+				}
+				return err
+			}
+			if merchantResourceID != merchantID {
 				return ErrScopeOutOfMerchant
 			}
-			return err
-		}
-		if merchantResourceID != merchantID {
-			return ErrScopeOutOfMerchant
-		}
-		return nil
-	case "store":
-		if scopeID == "" {
-			return ErrScopeIDRequired
-		}
-		merchantResourceID, err := s.resources.FindStoreMerchantID(ctx, scopeID)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrScopeOutOfMerchant
-			}
-			return err
-		}
-		if merchantResourceID != merchantID {
-			return ErrScopeOutOfMerchant
 		}
 		return nil
 	default:
@@ -129,19 +138,40 @@ func (s *MerchantAccountService) validateScope(ctx context.Context, merchantID, 
 	}
 }
 
-func normalizeScope(scopeType, scopeID string) (string, string) {
+// normalizeScope 把空档收成 merchant 档，并把目标归一成一组：去掉空串、去重、排序。
+//
+// 排序是给回显用的：scope_names 与 scope_ids 同序回给界面，而数组在库里存的是插入顺序，
+// 不排的话同一组目标在两次读取里可能顺序不同，列表上看着像被人改过。去重顺带把
+// 「同一个品牌勾了两次」这种客户端重复挡在库外。
+func normalizeScope(scopeType string, scopeIDs []string) (string, []string) {
 	if scopeType == "" || scopeType == "merchant" {
-		return "merchant", ""
+		// 商户档的目标必须是空：库里真存了一组也不采用——让一个用不上的字段参与
+		// 决定边界，等于留了条谁都不知道的旁路（同 ScopeOf）。
+		return "merchant", []string{}
 	}
-	return scopeType, scopeID
+	ids := make([]string, 0, len(scopeIDs))
+	seen := make(map[string]struct{}, len(scopeIDs))
+	for _, id := range scopeIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return scopeType, ids
 }
 
-func (s *MerchantAccountService) CreateUser(ctx context.Context, merchantID, username, password, name, email, phone string, isAdmin bool, scopeType, scopeID string) (*model.MerchantUser, error) {
+func (s *MerchantAccountService) CreateUser(ctx context.Context, merchantID, username, password, name, email, phone string, isAdmin bool, scopeType string, scopeIDs []string) (*model.MerchantUser, error) {
 	if _, err := s.merchants.FindStatus(ctx, merchantID); err != nil {
 		return nil, err
 	}
-	scopeType, scopeID = normalizeScope(scopeType, scopeID)
-	if err := s.validateScope(ctx, merchantID, scopeType, scopeID); err != nil {
+	scopeType, scopeIDs = normalizeScope(scopeType, scopeIDs)
+	if err := s.validateScope(ctx, merchantID, scopeType, scopeIDs); err != nil {
 		return nil, err
 	}
 	if existing, err := s.users.FindByUsername(ctx, username); err == nil && existing != nil {
@@ -154,7 +184,7 @@ func (s *MerchantAccountService) CreateUser(ctx context.Context, merchantID, use
 		return nil, err
 	}
 	now := time.Now()
-	u := &model.MerchantUser{ID: uuid.NewString(), MerchantID: merchantID, Username: username, PasswordHash: string(hash), Name: name, Email: email, Phone: phone, Status: "active", IsAdmin: isAdmin, ScopeType: scopeType, ScopeID: scopeID, CreatedAt: now, UpdatedAt: now}
+	u := &model.MerchantUser{ID: uuid.NewString(), MerchantID: merchantID, Username: username, PasswordHash: string(hash), Name: name, Email: email, Phone: phone, Status: "active", IsAdmin: isAdmin, ScopeType: scopeType, ScopeIDs: scopeIDs, CreatedAt: now, UpdatedAt: now}
 	if err := s.users.Create(ctx, u); err != nil {
 		return nil, err
 	}
@@ -164,16 +194,16 @@ func (s *MerchantAccountService) CreateUser(ctx context.Context, merchantID, use
 	return u, nil
 }
 
-func (s *MerchantAccountService) UpdateUserScope(ctx context.Context, id, scopeType, scopeID string, isAdmin bool) error {
+func (s *MerchantAccountService) UpdateUserScope(ctx context.Context, id, scopeType string, scopeIDs []string, isAdmin bool) error {
 	u, err := s.users.FindByID(ctx, id)
 	if err != nil {
 		return err
 	}
-	scopeType, scopeID = normalizeScope(scopeType, scopeID)
-	if err := s.validateScope(ctx, u.MerchantID, scopeType, scopeID); err != nil {
+	scopeType, scopeIDs = normalizeScope(scopeType, scopeIDs)
+	if err := s.validateScope(ctx, u.MerchantID, scopeType, scopeIDs); err != nil {
 		return err
 	}
-	return s.users.UpdateScope(ctx, id, scopeType, scopeID, isAdmin)
+	return s.users.UpdateScope(ctx, id, scopeType, scopeIDs, isAdmin)
 }
 
 func (s *MerchantAccountService) UpdateUserStatus(ctx context.Context, id, status string) error {

@@ -64,8 +64,10 @@ func (s *MerchantAccessService) FindStore(ctx context.Context, id string) (*mode
 // 展开放在商户服务而不是各消费方，是因为只有这里知道「品牌档」在这张表上意味着什么。
 // 下游的设备表与订单表都只持有 store_id，拿到一组平板 id 就能过滤，不必各自重新
 // 解释一次范围语义——那种重复解释正是三处实现慢慢分叉的起点。
-func (s *MerchantAccessService) StoreIDsByScope(ctx context.Context, merchantID, scopeType, scopeID string) ([]string, error) {
-	return s.stores.FindIDsByScope(ctx, merchantID, scopeType, scopeID)
+//
+// scopeIDs 是一组目标（品牌档的好几个品牌、门店档的好几家店），展开成它们的并集。
+func (s *MerchantAccessService) StoreIDsByScope(ctx context.Context, merchantID, scopeType string, scopeIDs []string) ([]string, error) {
+	return s.stores.FindIDsByScope(ctx, merchantID, scopeType, scopeIDs)
 }
 
 // ScopeNames resolves brand and store ids to display names. It backs the scope

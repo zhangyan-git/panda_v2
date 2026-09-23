@@ -149,7 +149,7 @@ message ResolveScopeNamesResponse {
 // tables, so every consumer downstream can filter on a plain list of ids instead
 // of re-deriving what "brand-scoped" means.
 //
-// merchant_id is not optional and is not derived from scope_id: a brand id or a
+// merchant_id is not optional and is not derived from scope_ids: a brand id or a
 // store id from another tenant must not widen the answer, so every branch of the
 // query is anchored on it.
 message ListStoreIDsRequest {
@@ -158,9 +158,10 @@ message ListStoreIDsRequest {
   // rather than treated as merchant-level — guessing wide on an unrecognized
   // value is how a typo becomes a full listing.
   string scope_type = 2;
-  // scope_id is the brand or store; it must be empty at merchant level and
-  // present otherwise.
-  string scope_id = 3;
+  // scope_ids are the brands or stores; the list must be empty at merchant level
+  // and non-empty otherwise. Several targets widen the answer to their union —
+  // a merchant account may be authorized for more than one brand or store.
+  repeated string scope_ids = 3;
 }
 
 // ListStoreIDsResponse carries ids only. Callers need the set to filter their own

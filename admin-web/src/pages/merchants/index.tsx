@@ -20,6 +20,7 @@ import { useAccess } from '@umijs/max';
 import { Button, message, Popconfirm, Space, Switch, Tag, Select } from 'antd';
 import { useRef, useState } from 'react';
 import type { ActionType, ProColumns, ProFormInstance } from '@ant-design/pro-components';
+import { scrollableModalBody } from '../../components/common/modalProps';
 import {
   createMerchant,
   createMerchantUser,
@@ -40,12 +41,25 @@ import { listBrands } from '../../services/brand';
 import { listStores } from '../../services/store';
 import { FULL_PAGE_PARAMS, toPageParams } from '../../services/pagination';
 import { requestErrorMessage } from '../../services/requestError';
+import { scopeText } from './scopeText';
 
 const STATUS_TAG: Record<MerchantStatus, { color: string; label: string }> = {
   pending: { color: 'gold', label: '待审核' },
   active: { color: 'green', label: '正常' },
   suspended: { color: 'red', label: '已暂停' },
 };
+
+// 三个档位在「新建账号」与「调整范围」两个弹窗里是同一份，写两份迟早会只改一处。
+// 品牌与门店两档的目标可以多选，所以不叫「单个品牌」——那是范围只能有一个目标时的说法。
+const SCOPE_TYPE_OPTIONS = [
+  { label: '商户全部数据', value: 'merchant' },
+  { label: '指定品牌（旗下全部数据）', value: 'brand' },
+  { label: '指定门店（旗下全部数据）', value: 'store' },
+];
+
+// 多选下拉的公共 props：品牌档可以挑好几个品牌，门店档同理，展开后是它们的并集。
+// maxTagCount 用 responsive，标签多了自己收成「+n」，不会把这一行撑破。
+const SCOPE_TARGET_SELECT_PROPS = { mode: 'multiple' as const, maxTagCount: 'responsive' as const };
 
 const MerchantsPage: React.FC = () => {
   const access = useAccess();
@@ -211,9 +225,11 @@ const MerchantsPage: React.FC = () => {
     {
       title: '数据范围',
       dataIndex: 'scopeType',
-      width: 150,
-      render: (_, row) =>
-        `${row.scopeType === 'merchant' ? '商户全部' : row.scopeType === 'brand' ? '品牌' : '门店'}${row.scopeName ? `：${row.scopeName}` : ''}`,
+      // 门店档可以有好几个目标，名字连起来会比单点时宽，150 会把「北京一区、北京二区」
+      // 这类值截掉；给到 240 并允许省略。
+      width: 240,
+      ellipsis: true,
+      render: (_, row) => scopeText(row),
     },
     {
       title: '创建时间',
@@ -309,6 +325,7 @@ const MerchantsPage: React.FC = () => {
       }>
         key={editing?.id ?? 'create'}
         title={editing ? `编辑商户「${editing.name}」` : '新建商户'}
+        modalProps={{ ...scrollableModalBody }}
         open={formOpen}
         onOpenChange={setFormOpen}
         initialValues={
@@ -393,13 +410,13 @@ const MerchantsPage: React.FC = () => {
         phone?: string;
         isAdmin?: boolean;
         scopeType?: MerchantUserScopeType;
-        scopeId?: string;
+        scopeIds?: string[];
       }>
         title="新建登录账号"
         formRef={accountCreateFormRef}
         open={accountCreateOpen}
         onOpenChange={setAccountCreateOpen}
-        modalProps={{ destroyOnClose: true }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
         onFinish={async (values) => {
           if (!accountTarget) return false;
           try {
@@ -435,22 +452,21 @@ const MerchantsPage: React.FC = () => {
           initialValue="merchant"
           fieldProps={{
             onChange: () => {
-              accountCreateFormRef.current?.setFieldsValue({ scopeId: undefined });
+              // 换档位要清目标：品牌 id 留在门店档里就会被提交上去，后端逐个校验归属时
+              // 会回「数据范围目标不属于该商户」，而用户这一轮什么都没改。
+              accountCreateFormRef.current?.setFieldsValue({ scopeIds: undefined });
             },
           }}
-          options={[
-            { label: '商户全部数据', value: 'merchant' },
-            { label: '单个品牌（旗下全部数据）', value: 'brand' },
-            { label: '单个门店（旗下全部数据）', value: 'store' },
-          ]}
+          options={SCOPE_TYPE_OPTIONS}
         />
         <ProFormDependency name={['scopeType']}>
           {({ scopeType }) =>
             scopeType && scopeType !== 'merchant' ? (
               <ProFormSelect
-                name="scopeId"
+                name="scopeIds"
                 label={scopeType === 'brand' ? '品牌' : '门店'}
                 rules={[{ required: true, message: '请选择数据范围目标' }]}
+                fieldProps={SCOPE_TARGET_SELECT_PROPS}
                 key={`${accountTarget?.id ?? 'none'}:${scopeType}`}
                 params={{ merchantId: accountTarget?.id, scopeType }}
                 request={async (params) => {
@@ -476,7 +492,7 @@ const MerchantsPage: React.FC = () => {
         </ProFormDependency>
       </ModalForm>
 
-      <ModalForm<{ scopeType: MerchantUserScopeType; scopeId?: string; isAdmin?: boolean }>
+      <ModalForm<{ scopeType: MerchantUserScopeType; scopeIds?: string[]; isAdmin?: boolean }>
         title={`调整账号「${scopeTarget?.username ?? ''}」的数据范围`}
         formRef={scopeFormRef}
         open={scopeOpen}
@@ -484,8 +500,8 @@ const MerchantsPage: React.FC = () => {
           setScopeOpen(open);
           if (!open) setScopeTarget(null);
         }}
-        modalProps={{ destroyOnClose: true }}
-        initialValues={scopeTarget ? { scopeType: scopeTarget.scopeType, scopeId: scopeTarget.scopeId, isAdmin: scopeTarget.isAdmin } : { scopeType: 'merchant' }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true }}
+        initialValues={scopeTarget ? { scopeType: scopeTarget.scopeType, scopeIds: scopeTarget.scopeIds, isAdmin: scopeTarget.isAdmin } : { scopeType: 'merchant' }}
         onFinish={async (values) => {
           if (!scopeTarget) return false;
           try {
@@ -504,14 +520,10 @@ const MerchantsPage: React.FC = () => {
         <ProFormSelect
           name="scopeType"
           label="数据范围"
-          options={[
-            { label: '商户全部数据', value: 'merchant' },
-            { label: '单个品牌（旗下全部数据）', value: 'brand' },
-            { label: '单个门店（旗下全部数据）', value: 'store' },
-          ]}
+          options={SCOPE_TYPE_OPTIONS}
           fieldProps={{
             onChange: () => {
-              scopeFormRef.current?.setFieldsValue({ scopeId: undefined });
+              scopeFormRef.current?.setFieldsValue({ scopeIds: undefined });
             },
           }}
         />
@@ -519,9 +531,10 @@ const MerchantsPage: React.FC = () => {
           {({ scopeType }) =>
             scopeType && scopeType !== 'merchant' ? (
               <ProFormSelect
-                name="scopeId"
+                name="scopeIds"
                 label={scopeType === 'brand' ? '品牌' : '门店'}
                 rules={[{ required: true, message: '请选择数据范围目标' }]}
+                fieldProps={SCOPE_TARGET_SELECT_PROPS}
                 key={`${accountTarget?.id ?? 'none'}:${scopeType}`}
                 params={{ merchantId: accountTarget?.id, scopeType }}
                 request={async (params) => {

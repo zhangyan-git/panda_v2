@@ -21,8 +21,10 @@ var ErrMerchantAccountMismatch = errors.New("merchant account does not match the
 type MerchantAccess struct {
 	MerchantID string
 	ScopeType  string
-	ScopeID    string
-	StoreIDs   []string
+	// ScopeIDs 是范围目标本身（品牌或门店 id 的一组），StoreIDs 是它们展开后的点位。
+	// 下游过滤只用 StoreIDs；这一组跟着走是为了让「边界是怎么来的」还能被读出来。
+	ScopeIDs []string
+	StoreIDs []string
 }
 
 // MerchantAccessService 回答「这个商户账号现在能看见哪些点位」。
@@ -83,13 +85,19 @@ func (s *MerchantAccessService) ScopeOf(ctx context.Context, user *model.Merchan
 		// 账号没授权却查不出原因。报错，让中间件回 503。
 		return MerchantAccess{}, ErrScopeTypeInvalid
 	}
-	scopeID := user.ScopeID
+	scopeIDs := user.ScopeIDs
 	if scopeType == "merchant" {
-		// 商户档的 scope_id 应当为空。库里真存了一个值也不采用——让一个用不上的
-		// 字段参与决定边界，等于留了条谁都不知道的旁路。
-		scopeID = ""
+		// 商户档的目标应当为空。库里真存了一组也不采用——让一个用不上的字段参与
+		// 决定边界，等于留了条谁都不知道的旁路。
+		scopeIDs = []string{}
 	}
-	storeIDs, err := s.scope.ListStoreIDs(ctx, user.MerchantID, scopeType, scopeID)
+	if scopeIDs == nil {
+		// 与 StoreIDs 同理：nil 是不该往上传的形状。这一组跟着边界走（见
+		// MerchantAccess.ScopeIDs），消费端会读它的长度，nil 在那里同样意味着
+		// 「没这一回事」而不是「一个都没有」。
+		scopeIDs = []string{}
+	}
+	storeIDs, err := s.scope.ListStoreIDs(ctx, user.MerchantID, scopeType, scopeIDs)
 	if err != nil {
 		// 展开不出来就是**给不出边界**：不降级成空集（那会让人以为是没授权），
 		// 更不降级成全量。
@@ -103,7 +111,7 @@ func (s *MerchantAccessService) ScopeOf(ctx context.Context, user *model.Merchan
 	return MerchantAccess{
 		MerchantID: user.MerchantID,
 		ScopeType:  scopeType,
-		ScopeID:    scopeID,
+		ScopeIDs:   scopeIDs,
 		StoreIDs:   storeIDs,
 	}, nil
 }
@@ -129,28 +137,39 @@ func validScopeType(value string) bool {
 	}
 }
 
-// MerchantScopeName 解析范围目标的显示名，供商户端回显「你的数据范围」。
+// MerchantScopeNames 解析范围目标的显示名，供商户端回显「你的数据范围」。
 //
-// 商户档没有目标可解析，回空串：那一档的名字是界面文案（「全部门店」），属于
+// 商户档没有目标可解析，回空切片：那一档的名字是界面文案（「全部门店」），属于
 // 调用方的词汇，不是这条服务的事实。品牌/门店档查不到（范围目标被删了）同样留空
 // ——展示数据不该把一次读取变成错误。
-func (s *MerchantAccessService) MerchantScopeName(ctx context.Context, access MerchantAccess) (string, error) {
+//
+// 返回的切片与 access.ScopeIDs **同序等长**，查不到的 id 占一个空串，理由见
+// MerchantAccountService.decorateScopeNames。
+func (s *MerchantAccessService) MerchantScopeNames(ctx context.Context, access MerchantAccess) ([]string, error) {
 	switch access.ScopeType {
 	case "merchant":
-		return "", nil
-	case "brand":
-		names, _, err := s.scope.ScopeNames(ctx, []string{access.ScopeID}, nil)
-		if err != nil {
-			return "", err
+		return []string{}, nil
+	case "brand", "store":
+		var brandNames, storeNames map[string]string
+		var err error
+		if access.ScopeType == "brand" {
+			brandNames, _, err = s.scope.ScopeNames(ctx, access.ScopeIDs, nil)
+		} else {
+			_, storeNames, err = s.scope.ScopeNames(ctx, nil, access.ScopeIDs)
 		}
-		return names[access.ScopeID], nil
-	case "store":
-		_, names, err := s.scope.ScopeNames(ctx, nil, []string{access.ScopeID})
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		return names[access.ScopeID], nil
+		names := make([]string, 0, len(access.ScopeIDs))
+		for _, id := range access.ScopeIDs {
+			if access.ScopeType == "brand" {
+				names = append(names, brandNames[id])
+				continue
+			}
+			names = append(names, storeNames[id])
+		}
+		return names, nil
 	default:
-		return "", ErrScopeTypeInvalid
+		return nil, ErrScopeTypeInvalid
 	}
 }

@@ -58,10 +58,14 @@ message HasUsersResponse {
   bool has_users = 1;
 }
 
-// ResetAccountScopeRequest reclaims accounts pointing at a brand or store that
-// is being deleted, moving them back to merchant-level scope. It replaces the
-// HTTP ownership transport whose scope reset failed closed and made brand and
-// store deletion impossible.
+// ResetAccountScopeRequest reclaims the accounts that point at a brand or store
+// being deleted: the id is struck from each account's scope. An account left
+// with no target at all falls back to merchant-level scope, which is what every
+// reclaimed account did before a scope could hold more than one target.
+//
+// scope_id stays singular for that reason: it names the deleted target, not the
+// account's scope. It replaces the HTTP ownership transport whose scope reset
+// failed closed and made brand and store deletion impossible.
 message ResetAccountScopeRequest {
   // scope_type is "brand" or "store".
   string scope_type = 1;
@@ -144,8 +148,11 @@ message GetMerchantAccessResponse {
   // scope_type is "merchant", "brand" or "store" — the vocabulary of
   // merchant_users.scope_type, not of the auth.Scope claim.
   string scope_type = 2;
-  // scope_id is the brand or store the scope points at; empty at merchant level.
-  string scope_id = 3;
+  // scope_ids are the brands or stores the scope points at; empty at merchant
+  // level. It is a set, not a single target: brand and store scope may each
+  // authorize several targets, and store_ids below is the union of what they
+  // expand to.
+  repeated string scope_ids = 3;
   // store_ids is the expanded boundary: an account authorized for no store gets
   // an empty list, which filters to zero rows. At the call sites nil would be
   // indistinguishable from "no filter", and that difference is the whole

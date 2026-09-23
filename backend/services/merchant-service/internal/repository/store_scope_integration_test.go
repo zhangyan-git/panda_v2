@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"errors"
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/google/uuid"
@@ -178,7 +180,7 @@ func TestFindIDsByScopeExpandsEachLevel(t *testing.T) {
 	repo := NewStoreRepository(pool, nil)
 
 	t.Run("merchant level is every store of the tenant", func(t *testing.T) {
-		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeMerchant, "")
+		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeMerchant, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -193,7 +195,7 @@ func TestFindIDsByScopeExpandsEachLevel(t *testing.T) {
 	})
 
 	t.Run("brand level is the stores under that brand", func(t *testing.T) {
-		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeBrand, fx.brandA1)
+		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeBrand, []string{fx.brandA1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -208,7 +210,7 @@ func TestFindIDsByScopeExpandsEachLevel(t *testing.T) {
 	})
 
 	t.Run("store level is that single point", func(t *testing.T) {
-		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeStore, fx.storeA2)
+		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeStore, []string{fx.storeA2})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -217,10 +219,67 @@ func TestFindIDsByScopeExpandsEachLevel(t *testing.T) {
 		}
 	})
 
+	t.Run("several brands expand to their union", func(t *testing.T) {
+		// 一组目标就是「这一档里所有的点位」：两个品牌合起来应当等于各自展开后
+		// 的并集，而不是只取第一个。少取一个在界面上看不出来——账号上写的是
+		// 两个品牌，看得见的却只有一半。
+		one, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeBrand, []string{fx.brandA1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		two, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeBrand, []string{fx.brandA2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		both, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeBrand, []string{fx.brandA1, fx.brandA2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := append(append([]string{}, one...), two...)
+		sort.Strings(want)
+		if !reflect.DeepEqual(both, want) {
+			t.Fatalf("并集不符: got %v want %v", both, want)
+		}
+		if len(both) != 3 {
+			t.Fatalf("expect 3 stores, got %v", both)
+		}
+	})
+
+	t.Run("several stores expand to exactly those", func(t *testing.T) {
+		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeStore,
+			[]string{fx.storeA2, fx.storesA1[0]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{fx.storeA2, fx.storesA1[0]}
+		sort.Strings(want)
+		if !reflect.DeepEqual(ids, want) {
+			t.Fatalf("expect %v, got %v", want, ids)
+		}
+	})
+
+	t.Run("a set mixing in another merchant's target still anchors on the tenant", func(t *testing.T) {
+		// 一组里混进别家的目标：那一支查不出来（它不是本商户的），其余照常。
+		// 锚点管的是「哪些能被选中」，它不因为同组里有别的合法目标就失效。
+		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeBrand,
+			[]string{fx.brandA1, fx.brandB1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ids) != 2 {
+			t.Fatalf("expect brandA1 的两家, got %v", ids)
+		}
+		for _, id := range ids {
+			if id == fx.storeB1 {
+				t.Fatalf("跨商户的点位被带进来了: %v", ids)
+			}
+		}
+	})
+
 	t.Run("another merchant's brand expands to nothing", func(t *testing.T) {
-		// scope_id 是调用方给来的值引用，锚点就在这里：少了 merchant_id，
+		// scope_ids 是调用方给来的值引用，锚点就在这里：少了 merchant_id，
 		// 商户 A 的账号只要拿到商户 B 的品牌 id，就能把可见点位扩到 B 家去。
-		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeBrand, fx.brandB1)
+		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeBrand, []string{fx.brandB1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -235,7 +294,7 @@ func TestFindIDsByScopeExpandsEachLevel(t *testing.T) {
 	t.Run("an unrecognized level is an error, not an empty set", func(t *testing.T) {
 		// 空集是一个正常答案。认不出的档位混进同一个答案里，调用方会把一次配置
 		// 错误读成「这个账号名下没有点位」并照常放行。
-		if _, err := repo.FindIDsByScope(ctx, fx.merchantA, "region", "r1"); !errors.Is(err, ErrScopeTypeUnknown) {
+		if _, err := repo.FindIDsByScope(ctx, fx.merchantA, "region", []string{"r1"}); !errors.Is(err, ErrScopeTypeUnknown) {
 			t.Fatalf("err=%v want ErrScopeTypeUnknown", err)
 		}
 	})
@@ -243,7 +302,7 @@ func TestFindIDsByScopeExpandsEachLevel(t *testing.T) {
 	t.Run("a scope id that is not a uuid yields an empty set", func(t *testing.T) {
 		// 两侧都转 text 再比，非 uuid 的输入落成一次不匹配，而不是 uuid 列上的 22P02。
 		// 22P02 会让一次「范围引用已失效」表现为 500，而正确的表现是看不见任何点位。
-		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeStore, "not-a-uuid")
+		ids, err := repo.FindIDsByScope(ctx, fx.merchantA, auth.ScopeTypeStore, []string{"not-a-uuid"})
 		if err != nil {
 			t.Fatalf("非 uuid 的 scope_id 不应报错: %v", err)
 		}

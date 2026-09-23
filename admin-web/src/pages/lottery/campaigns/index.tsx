@@ -32,6 +32,7 @@ import { CAMPAIGN_STATUS, roundProgressLabel } from '../../../services/lotteryLa
 import { FULL_PAGE_PARAMS } from '../../../services/pagination';
 import { requestErrorMessage } from '../../../services/requestError';
 import { uploadImage } from '../../../services/upload';
+import { scrollableModalBody } from '../../../components/common/modalProps';
 
 /**
  * 抽奖活动列表。
@@ -40,7 +41,7 @@ import { uploadImage } from '../../../services/upload';
  * （也就是哪家门店），以及它是不是只对**该门店下某一台咖啡机**开放。后者落在可空的
  * machineId 上：为空就是门店级，有值就是那台设备专属。
  *
- * 结构上不写成 scopeType + scopeId 两列，是为了让「某台咖啡机的活动不属于本门店」这种
+ * 结构上不写成商户账号那种多态范围（档位 + 一组目标引用），是为了让「某台咖啡机的活动不属于本门店」这种
  * 组合**写不出来**——门店来自 activation，设备只能在这条线之下。
  *
  * 奖品是活动的一部分，跟着活动一起提交。**一个活动只有一个奖品**——这里原先是一张可增删
@@ -401,7 +402,7 @@ export default function LotteryCampaignsPage() {
           setOpen(value);
           if (!value) setEditing(undefined);
         }}
-        modalProps={{ destroyOnClose: true, width: 760 }}
+        modalProps={{ ...scrollableModalBody, destroyOnClose: true, width: 760 }}
         initialValues={
           editing
             ? {

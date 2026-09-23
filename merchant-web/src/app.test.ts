@@ -61,8 +61,8 @@ describe('merchant initial identity validation', () => {
       merchantId: 'merchant',
       merchantName: 'Test merchant',
       scopeType: 'merchant',
-      scopeId: '',
-      scopeName: '',
+      scopeIds: [],
+      scopeNames: [],
     };
     vi.mocked(fetchCurrentUser).mockResolvedValueOnce(user);
     expect(await getInitialState()).toEqual({ currentUser: user });

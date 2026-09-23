@@ -15,7 +15,7 @@ export type Merchant = {
   createdAt: string;
 };
 
-/** 数据范围单点三选一：merchant=整个商户 / brand=单品牌 / store=单门店（旗下数据全部可见） */
+/** 数据范围档位三选一：merchant=整个商户 / brand=指定品牌 / store=指定门店（旗下数据全部可见） */
 export type MerchantUserScopeType = 'merchant' | 'brand' | 'store';
 
 export type MerchantUser = {
@@ -27,8 +27,10 @@ export type MerchantUser = {
   status: 'active' | 'disabled';
   isAdmin: boolean;
   scopeType: MerchantUserScopeType;
-  scopeId: string;
-  scopeName: string; // 联表计算列：范围品牌/门店名称
+  /** 范围目标：品牌档是品牌 id，门店档是门店 id，可以多个；商户档为空数组 */
+  scopeIds: string[];
+  /** 与 scopeIds 同序等长：查不到名字的目标占一个空串。商户档是空数组 */
+  scopeNames: string[];
   lastLoginAt: string;
   createdAt: string;
 };
@@ -90,7 +92,7 @@ export async function createMerchantUser(
     phone?: string;
     isAdmin?: boolean;
     scopeType?: MerchantUserScopeType;
-    scopeId?: string;
+    scopeIds?: string[];
   },
 ) {
   return request<MerchantUser>(`/api/v1/admin/merchants/${merchantId}/users`, {
@@ -99,10 +101,10 @@ export async function createMerchantUser(
   });
 }
 
-/** 调整账号数据范围（单点：merchant/brand/store，目标必须属于该商户） */
+/** 调整账号数据范围（merchant/brand/store 三档，品牌与门店档可以多个，每个目标都必须属于该商户） */
 export async function updateMerchantUserScope(
   id: string,
-  data: { scopeType: MerchantUserScopeType; scopeId?: string; isAdmin?: boolean },
+  data: { scopeType: MerchantUserScopeType; scopeIds?: string[]; isAdmin?: boolean },
 ) {
   return request(`/api/v1/admin/merchant-users/${id}/scope`, {
     method: 'PATCH',

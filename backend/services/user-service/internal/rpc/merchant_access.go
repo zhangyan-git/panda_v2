@@ -81,7 +81,7 @@ func (s *MerchantAccessServiceServer) GetMerchantAccess(ctx context.Context, _ *
 	return &userv1.GetMerchantAccessResponse{
 		MerchantId: access.MerchantID,
 		ScopeType:  access.ScopeType,
-		ScopeId:    access.ScopeID,
+		ScopeIds:   access.ScopeIDs,
 		StoreIds:   access.StoreIDs,
 	}, nil
 }

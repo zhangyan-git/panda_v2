@@ -194,7 +194,7 @@ func (r *PostgresRepository) GetActivationView(ctx context.Context, id string) (
 type CampaignListRow struct {
 	Campaign *model.Campaign
 	// 门店来自开通记录：活动挂在哪家店完全由 activation_id 决定（见 migrations/lottery/001
-	// 为什么不用 scope_type + scope_id 两列）。
+	// 为什么不用账号范围那种多态指针）。
 	LocationID string
 	// LocationName 与 ActivationListRow 的同名字段一样：**不是本表的列**，由 service 层
 	// 拿着上面的 LocationID 向商户域批量解析后填上（见 migrations/lottery/003）。

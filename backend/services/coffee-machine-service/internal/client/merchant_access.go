@@ -54,7 +54,7 @@ func (r *MerchantAccessResolver) Resolve(ctx context.Context, accessToken string
 	return authz.MerchantGrants{
 		MerchantID: resp.GetMerchantId(),
 		ScopeType:  resp.GetScopeType(),
-		ScopeID:    resp.GetScopeId(),
+		ScopeIDs:   resp.GetScopeIds(),
 		StoreIDs:   resp.GetStoreIds(),
 	}, nil
 }

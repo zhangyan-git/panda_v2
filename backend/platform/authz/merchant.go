@@ -21,8 +21,11 @@ import (
 type MerchantGrants struct {
 	MerchantID string
 	ScopeType  string
-	ScopeID    string
-	StoreIDs   []string
+	// ScopeIDs is the brands or stores the scope points at — several of them,
+	// because the level no longer limits an account to one target. Empty at
+	// merchant level.
+	ScopeIDs []string
+	StoreIDs []string
 }
 
 // MerchantResolver fetches the current data boundary for a merchant access
@@ -132,7 +135,7 @@ func MerchantMiddleware(resolve MerchantResolver, timeout time.Duration) func(ht
 			scope := auth.StoreScope{
 				MerchantID: grants.MerchantID,
 				ScopeType:  grants.ScopeType,
-				ScopeID:    grants.ScopeID,
+				ScopeIDs:   grants.ScopeIDs,
 				StoreIDs:   grants.StoreIDs,
 			}
 			// WithStoreScope normalizes nil StoreIDs to an empty slice. That

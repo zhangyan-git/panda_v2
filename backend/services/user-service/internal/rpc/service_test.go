@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 
@@ -79,7 +80,7 @@ type fakeMerchantResources struct {
 	listCalls int
 }
 
-func (f *fakeMerchantResources) ListStoreIDs(_ context.Context, _, _, _ string) ([]string, error) {
+func (f *fakeMerchantResources) ListStoreIDs(_ context.Context, _, _ string, _ []string) ([]string, error) {
 	f.listCalls++
 	if f.listErr != nil {
 		return nil, f.listErr
@@ -397,14 +398,16 @@ func TestGetMerchantAccessRejectsNonMerchantCallers(t *testing.T) {
 
 func TestGetMerchantAccessReturnsTheExpandedBoundary(t *testing.T) {
 	h := newHarness(t)
-	h.users.user = &model.MerchantUser{ID: "user-1", MerchantID: "merchant-1", Status: "active", ScopeType: "brand", ScopeID: "brand-1"}
+	h.users.user = &model.MerchantUser{ID: "user-1", MerchantID: "merchant-1", Status: "active", ScopeType: "brand", ScopeIDs: []string{"brand-1", "brand-2"}}
 	h.resources.storeIDs = []string{"store-1", "store-2"}
 
 	resp, err := h.merchantAcc.GetMerchantAccess(h.userCtx(t, merchantGrant()), &userv1.GetMerchantAccessRequest{})
 	if err != nil {
 		t.Fatalf("GetMerchantAccess: %v", err)
 	}
-	if resp.GetMerchantId() != "merchant-1" || resp.GetScopeType() != "brand" || resp.GetScopeId() != "brand-1" {
+	// 目标整组原样过线：下游只用 store_ids 过滤，但「边界是怎么来的」不能被展开结果盖掉。
+	if resp.GetMerchantId() != "merchant-1" || resp.GetScopeType() != "brand" ||
+		!reflect.DeepEqual(resp.GetScopeIds(), []string{"brand-1", "brand-2"}) {
 		t.Fatalf("boundary = %+v", resp)
 	}
 	if len(resp.GetStoreIds()) != 2 || resp.GetStoreIds()[0] != "store-1" {
@@ -427,7 +430,7 @@ func TestGetMerchantAccessFollowsScopeChangesWithoutReissuingTheToken(t *testing
 		t.Fatalf("首次应给出全部门店: %v %v", resp.GetStoreIds(), err)
 	}
 
-	h.users.user.ScopeType, h.users.user.ScopeID = "store", "store-3"
+	h.users.user.ScopeType, h.users.user.ScopeIDs = "store", []string{"store-3"}
 	h.resources.storeIDs = []string{"store-3"}
 	resp, err = h.merchantAcc.GetMerchantAccess(ctx, &userv1.GetMerchantAccessRequest{})
 	if err != nil {
@@ -491,12 +494,12 @@ func TestGetMerchantAccessFailClosed(t *testing.T) {
 		{
 			// 认不出的档位既不能读成全量也不能读成空集，而且不该白跑一次展开。
 			name: "unreadable scope type", grant: merchantGrant(), status: "active",
-			user:     &model.MerchantUser{ID: "user-1", MerchantID: "merchant-1", Status: "active", ScopeType: "region", ScopeID: "r1"},
+			user:     &model.MerchantUser{ID: "user-1", MerchantID: "merchant-1", Status: "active", ScopeType: "region", ScopeIDs: []string{"r1"}},
 			wantCode: codes.Unavailable,
 		},
 		{
 			name: "expansion failed", grant: merchantGrant(), status: "active", scopeType: "brand",
-			user:       &model.MerchantUser{ID: "user-1", MerchantID: "merchant-1", Status: "active", ScopeType: "brand", ScopeID: "brand-1"},
+			user:       &model.MerchantUser{ID: "user-1", MerchantID: "merchant-1", Status: "active", ScopeType: "brand", ScopeIDs: []string{"brand-1"}},
 			listErr:    errors.New("merchant service unavailable"),
 			wantCode:   codes.Unavailable,
 			wantExpand: 1,

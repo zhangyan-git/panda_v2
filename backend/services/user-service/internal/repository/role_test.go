@@ -75,10 +75,14 @@ CREATE TABLE casbin_rule (
  ptype TEXT NOT NULL, v0 TEXT NOT NULL DEFAULT '', v1 TEXT NOT NULL DEFAULT '', v2 TEXT NOT NULL DEFAULT '',
  v3 TEXT NOT NULL DEFAULT '', v4 TEXT NOT NULL DEFAULT '', v5 TEXT NOT NULL DEFAULT '', UNIQUE(ptype,v0,v1,v2,v3,v4,v5));
 -- 只列出 messaging.PostgreSQL.Append 会碰到的列：这份 schema 是手写的，
--- 目的是验证审计追加与业务写入同事务，不是复刻迁移文件。
+-- 目的是验证审计追加与业务写入同事务，不是复刻迁移文件。但「只列会碰到的列」
+-- 必须真的是那几列——Append 的 VALUES 里带 created_at，少一列就是这条 SQL 在
+-- 测试里直接报缺列，而它报出来的位置是审计写入，看着像审计坏了。已按
+-- platform/messaging/postgres.go 的 INSERT 列表逐列对过（与 outbox_order_test 那份
+-- outboxDDL 同源）。
 CREATE TABLE message_outbox (
  event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL DEFAULT '', event_version TEXT NOT NULL DEFAULT '',
- trace_id TEXT NOT NULL DEFAULT '', payload BYTEA);`)
+ trace_id TEXT NOT NULL DEFAULT '', payload BYTEA, created_at TIMESTAMPTZ NOT NULL DEFAULT now());`)
 	if err != nil {
 		t.Fatal(err)
 	}

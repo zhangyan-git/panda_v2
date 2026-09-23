@@ -169,12 +169,14 @@ func (c *MerchantGRPCClient) ScopeNames(ctx context.Context, brandIDs, storeIDs 
 // InvalidArgument; it travels up unchanged rather than being flattened into an
 // empty set, because "this account may see nothing" and "this request cannot be
 // answered" must not look the same at the call site.
-func (c *MerchantGRPCClient) ListStoreIDs(ctx context.Context, merchantID, scopeType, scopeID string) ([]string, error) {
+func (c *MerchantGRPCClient) ListStoreIDs(ctx context.Context, merchantID, scopeType string, scopeIDs []string) ([]string, error) {
 	if err := validateID(merchantID); err != nil {
 		return nil, err
 	}
-	if scopeID != "" {
-		if err := validateID(scopeID); err != nil {
+	// 每一个目标都要过这一关，不是只查第一个：一个不合法的 id 混在中间会让对端拿它去
+	// 查库，而这一层要挡的正是「本就不可能存在的 id」。
+	for _, id := range scopeIDs {
+		if err := validateID(id); err != nil {
 			return nil, err
 		}
 	}
@@ -183,7 +185,7 @@ func (c *MerchantGRPCClient) ListStoreIDs(ctx context.Context, merchantID, scope
 	resp, err := c.merchants.ListStoreIDs(ctx, &merchantv1.ListStoreIDsRequest{
 		MerchantId: merchantID,
 		ScopeType:  scopeType,
-		ScopeId:    scopeID,
+		ScopeIds:   scopeIDs,
 	})
 	if err != nil {
 		return nil, err

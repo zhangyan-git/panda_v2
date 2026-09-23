@@ -20,18 +20,18 @@ func NewAdminMerchantHandler(accountSvc *service.MerchantAccountService) *AdminM
 }
 
 type merchantUserResponse struct {
-	ID          string `json:"id"`
-	Username    string `json:"username"`
-	Name        string `json:"name"`
-	Email       string `json:"email"`
-	Phone       string `json:"phone"`
-	Status      string `json:"status"`
-	IsAdmin     bool   `json:"isAdmin"`
-	ScopeType   string `json:"scopeType"`
-	ScopeID     string `json:"scopeId"`
-	ScopeName   string `json:"scopeName"` // 范围品牌/门店名称，经 merchant-service 解析
-	LastLoginAt string `json:"lastLoginAt"`
-	CreatedAt   string `json:"createdAt"`
+	ID          string   `json:"id"`
+	Username    string   `json:"username"`
+	Name        string   `json:"name"`
+	Email       string   `json:"email"`
+	Phone       string   `json:"phone"`
+	Status      string   `json:"status"`
+	IsAdmin     bool     `json:"isAdmin"`
+	ScopeType   string   `json:"scopeType"`
+	ScopeIDs    []string `json:"scopeIds"`
+	ScopeNames  []string `json:"scopeNames"` // 范围品牌/门店名称，与 scopeIds 同序等长，经 merchant-service 解析
+	LastLoginAt string   `json:"lastLoginAt"`
+	CreatedAt   string   `json:"createdAt"`
 }
 
 func toMerchantUserResponse(u *model.MerchantUser) merchantUserResponse {
@@ -48,8 +48,8 @@ func toMerchantUserResponse(u *model.MerchantUser) merchantUserResponse {
 		Status:      u.Status,
 		IsAdmin:     u.IsAdmin,
 		ScopeType:   u.ScopeType,
-		ScopeID:     u.ScopeID,
-		ScopeName:   u.ScopeName,
+		ScopeIDs:    nonNilStrings(u.ScopeIDs),
+		ScopeNames:  nonNilStrings(u.ScopeNames),
 		LastLoginAt: lastLogin,
 		CreatedAt:   u.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	}
@@ -87,22 +87,23 @@ func (h *AdminMerchantHandler) ListUsers(w http.ResponseWriter, r *http.Request)
 	api.Success(w, api.PageResponse{Items: resp, Total: total, Page: page, PageSize: pageSize})
 }
 
-// createMerchantUserRequest 创建商户账号；数据范围单点三选一：
-// scopeType=merchant（默认，看整个商户）/ brand / store（brand/store 时 scopeId 必填）
+// createMerchantUserRequest 创建商户账号；数据范围档位三选一：
+// scopeType=merchant（默认，看整个商户）/ brand / store。
+// brand 与 store 两档用 scopeIds 给出目标，可以给多个（1..n），每个都必须属于该商户。
 type createMerchantUserRequest struct {
-	Username  string `json:"username"`
-	Password  string `json:"password"`
-	Name      string `json:"name"`
-	Email     string `json:"email"`
-	Phone     string `json:"phone"`
-	IsAdmin   bool   `json:"isAdmin"`
-	ScopeType string `json:"scopeType"`
-	ScopeID   string `json:"scopeId"`
+	Username  string   `json:"username"`
+	Password  string   `json:"password"`
+	Name      string   `json:"name"`
+	Email     string   `json:"email"`
+	Phone     string   `json:"phone"`
+	IsAdmin   bool     `json:"isAdmin"`
+	ScopeType string   `json:"scopeType"`
+	ScopeIDs  []string `json:"scopeIds"`
 }
 
 // CreateUser godoc
 //
-//	@Summary     为商户创建登录账号（username 全局唯一；数据范围 merchant/brand/store 单点关联）
+//	@Summary     为商户创建登录账号（username 全局唯一；数据范围 merchant/brand/store 三档，品牌与门店档可多选）
 //	@Tags        admin-merchants
 //	@Accept      json
 //	@Produce     json
@@ -124,7 +125,7 @@ func (h *AdminMerchantHandler) CreateUser(w http.ResponseWriter, r *http.Request
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "用户名和密码不能为空")
 		return
 	}
-	u, err := h.accountSvc.CreateUser(r.Context(), id, req.Username, req.Password, req.Name, req.Email, req.Phone, req.IsAdmin, req.ScopeType, req.ScopeID)
+	u, err := h.accountSvc.CreateUser(r.Context(), id, req.Username, req.Password, req.Name, req.Email, req.Phone, req.IsAdmin, req.ScopeType, req.ScopeIDs)
 	if err != nil {
 		writeMerchantError(w, err, "创建失败")
 		return
@@ -132,16 +133,16 @@ func (h *AdminMerchantHandler) CreateUser(w http.ResponseWriter, r *http.Request
 	api.Success(w, toMerchantUserResponse(u))
 }
 
-// updateMerchantUserScopeRequest 调整账号数据范围（单点三选一）
+// updateMerchantUserScopeRequest 调整账号数据范围（档位三选一，品牌/门店档给一组目标）
 type updateMerchantUserScopeRequest struct {
-	ScopeType string `json:"scopeType"` // merchant | brand | store
-	ScopeID   string `json:"scopeId"`   // brand/store 时必填
-	IsAdmin   bool   `json:"isAdmin"`
+	ScopeType string   `json:"scopeType"` // merchant | brand | store
+	ScopeIDs  []string `json:"scopeIds"`  // brand/store 档必填，至少一个
+	IsAdmin   bool     `json:"isAdmin"`
 }
 
 // UpdateUserScope godoc
 //
-//	@Summary     调整商户账号数据范围（merchant/brand/store 单点关联，目标必须属于该商户）
+//	@Summary     调整商户账号数据范围（merchant/brand/store 三档，每个目标都必须属于该商户）
 //	@Tags        admin-merchants
 //	@Accept      json
 //	@Produce     json
@@ -159,7 +160,7 @@ func (h *AdminMerchantHandler) UpdateUserScope(w http.ResponseWriter, r *http.Re
 		api.Error(w, http.StatusBadRequest, api.CodeInvalidRequest, "请求格式错误")
 		return
 	}
-	if err := h.accountSvc.UpdateUserScope(r.Context(), id, req.ScopeType, req.ScopeID, req.IsAdmin); err != nil {
+	if err := h.accountSvc.UpdateUserScope(r.Context(), id, req.ScopeType, req.ScopeIDs, req.IsAdmin); err != nil {
 		writeMerchantError(w, err, "操作失败")
 		return
 	}

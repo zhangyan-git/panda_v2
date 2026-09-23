@@ -162,7 +162,7 @@ func TestMerchantOrderListIsBoundToTheResolvedScope(t *testing.T) {
 	store := "s1"
 	repo := &fakeOrderRepo{rows: []*repository.OrderRow{{Order: &model.Order{ID: merchantOrderID, StoreID: &store}}}}
 	api := newMerchantAPI(t, repo, authz.MerchantGrants{
-		MerchantID: "m1", ScopeType: auth.ScopeTypeBrand, ScopeID: "b1", StoreIDs: []string{"s1", "s2"},
+		MerchantID: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIDs: []string{"b1"}, StoreIDs: []string{"s1", "s2"},
 	})
 
 	w := api.call(t, merchantGrant(), http.MethodGet, "/v1/merchant/orders")
@@ -179,7 +179,7 @@ func TestMerchantOrderListIsBoundToTheResolvedScope(t *testing.T) {
 func TestMerchantOrderListIgnoresStoreIDsFromTheQuery(t *testing.T) {
 	repo := &fakeOrderRepo{}
 	api := newMerchantAPI(t, repo, authz.MerchantGrants{
-		MerchantID: "m1", ScopeType: auth.ScopeTypeStore, ScopeID: "s1", StoreIDs: []string{"s1"},
+		MerchantID: "m1", ScopeType: auth.ScopeTypeStore, ScopeIDs: []string{"s1"}, StoreIDs: []string{"s1"},
 	})
 
 	// 带的那个点位刻意不是 UUID：后台那条路径上 ?storeIds= 会被当成 uuid 列去查，
@@ -203,7 +203,7 @@ func TestMerchantOrderListIgnoresStoreIDsFromTheQuery(t *testing.T) {
 func TestMerchantOrderListWithEmptyScopeFiltersEverything(t *testing.T) {
 	repo := &fakeOrderRepo{}
 	api := newMerchantAPI(t, repo, authz.MerchantGrants{
-		MerchantID: "m1", ScopeType: auth.ScopeTypeBrand, ScopeID: "b-empty",
+		MerchantID: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIDs: []string{"b-empty"},
 	})
 
 	if w := api.call(t, merchantGrant(), http.MethodGet, "/v1/merchant/orders"); w.Code != http.StatusOK {
@@ -256,7 +256,7 @@ func TestMerchantOrderDetailHidesOutOfScopeOrders(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeOrderRepo{detail: tt.detail, err: tt.repoErr}
 			api := newMerchantAPI(t, repo, authz.MerchantGrants{
-				MerchantID: "m1", ScopeType: auth.ScopeTypeBrand, ScopeID: "b1", StoreIDs: tt.scope,
+				MerchantID: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIDs: []string{"b1"}, StoreIDs: tt.scope,
 			})
 			w := api.call(t, merchantGrant(), http.MethodGet, "/v1/merchant/orders/"+merchantOrderID)
 			if w.Code != tt.want {
@@ -403,7 +403,7 @@ func TestMerchantScopeIsResolvedFreshEveryRequest(t *testing.T) {
 	}
 
 	api.grants = authz.MerchantGrants{
-		MerchantID: "m1", ScopeType: auth.ScopeTypeStore, ScopeID: "s1", StoreIDs: []string{"s1"},
+		MerchantID: "m1", ScopeType: auth.ScopeTypeStore, ScopeIDs: []string{"s1"}, StoreIDs: []string{"s1"},
 	}
 	if w := api.do(t, token, http.MethodGet, "/v1/merchant/orders"); w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body)

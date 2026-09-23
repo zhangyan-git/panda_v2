@@ -213,24 +213,24 @@ func TestMerchantMiddlewarePublishesResolvedBoundary(t *testing.T) {
 			auth.StoreScope{MerchantID: "m-1", ScopeType: auth.ScopeTypeMerchant, StoreIDs: []string{"s-1", "s-2"}},
 		},
 		{
-			"brand level carries the brand id",
+			"brand level carries the brand ids",
 			MerchantGrants{
 				MerchantID: "m-1",
 				ScopeType:  auth.ScopeTypeBrand,
-				ScopeID:    "b-1",
+				ScopeIDs:   []string{"b-1", "b-2"},
 				StoreIDs:   []string{"s-3", "s-4"},
 			},
-			auth.StoreScope{MerchantID: "m-1", ScopeType: auth.ScopeTypeBrand, ScopeID: "b-1", StoreIDs: []string{"s-3", "s-4"}},
+			auth.StoreScope{MerchantID: "m-1", ScopeType: auth.ScopeTypeBrand, ScopeIDs: []string{"b-1", "b-2"}, StoreIDs: []string{"s-3", "s-4"}},
 		},
 		{
-			"store level is a single point",
+			"store level carries every point it names",
 			MerchantGrants{
 				MerchantID: "m-1",
 				ScopeType:  auth.ScopeTypeStore,
-				ScopeID:    "s-9",
+				ScopeIDs:   []string{"s-9"},
 				StoreIDs:   []string{"s-9"},
 			},
-			auth.StoreScope{MerchantID: "m-1", ScopeType: auth.ScopeTypeStore, ScopeID: "s-9", StoreIDs: []string{"s-9"}},
+			auth.StoreScope{MerchantID: "m-1", ScopeType: auth.ScopeTypeStore, ScopeIDs: []string{"s-9"}, StoreIDs: []string{"s-9"}},
 		},
 		{
 			// The load-bearing case: an account authorized for nothing must
@@ -238,8 +238,8 @@ func TestMerchantMiddlewarePublishesResolvedBoundary(t *testing.T) {
 			// to SQL NULL, and a predicate that treats NULL as "no filter" turns
 			// this account into one that sees every row.
 			"nothing authorized normalizes to an empty slice",
-			MerchantGrants{MerchantID: "m-1", ScopeType: auth.ScopeTypeBrand, ScopeID: "b-empty", StoreIDs: nil},
-			auth.StoreScope{MerchantID: "m-1", ScopeType: auth.ScopeTypeBrand, ScopeID: "b-empty", StoreIDs: []string{}},
+			MerchantGrants{MerchantID: "m-1", ScopeType: auth.ScopeTypeBrand, ScopeIDs: []string{"b-empty"}, StoreIDs: nil},
+			auth.StoreScope{MerchantID: "m-1", ScopeType: auth.ScopeTypeBrand, ScopeIDs: []string{"b-empty"}, StoreIDs: []string{}},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

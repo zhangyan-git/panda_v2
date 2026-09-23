@@ -244,7 +244,8 @@ UPDATE / DELETE），`(order_id, change_type)` 上的唯一索引是**重投的�
 
 **开通是挂门店的一个动作，活动再分粒度。** `lottery_activations` 一个门店一行
 （`UNIQUE (location_id)`），活动通过 `activation_id` 挂上去，设备级活动靠
-`lottery_campaigns.machine_id` 非空表达——**不用 `scope_type` + `scope_id` 两列**，那样
+`lottery_campaigns.machine_id` 非空表达——**不用账号范围那种多态指针（`scope_type` +
+一组引用 id）**，那样
 「某台咖啡机的活动不属于本门店」在结构上就写得出来，而这种写法要靠服务层自觉。开通有操作人
 和时间，不是从「有没有启用中的活动」派生出来的：派生会让门店在期次之间的空档里显示成
 「没开通」。
@@ -278,7 +279,7 @@ worker 的扫描判据。所以它和 `SUM(amount) = balance` 一样是要被测
 
 **不再有跨库外键。** 迁移里出现 `REFERENCES` 跨到另一个库的表，就是拆库没做完。
 
-`scope_id`（账号范围）本来就是多态指针、没有外键，拆库后维持原样。
+`scope_ids`（账号范围）本来就是一组多态引用、没有外键，拆库后维持原样。
 
 ## 服务间契约
 
@@ -307,7 +308,7 @@ worker 的扫描判据。所以它和 `SUM(amount) = balance` 一样是要被测
 | lottery-service → merchant-service `GetStore` | 开通门店抽奖前确认这家门店存在（不存在回 404，问不到回 503） |
 | lottery-service → merchant-service `ResolveScopeNames` | 列表页的门店名：抽奖库只存门店 id，名字是**读这一刻**现解的 |
 | merchant-service / coffee-machine-service / order-service → user-service `MerchantAccessService.GetMerchantAccess` | 商户请求的数据边界：拿令牌现换一次「这个账号现在能看哪些点位」。**每请求一次、不缓存**，见下节 |
-| user-service → merchant-service `ListStoreIDs` | 把 `scope_type`/`scope_id`（merchant / brand / store 三档）展开成一组门店 id。展开带 `merchant_id` 交叉校验 |
+| user-service → merchant-service `ListStoreIDs` | 把 `scope_type` + `scope_ids`（档位单选、目标一组）展开成一组门店 id：品牌取并集，门店即所列。展开带 `merchant_id` 交叉校验 |
 
 除 gRPC 之外还有一类跨服务事实，它走的是消息而不是调用：**福卡的发放与退款冻结**。
 
@@ -567,12 +568,39 @@ C 端顾客共 4 张表，都在 `panda_identity`：`users`（账号主体，手
 各服务的中间件链是 `auth.Middleware` → `authz.MerchantMiddleware`。**没有 `RequirePermission`**：
 商户域没有权限码（`009` 已删商户角色表），能看见什么**只由数据范围表达**。
 
-### 数据范围的唯一形状：一组门店 id
+### 数据范围：档位单选，目标多选
 
-`merchant_users.scope_type / scope_id` 三档——`merchant`（该商户全部门店）、`brand`、
-`store`——**一律展开成一组门店 id**（`StoreIDs`）再往下传。设备表只有 `store_id`，订单表
+`merchant_users.scope_type / scope_ids`：`scope_type` 是**档位**，三选一——`merchant`
+（该商户全部门店）、`brand`、`store`；`scope_ids` 是**这一档里的一组目标 id**。两者
+**不混合**：一个账号不会既有品牌目标又有门店目标，换档位就是换一组目标。目标是对
+商户库 `brands` / `stores` 的**值引用，没有外键**，所以档位删了目标不会跟着消失——回收
+走 `ResetScopeByTarget`（见下）。
+
+展开规则按档位分三种，**每一支都以 `merchant_id` 为锚点**：
+
+| 档位 | 目标 | 展开 |
+| --- | --- | --- |
+| `merchant` | 空 | 该商户全部门店 |
+| `brand` | 一组品牌 id | 这些品牌下门店的**并集** |
+| `store` | 一组门店 id | 就是这些门店 |
+
+锚点不是形式：`scope_ids` 是调用方给来的值引用，少了 `merchant_id`，商户 A 的账号只要
+拿到商户 B 的品牌 id 就能把可见点位扩到 B 家去。同理，一组目标里混进别家的 id，那一支
+查不出来、其余照常——**不因为同组里有合法目标就放宽锚点**。认不出的档位报
+`ErrScopeTypeUnknown` 而**不是**空集：空集是一个正常答案（这个账号名下确实没有点位），
+把配置错误混进同一个答案里，调用方会照常放行。
+
+三档**一律展开成一组门店 id**（`StoreIDs`）再往下传。设备表只有 `store_id`，订单表
 只有 `store_id`，所以下游只认这一个形状；**不向任何业务表加 `merchant_id`**
-（§5.2.3 的约束，加列会让「商户可见性」变成一张表一个说法）。
+（§5.2.3 的约束，加列会让「商户可见性」变成一张表一个说法）。`ScopeIDs`（原样的目标）
+也一路带着走，但它只用来表达「边界是怎么来的」，**过滤一律只看 `StoreIDs`**。
+
+产品口径（`004`）：品牌或门店被删时，`ResetScopeByTarget` 只从数组里**摘掉那一个目标**；
+数组摘空之后，账号才**回落成 `merchant` 档**（即该商户全部门店），同档位还有别的目标
+时这一档原样保留。摘元素与判空写在**同一条** `UPDATE` 里——PostgreSQL 的 `UPDATE … SET`
+读的是更新前的行，两次 `array_remove` 求值看到的是同一个数组，拆成两条语句就会读到已经
+改过的行，判断与实际结果错开。品牌 id 与门店 id 是两个命名空间，回收时 `scope_type` 与
+`scope_ids` **两个条件都要匹配**，否则会把另一档的同名 id 一起回收。
 
 由此带来一条容易被写错的分界线：**nil 与空切片不是一回事**。
 
@@ -583,7 +611,15 @@ AND ($2::text[] IS NULL OR store_id::text = ANY($2::text[]))
 `nil` = 调用方没传过滤条件（后台筛选栏就是这么用的，行为一字不变）；**非 nil 空切片 =
 这个账号一个点位都没授权 → `= ANY('{}')` 恒假 → 零行**。老代码里「空即不过滤」那套惯用法
 （`coalesce(cardinality($2),0)=0 OR …`）**绝不能**用在数据范围上——一个没授权任何点位的
-账号会看到全平台。安全归一化（nil → 空切片的那一步）固定在 `auth.WithStoreScope` 一处。
+账号会看到全平台。
+
+这条分界线在链路上有好几道口子，每一道都得自己收：`merchant_users.scope_ids` 是
+**`NOT NULL DEFAULT '{}'`**，空集合在列上是 `'{}'` 而不是 NULL（写入口的
+`scopeIDsParameter` 负责这一步）；读回侧 `scanMerchantUser` / `selectMerchantUserForUpdate`
+把 NULL 归成空切片；`MerchantAccessService.ScopeOf` 再收一次（`merchant` 档的目标一律
+置空，库里真存了一组也不采用——让一个用不上的字段参与决定边界，等于留了条谁都不知道的
+旁路）；最后落到 `auth.WithStoreScope`。proto3 的 repeated 字段**不序列化零元素**，所以
+空切片过 gRPC 回来会变回 nil，`auth.WithStoreScope` 那一处是**唯一**兜得住这一跳的地方。
 
 ### 实时取权，不签进令牌
 

@@ -516,10 +516,14 @@ func (x *HasUsersResponse) GetHasUsers() bool {
 	return false
 }
 
-// ResetAccountScopeRequest reclaims accounts pointing at a brand or store that
-// is being deleted, moving them back to merchant-level scope. It replaces the
-// HTTP ownership transport whose scope reset failed closed and made brand and
-// store deletion impossible.
+// ResetAccountScopeRequest reclaims the accounts that point at a brand or store
+// being deleted: the id is struck from each account's scope. An account left
+// with no target at all falls back to merchant-level scope, which is what every
+// reclaimed account did before a scope could hold more than one target.
+//
+// scope_id stays singular for that reason: it names the deleted target, not the
+// account's scope. It replaces the HTTP ownership transport whose scope reset
+// failed closed and made brand and store deletion impossible.
 type ResetAccountScopeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// scope_type is "brand" or "store".
@@ -880,8 +884,11 @@ type GetMerchantAccessResponse struct {
 	// scope_type is "merchant", "brand" or "store" — the vocabulary of
 	// merchant_users.scope_type, not of the auth.Scope claim.
 	ScopeType string `protobuf:"bytes,2,opt,name=scope_type,json=scopeType,proto3" json:"scope_type,omitempty"`
-	// scope_id is the brand or store the scope points at; empty at merchant level.
-	ScopeId string `protobuf:"bytes,3,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
+	// scope_ids are the brands or stores the scope points at; empty at merchant
+	// level. It is a set, not a single target: brand and store scope may each
+	// authorize several targets, and store_ids below is the union of what they
+	// expand to.
+	ScopeIds []string `protobuf:"bytes,3,rep,name=scope_ids,json=scopeIds,proto3" json:"scope_ids,omitempty"`
 	// store_ids is the expanded boundary: an account authorized for no store gets
 	// an empty list, which filters to zero rows. At the call sites nil would be
 	// indistinguishable from "no filter", and that difference is the whole
@@ -940,11 +947,11 @@ func (x *GetMerchantAccessResponse) GetScopeType() string {
 	return ""
 }
 
-func (x *GetMerchantAccessResponse) GetScopeId() string {
+func (x *GetMerchantAccessResponse) GetScopeIds() []string {
 	if x != nil {
-		return x.ScopeId
+		return x.ScopeIds
 	}
-	return ""
+	return nil
 }
 
 func (x *GetMerchantAccessResponse) GetStoreIds() []string {
@@ -1027,13 +1034,13 @@ const file_user_v1_user_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x14\n" +
 	"\x05roles\x18\x02 \x03(\tR\x05roles\x12 \n" +
 	"\vpermissions\x18\x03 \x03(\tR\vpermissions\"\x1a\n" +
-	"\x18GetMerchantAccessRequest\"\x93\x01\n" +
+	"\x18GetMerchantAccessRequest\"\x95\x01\n" +
 	"\x19GetMerchantAccessResponse\x12\x1f\n" +
 	"\vmerchant_id\x18\x01 \x01(\tR\n" +
 	"merchantId\x12\x1d\n" +
 	"\n" +
-	"scope_type\x18\x02 \x01(\tR\tscopeType\x12\x19\n" +
-	"\bscope_id\x18\x03 \x01(\tR\ascopeId\x12\x1b\n" +
+	"scope_type\x18\x02 \x01(\tR\tscopeType\x12\x1b\n" +
+	"\tscope_ids\x18\x03 \x03(\tR\bscopeIds\x12\x1b\n" +
 	"\tstore_ids\x18\x04 \x03(\tR\bstoreIds2\xd9\x03\n" +
 	"\vUserService\x12Q\n" +
 	"\n" +

@@ -14,7 +14,7 @@ type MerchantUser struct {
 	Status       string     `db:"status"` // active / disabled
 	IsAdmin      bool       `db:"is_admin"`
 	ScopeType    string     `db:"scope_type"` // merchant / brand / store
-	ScopeID      string     `db:"scope_id"`   // 范围目标 ID，scope_type=merchant 时为空
+	ScopeIDs     []string   `db:"scope_ids"`  // 范围目标 ID 集合，scope_type=merchant 时为空（不是 nil）
 	Avatar       string     `db:"avatar"`
 	LastLoginAt  *time.Time `db:"last_login_at"`
 	LastLoginIP  string     `db:"last_login_ip"`
@@ -22,7 +22,7 @@ type MerchantUser struct {
 	CreatedAt    time.Time  `db:"created_at"`
 	UpdatedAt    time.Time  `db:"updated_at"`
 
-	// ScopeName 范围品牌/门店名称，仅展示用，不入库；brands/stores 在商户库，
-	// 由 service 层经 gRPC 批量解析后填入
-	ScopeName string `db:"scope_name"`
+	// ScopeNames 范围品牌/门店名称，**与 ScopeIDs 一一对应同序**，仅展示用，不入库；
+	// brands/stores 在商户库，由 service 层经 gRPC 批量解析后填入
+	ScopeNames []string `db:"scope_names"`
 }

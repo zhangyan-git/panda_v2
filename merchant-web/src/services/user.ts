@@ -14,9 +14,10 @@ export type CurrentUser = {
    * 同一次请求里现取现算，所以界面上写着「门店「XX店」」时，列表拿到的必然也是那一家店。
    */
   scopeType: string;
-  scopeId: string;
-  /** 范围目标的名称。商户档为空（那是界面文案），目标被删除时也为空。 */
-  scopeName: string;
+  /** 范围目标：品牌档是品牌 id，门店档是门店 id，可以多个；商户档为空数组。 */
+  scopeIds: string[];
+  /** 范围目标的名称，与 scopeIds 同序等长。商户档为空数组（那是界面文案），目标被删除时该位置为空串。 */
+  scopeNames: string[];
 };
 
 /** 获取当前登录商户用户信息（含所属商户与数据范围） */

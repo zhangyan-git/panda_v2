@@ -108,7 +108,7 @@ func (a *merchantAPI) call(t *testing.T, grant auth.Grant, method, path string) 
 func TestMerchantStoreListIsBoundToTheResolvedScope(t *testing.T) {
 	repo := &merchantStoreRepo{stores: []*model.Store{{ID: "s1", MerchantID: "m1", Name: "一店"}}}
 	api := newMerchantAPI(t, repo, &fakeMerchantAccess{resp: &userv1.GetMerchantAccessResponse{
-		MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeId: "b1", StoreIds: []string{"s1", "s2"},
+		MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIds: []string{"b1"}, StoreIds: []string{"s1", "s2"},
 	}})
 
 	w := api.call(t, auth.Grant{Subject: "a1", UserID: "a1", Tenant: "m1"}, http.MethodGet, "/v1/merchant/stores")
@@ -150,7 +150,7 @@ func TestMerchantStoreListIgnoresMerchantIDFromTheQuery(t *testing.T) {
 func TestMerchantStoreListWithEmptyScopeFiltersEverything(t *testing.T) {
 	repo := &merchantStoreRepo{}
 	api := newMerchantAPI(t, repo, &fakeMerchantAccess{resp: &userv1.GetMerchantAccessResponse{
-		MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeId: "b-empty",
+		MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIds: []string{"b-empty"},
 	}})
 
 	if w := api.call(t, auth.Grant{Subject: "a1", UserID: "a1", Tenant: "m1"}, http.MethodGet, "/v1/merchant/stores"); w.Code != http.StatusOK {
@@ -195,7 +195,7 @@ func TestMerchantStoreDetailHidesOutOfScopeStores(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &merchantStoreRepo{byID: tt.store, err: tt.repoErr}
 			api := newMerchantAPI(t, repo, &fakeMerchantAccess{resp: &userv1.GetMerchantAccessResponse{
-				MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeId: "b1", StoreIds: tt.scope,
+				MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIds: []string{"b1"}, StoreIds: tt.scope,
 			}})
 			w := api.call(t, auth.Grant{Subject: "a1", UserID: "a1", Tenant: "m1"}, http.MethodGet, "/v1/merchant/stores/x")
 			if w.Code != tt.want {
@@ -302,7 +302,7 @@ func TestMerchantScopeIsResolvedFreshEveryRequest(t *testing.T) {
 	}
 
 	access.resp = &userv1.GetMerchantAccessResponse{
-		MerchantId: "m1", ScopeType: auth.ScopeTypeStore, ScopeId: "s1", StoreIds: []string{"s1"},
+		MerchantId: "m1", ScopeType: auth.ScopeTypeStore, ScopeIds: []string{"s1"}, StoreIds: []string{"s1"},
 	}
 	if w := api.do(t, token, http.MethodGet, "/v1/merchant/stores"); w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body)
@@ -321,7 +321,7 @@ func TestMerchantStoreDetailRequiresMembershipNotJustOwnership(t *testing.T) {
 	repo := &merchantStoreRepo{byID: &model.Store{ID: "s1", MerchantID: "m1"}}
 	api := newMerchantAPI(t, repo, &fakeMerchantAccess{resp: &userv1.GetMerchantAccessResponse{
 		// 账号属于 m1，这家店也是 m1 的，但不在它的范围里。
-		MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeId: "b1", StoreIds: []string{"s2"},
+		MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIds: []string{"b1"}, StoreIds: []string{"s2"},
 	}})
 	w := api.call(t, auth.Grant{Subject: "a1", UserID: "a1", Tenant: "m1"}, http.MethodGet, "/v1/merchant/stores/s1")
 	if w.Code != http.StatusNotFound {

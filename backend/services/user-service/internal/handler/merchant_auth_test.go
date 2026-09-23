@@ -21,6 +21,21 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// merchantMeBA 是 /users/me 响应体的解码目标。范围那两列是**数组**（一个账号可以
+// 授权多个品牌或门店），所以 Data 不能解成 map[string]string——数组在那上面会直接
+// 报 unmarshal 错。它与 merchantMeResponse 一一对应，改了那边这里也要改。
+type merchantMeBA struct {
+	ID           string   `json:"id"`
+	Username     string   `json:"username"`
+	Name         string   `json:"name"`
+	Email        string   `json:"email"`
+	MerchantID   string   `json:"merchantId"`
+	MerchantName string   `json:"merchantName"`
+	ScopeType    string   `json:"scopeType"`
+	ScopeIDs     []string `json:"scopeIds"`
+	ScopeNames   []string `json:"scopeNames"`
+}
+
 type merchantAuthUsers struct {
 	repository.MerchantUserRepository
 	user                                      *model.MerchantUser
@@ -75,7 +90,7 @@ type merchantAuthResources struct {
 	namesCalls int
 }
 
-func (f *merchantAuthResources) ListStoreIDs(_ context.Context, _, _, _ string) ([]string, error) {
+func (f *merchantAuthResources) ListStoreIDs(_ context.Context, _, _ string, _ []string) ([]string, error) {
 	f.listCalls++
 	if f.listErr != nil {
 		return nil, f.listErr
@@ -207,14 +222,19 @@ func TestMerchantMeRechecksSameIdentityAndPreservesResponse(t *testing.T) {
 			w := httptest.NewRecorder()
 			h.Me(w, r)
 			var got struct {
-				Success bool              `json:"success"`
-				Data    map[string]string `json:"data"`
+				Success bool         `json:"success"`
+				Data    merchantMeBA `json:"data"`
 			}
 			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 				t.Fatal(err)
 			}
-			// 商户档没有范围目标：scopeName 由前端配文案，服务端留空。
-			want := map[string]string{"id": "user", "username": "alice", "name": "Alice", "email": "alice@example.test", "merchantId": "merchant", "merchantName": "Coffee", "scopeType": "merchant", "scopeId": "", "scopeName": ""}
+			// 商户档没有范围目标：那一档的名字由前端配文案，服务端回空数组——
+			// 不是 null：null 在前端读作「这一列没有」，空数组读作「一项目标都没有」。
+			want := merchantMeBA{
+				ID: "user", Username: "alice", Name: "Alice", Email: "alice@example.test",
+				MerchantID: "merchant", MerchantName: "Coffee", ScopeType: "merchant",
+				ScopeIDs: []string{}, ScopeNames: []string{},
+			}
 			if w.Code != 200 || !got.Success || !reflect.DeepEqual(got.Data, want) {
 				t.Fatalf("incompatible response: status=%d body=%s", w.Code, w.Body)
 			}
@@ -250,59 +270,72 @@ func TestMerchantMeReportsTheResolvedScope(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
 		scopeType   string
-		scopeID     string
+		scopeIDs    []string
 		resources   *merchantAuthResources
 		wantStatus  int
 		wantMessage string
-		wantScope   map[string]string
-		wantNames   int
+		wantType    string
+		wantIDs     []string
+		wantNames   []string
+		wantNamesN  int
 		wantExpand  int
 	}{
 		{
-			name: "merchant tier", scopeType: "merchant", scopeID: "ignored",
+			name: "merchant tier", scopeType: "merchant", scopeIDs: []string{"ignored"},
 			resources:  &merchantAuthResources{storeIDs: []string{"s1", "s2"}},
-			wantScope:  map[string]string{"scopeType": "merchant", "scopeId": "", "scopeName": ""},
+			wantType:   "merchant",
+			wantIDs:    []string{},
+			wantNames:  []string{},
 			wantExpand: 1,
 		},
 		{
-			name: "brand tier", scopeType: "brand", scopeID: "b1",
-			resources:  &merchantAuthResources{storeIDs: []string{"s1"}, brandNames: map[string]string{"b1": "一号品牌"}},
-			wantScope:  map[string]string{"scopeType": "brand", "scopeId": "b1", "scopeName": "一号品牌"},
-			wantNames:  1,
+			// 多个目标：回显的是整个数组，顺序与落库的一致。前端只显示这些名字，
+			// 而过滤用的是它们展开后的并集——两边出自同一次解析。
+			name: "brand tier with several targets", scopeType: "brand", scopeIDs: []string{"b1", "b2"},
+			resources:  &merchantAuthResources{storeIDs: []string{"s1", "s4"}, brandNames: map[string]string{"b1": "一号品牌", "b2": "二号品牌"}},
+			wantType:   "brand",
+			wantIDs:    []string{"b1", "b2"},
+			wantNames:  []string{"一号品牌", "二号品牌"},
+			wantNamesN: 1,
 			wantExpand: 1,
 		},
 		{
-			name: "store tier", scopeType: "store", scopeID: "s2",
+			name: "store tier", scopeType: "store", scopeIDs: []string{"s2"},
 			resources:  &merchantAuthResources{storeIDs: []string{"s2"}, storeNames: map[string]string{"s2": "二号门店"}},
-			wantScope:  map[string]string{"scopeType": "store", "scopeId": "s2", "scopeName": "二号门店"},
-			wantNames:  1,
+			wantType:   "store",
+			wantIDs:    []string{"s2"},
+			wantNames:  []string{"二号门店"},
+			wantNamesN: 1,
 			wantExpand: 1,
 		},
 		{
 			// 范围目标在授权之后被删了：那是展示数据，不该把一次登录态查询变成错误。
-			name: "deleted target", scopeType: "brand", scopeID: "gone",
-			resources:  &merchantAuthResources{storeIDs: []string{}},
-			wantScope:  map[string]string{"scopeType": "brand", "scopeId": "gone", "scopeName": ""},
-			wantNames:  1,
+			// 空串占住原来那个位置，否则剩下的名字会往前挪一格，贴到别人的 id 上。
+			name: "deleted target keeps its slot", scopeType: "brand", scopeIDs: []string{"gone", "b1"},
+			resources:  &merchantAuthResources{storeIDs: []string{}, brandNames: map[string]string{"b1": "一号品牌"}},
+			wantType:   "brand",
+			wantIDs:    []string{"gone", "b1"},
+			wantNames:  []string{"", "一号品牌"},
+			wantNamesN: 1,
 			wantExpand: 1,
 		},
 		{
-			name: "expansion unavailable", scopeType: "brand", scopeID: "b1",
+			name: "expansion unavailable", scopeType: "brand", scopeIDs: []string{"b1"},
 			resources:   &merchantAuthResources{listErr: errors.New("merchant service unavailable")},
 			wantStatus:  503,
 			wantMessage: "数据范围暂不可用",
 			wantExpand:  1,
 		},
 		{
-			name: "scope names unavailable", scopeType: "store", scopeID: "s1",
+			name: "scope names unavailable", scopeType: "store", scopeIDs: []string{"s1"},
 			resources:   &merchantAuthResources{storeIDs: []string{"s1"}, namesErr: context.DeadlineExceeded},
 			wantStatus:  503,
 			wantMessage: "数据范围暂不可用",
-			wantNames:   1,
+			wantNamesN:  1,
 			wantExpand:  1,
 		},
 		{
-			name: "unreadable scope type", scopeType: "region", scopeID: "r1",
+			name: "unreadable scope type", scopeType: "region", scopeIDs: []string{"r1"},
 			resources:   &merchantAuthResources{},
 			wantStatus:  503,
 			wantMessage: "数据范围无法识别",
@@ -310,7 +343,7 @@ func TestMerchantMeReportsTheResolvedScope(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			user := *active
-			user.ScopeType, user.ScopeID = tt.scopeType, tt.scopeID
+			user.ScopeType, user.ScopeIDs = tt.scopeType, tt.scopeIDs
 			users := &merchantAuthUsers{user: &user}
 			access := &merchantAuthAccess{status: "active", name: "Coffee"}
 			h := merchantHandler(users, access, tt.resources, nil)
@@ -320,16 +353,16 @@ func TestMerchantMeReportsTheResolvedScope(t *testing.T) {
 			w := httptest.NewRecorder()
 			h.Me(w, r)
 			var got struct {
-				Success bool              `json:"success"`
-				Data    map[string]string `json:"data"`
-				Error   string            `json:"errorMessage"`
+				Success bool         `json:"success"`
+				Data    merchantMeBA `json:"data"`
+				Error   string       `json:"errorMessage"`
 			}
 			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 				t.Fatal(err)
 			}
-			if tt.resources.listCalls != tt.wantExpand || tt.resources.namesCalls != tt.wantNames {
+			if tt.resources.listCalls != tt.wantExpand || tt.resources.namesCalls != tt.wantNamesN {
 				t.Fatalf("范围展开调用=%d want %d, 名称解析调用=%d want %d",
-					tt.resources.listCalls, tt.wantExpand, tt.resources.namesCalls, tt.wantNames)
+					tt.resources.listCalls, tt.wantExpand, tt.resources.namesCalls, tt.wantNamesN)
 			}
 			if tt.wantStatus != 0 {
 				if w.Code != tt.wantStatus || got.Error != tt.wantMessage {
@@ -340,10 +373,11 @@ func TestMerchantMeReportsTheResolvedScope(t *testing.T) {
 			if w.Code != 200 || !got.Success {
 				t.Fatalf("status=%d body=%s", w.Code, w.Body)
 			}
-			for key, want := range tt.wantScope {
-				if got.Data[key] != want {
-					t.Fatalf("%s=%q want %q", key, got.Data[key], want)
-				}
+			if got.Data.ScopeType != tt.wantType ||
+				!reflect.DeepEqual(got.Data.ScopeIDs, tt.wantIDs) ||
+				!reflect.DeepEqual(got.Data.ScopeNames, tt.wantNames) {
+				t.Fatalf("scopeType=%q ids=%v names=%v; want %q %v %v",
+					got.Data.ScopeType, got.Data.ScopeIDs, got.Data.ScopeNames, tt.wantType, tt.wantIDs, tt.wantNames)
 			}
 		})
 	}

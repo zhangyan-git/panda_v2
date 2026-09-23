@@ -37,8 +37,9 @@ const (
 type StoreScope struct {
 	MerchantID string
 	ScopeType  string // merchant | brand | store
-	// ScopeID 是品牌或门店 id；商户档为空。
-	ScopeID string
+	// ScopeIDs 是品牌或门店 id 的**一组**：品牌档与门店档都可以授权多个目标；
+	// 商户档为空。
+	ScopeIDs []string
 	// StoreIDs 是展开后的授权点位，**永远非 nil**。不变式见 WithStoreScope。
 	StoreIDs []string
 }

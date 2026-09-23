@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
+	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -73,23 +76,27 @@ func (f *fakeMerchantUserRepo) Create(_ context.Context, u *model.MerchantUser) 
 	return nil
 }
 
-// 账号范围回收：品牌/门店删除时把指向它的账号回收为商户级
-func (f *fakeMerchantUserRepo) UpdateScope(_ context.Context, id, scopeType, scopeID string, isAdmin bool) error {
+func (f *fakeMerchantUserRepo) UpdateScope(_ context.Context, id, scopeType string, scopeIDs []string, isAdmin bool) error {
 	u, ok := f.users[id]
 	if !ok {
 		return pgx.ErrNoRows
 	}
 	u.ScopeType = scopeType
-	u.ScopeID = scopeID
+	u.ScopeIDs = scopeIDs
 	u.IsAdmin = isAdmin
 	return nil
 }
 
+// ResetScopeByTarget 对齐真实仓储那条 SQL：只从数组里摘掉被删的那一个目标，
+// 摘空之后才回落到商户级——同档位还有别的目标时，这一档必须原样留着。
 func (f *fakeMerchantUserRepo) ResetScopeByTarget(_ context.Context, scopeType, scopeID string) error {
 	for _, u := range f.users {
-		if u.ScopeID == scopeID && u.ScopeType == scopeType {
+		if u.ScopeType != scopeType || !slices.Contains(u.ScopeIDs, scopeID) {
+			continue
+		}
+		u.ScopeIDs = slices.DeleteFunc(u.ScopeIDs, func(id string) bool { return id == scopeID })
+		if len(u.ScopeIDs) == 0 {
 			u.ScopeType = "merchant"
-			u.ScopeID = ""
 		}
 	}
 	return nil
@@ -150,10 +157,10 @@ func newFakeMerchantResourceAccess() *fakeMerchantResourceAccess {
 	}
 }
 
-// ListStoreIDs 内存版范围展开：merchant 档给全部点位，brand/store 档按表查。
+// ListStoreIDs 内存版范围展开：merchant 档给全部点位，brand/store 档取所给目标的并集。
 // 认不出的档位返回错误而不是空集——空集是一个正常答案，"这个账号没有点位"
 // 与"这次请求答不了"必须在调用方那里分得开。
-func (f *fakeMerchantResourceAccess) ListStoreIDs(_ context.Context, merchantID, scopeType, scopeID string) ([]string, error) {
+func (f *fakeMerchantResourceAccess) ListStoreIDs(_ context.Context, merchantID, scopeType string, scopeIDs []string) ([]string, error) {
 	f.listCalls++
 	if f.namesErr != nil {
 		return nil, f.namesErr
@@ -165,12 +172,13 @@ func (f *fakeMerchantResourceAccess) ListStoreIDs(_ context.Context, merchantID,
 	}
 	// 三档都回落到同一条判定上：「这个点位属于该商户，且落在这一档里」。真实实现是一条
 	// 带 merchant_id 交叉校验的 SQL，形状相同——跨商户的目标展开出来必须是空集。
+	// 目标可以有多个，展开出来的是它们的并集。
 	ids := []string{}
 	for store, owner := range f.storeOwners {
 		switch {
 		case owner != merchantID:
-		case scopeType == "store" && store != scopeID:
-		case scopeType == "brand" && f.storeBrands[store] != scopeID:
+		case scopeType == "store" && !slices.Contains(scopeIDs, store):
+		case scopeType == "brand" && !slices.Contains(scopeIDs, f.storeBrands[store]):
 		default:
 			ids = append(ids, store)
 		}
@@ -220,15 +228,15 @@ func TestMerchantCreateUserDuplicateUsername(t *testing.T) {
 	ctx := context.Background()
 
 	merchants.seed("m1", "active")
-	if _, err := svc.CreateUser(ctx, "m1", "boss", "pass1234", "老板", "", "", false, "", ""); err != nil {
+	if _, err := svc.CreateUser(ctx, "m1", "boss", "pass1234", "老板", "", "", false, "", nil); err != nil {
 		t.Fatalf("首次创建应成功: %v", err)
 	}
 	// 全局查重：换一个商户用同名账号也要拒绝
 	merchants.seed("m2", "active")
-	if _, err := svc.CreateUser(ctx, "m2", "boss", "pass1234", "另一个老板", "", "", false, "", ""); !errors.Is(err, ErrMerchantUsernameTaken) {
+	if _, err := svc.CreateUser(ctx, "m2", "boss", "pass1234", "另一个老板", "", "", false, "", nil); !errors.Is(err, ErrMerchantUsernameTaken) {
 		t.Fatalf("重复 username 应拒绝, got %v", err)
 	}
-	if _, err := svc.CreateUser(ctx, "missing", "newuser", "pass1234", "", "", "", false, "", ""); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := svc.CreateUser(ctx, "missing", "newuser", "pass1234", "", "", "", false, "", nil); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("商户不存在应返回 pgx.ErrNoRows, got %v", err)
 	}
 }
@@ -245,9 +253,9 @@ func TestListUsersResolvesScopeNamesOverOneCall(t *testing.T) {
 	merchants.seed("m1", "active")
 	resources.brandNames["b1"] = "一号品牌"
 	resources.storeNames["s1"] = "一号门店"
-	users.users["u1"] = &model.MerchantUser{ID: "u1", MerchantID: "m1", Username: "brand-boss", ScopeType: "brand", ScopeID: "b1"}
-	users.users["u2"] = &model.MerchantUser{ID: "u2", MerchantID: "m1", Username: "store-boss", ScopeType: "store", ScopeID: "s1"}
-	users.users["u3"] = &model.MerchantUser{ID: "u3", MerchantID: "m1", Username: "gone-boss", ScopeType: "brand", ScopeID: "deleted"}
+	users.users["u1"] = &model.MerchantUser{ID: "u1", MerchantID: "m1", Username: "brand-boss", ScopeType: "brand", ScopeIDs: []string{"b1"}}
+	users.users["u2"] = &model.MerchantUser{ID: "u2", MerchantID: "m1", Username: "store-boss", ScopeType: "store", ScopeIDs: []string{"s1"}}
+	users.users["u3"] = &model.MerchantUser{ID: "u3", MerchantID: "m1", Username: "gone-boss", ScopeType: "brand", ScopeIDs: []string{"deleted"}}
 	users.users["u4"] = &model.MerchantUser{ID: "u4", MerchantID: "m1", Username: "whole-merchant", ScopeType: "merchant"}
 
 	// 一页装得下全部账号：这条用例关心的是范围名称怎么解析，不是分页本身。
@@ -260,13 +268,19 @@ func TestListUsersResolvesScopeNamesOverOneCall(t *testing.T) {
 	}
 	got := map[string]string{}
 	for _, u := range list {
-		got[u.Username] = u.ScopeName
+		got[u.Username] = strings.Join(u.ScopeNames, "、")
 	}
 	if got["brand-boss"] != "一号品牌" || got["store-boss"] != "一号门店" {
 		t.Fatalf("范围名称未填: %v", got)
 	}
+	// 商户档没有目标，名称是空切片；被删掉的目标占一个空串（位置留着，见 decorateScopeNames）。
 	if got["gone-boss"] != "" || got["whole-merchant"] != "" {
 		t.Fatalf("已删除范围与商户级范围都应留空: %v", got)
+	}
+	for _, u := range list {
+		if len(u.ScopeNames) != len(u.ScopeIDs) {
+			t.Fatalf("%s 的名称应与目标同序等长: %v / %v", u.Username, u.ScopeIDs, u.ScopeNames)
+		}
 	}
 	if resources.nameCalls != 1 {
 		t.Fatalf("批量解析应只调用一次, got %d", resources.nameCalls)
@@ -290,27 +304,33 @@ func TestCreateUserKeepsSuccessWhenScopeNameFails(t *testing.T) {
 	merchants.seed("m1", "active")
 	resources.brandOwners["b1"] = "m1"
 	resources.namesErr = errors.New("merchant service unavailable")
-	u, err := svc.CreateUser(ctx, "m1", "boss", "pass1234", "老板", "", "", false, "brand", "b1")
+	u, err := svc.CreateUser(ctx, "m1", "boss", "pass1234", "老板", "", "", false, "brand", []string{"b1"})
 	if err != nil {
 		t.Fatalf("创建应成功: %v", err)
 	}
-	if u.ScopeName != "" {
-		t.Fatalf("解析失败时应留空, got %q", u.ScopeName)
+	if len(u.ScopeNames) != 0 {
+		t.Fatalf("解析失败时应留空, got %v", u.ScopeNames)
 	}
 }
 
-func TestResetScopeByTargetMatchesType(t *testing.T) {
+// 目标被删除时只摘掉那一个：同一档位还有别的目标，这一档必须原样留着；
+// 摘到空才回落到商户级（那是「没有目标可锚」唯一安全的收法）。
+func TestResetScopeByTargetDropsOnlyTheDeletedTarget(t *testing.T) {
 	users := newFakeMerchantUserRepo()
-	users.users["brand-user"] = &model.MerchantUser{ID: "brand-user", ScopeType: "brand", ScopeID: "same-id"}
-	users.users["store-user"] = &model.MerchantUser{ID: "store-user", ScopeType: "store", ScopeID: "same-id"}
+	users.users["brand-user"] = &model.MerchantUser{ID: "brand-user", ScopeType: "brand", ScopeIDs: []string{"same-id"}}
+	users.users["store-user"] = &model.MerchantUser{ID: "store-user", ScopeType: "store", ScopeIDs: []string{"same-id"}}
+	users.users["multi-brand"] = &model.MerchantUser{ID: "multi-brand", ScopeType: "brand", ScopeIDs: []string{"same-id", "keep"}}
 
 	if err := users.ResetScopeByTarget(context.Background(), "brand", "same-id"); err != nil {
 		t.Fatalf("品牌范围回收失败: %v", err)
 	}
-	if users.users["brand-user"].ScopeType != "merchant" || users.users["brand-user"].ScopeID != "" {
-		t.Fatalf("品牌范围未回收: %+v", users.users["brand-user"])
+	if users.users["brand-user"].ScopeType != "merchant" || len(users.users["brand-user"].ScopeIDs) != 0 {
+		t.Fatalf("最后一个目标被删后应回落到商户级: %+v", users.users["brand-user"])
 	}
-	if users.users["store-user"].ScopeType != "store" || users.users["store-user"].ScopeID != "same-id" {
+	if got := users.users["multi-brand"]; got.ScopeType != "brand" || !reflect.DeepEqual(got.ScopeIDs, []string{"keep"}) {
+		t.Fatalf("还有目标时不应降档，只摘掉被删的那个: %+v", got)
+	}
+	if users.users["store-user"].ScopeType != "store" || !reflect.DeepEqual(users.users["store-user"].ScopeIDs, []string{"same-id"}) {
 		t.Fatalf("跨类型门店范围被错误回收: %+v", users.users["store-user"])
 	}
 }
@@ -325,51 +345,59 @@ func TestScopeValidation(t *testing.T) {
 	merchants.seed("m1", "active")
 	merchants.seed("m2", "active")
 	resources.brandOwners["b1"] = "m1"
+	resources.brandOwners["b2"] = "m1"
+	resources.brandOwners["b-other"] = "m2"
 	resources.storeOwners["s1"] = "m1"
 
 	// 品牌范围：目标不属于该商户 → 拒绝
-	if _, err := svc.CreateUser(ctx, "m2", "u-m2", "pass1234", "", "", "", false, "brand", "b1"); !errors.Is(err, ErrScopeOutOfMerchant) {
+	if _, err := svc.CreateUser(ctx, "m2", "u-m2", "pass1234", "", "", "", false, "brand", []string{"b1"}); !errors.Is(err, ErrScopeOutOfMerchant) {
 		t.Fatalf("跨商户品牌范围应拒绝, got %v", err)
 	}
 	// 品牌范围：目标不存在 → 拒绝
-	if _, err := svc.CreateUser(ctx, "m1", "u-x", "pass1234", "", "", "", false, "brand", "missing"); !errors.Is(err, ErrScopeOutOfMerchant) {
+	if _, err := svc.CreateUser(ctx, "m1", "u-x", "pass1234", "", "", "", false, "brand", []string{"missing"}); !errors.Is(err, ErrScopeOutOfMerchant) {
 		t.Fatalf("品牌不存在应拒绝, got %v", err)
 	}
 	// 品牌范围缺 ID → 拒绝
-	if _, err := svc.CreateUser(ctx, "m1", "u-y", "pass1234", "", "", "", false, "brand", ""); !errors.Is(err, ErrScopeIDRequired) {
+	if _, err := svc.CreateUser(ctx, "m1", "u-y", "pass1234", "", "", "", false, "brand", nil); !errors.Is(err, ErrScopeIDRequired) {
 		t.Fatalf("品牌范围缺 ID 应拒绝, got %v", err)
 	}
+	// 多选里混进一个不属于本商户的目标：整条创建都要拒，不能只丢那一个。
+	// 丢掉等于把用户勾的范围悄悄缩小，而界面上仍然显示他勾了两个。
+	if _, err := svc.CreateUser(ctx, "m1", "u-mix", "pass1234", "", "", "", false, "brand", []string{"b1", "b-other"}); !errors.Is(err, ErrScopeOutOfMerchant) {
+		t.Fatalf("多目标里有一个跨商户应整条拒绝, got %v", err)
+	}
 	// 非法范围类型 → 拒绝
-	if _, err := svc.CreateUser(ctx, "m1", "u-z", "pass1234", "", "", "", false, "region", "r1"); !errors.Is(err, ErrScopeTypeInvalid) {
+	if _, err := svc.CreateUser(ctx, "m1", "u-z", "pass1234", "", "", "", false, "region", []string{"r1"}); !errors.Is(err, ErrScopeTypeInvalid) {
 		t.Fatalf("非法范围类型应拒绝, got %v", err)
 	}
 	// 门店范围合法 → 成功
-	u, err := svc.CreateUser(ctx, "m1", "store-boss", "pass1234", "店长", "", "", true, "store", "s1")
+	u, err := svc.CreateUser(ctx, "m1", "store-boss", "pass1234", "店长", "", "", true, "store", []string{"s1"})
 	if err != nil {
 		t.Fatalf("门店范围创建应成功: %v", err)
 	}
-	if u.ScopeType != "store" || u.ScopeID != "s1" || !u.IsAdmin {
+	if u.ScopeType != "store" || !reflect.DeepEqual(u.ScopeIDs, []string{"s1"}) || !u.IsAdmin {
 		t.Fatalf("范围未落库: %+v", u)
 	}
-	// merchant 范围归一化：带多余 scopeID 也清空
-	u2, err := svc.CreateUser(ctx, "m1", "boss", "pass1234", "老板", "", "", false, "merchant", "whatever")
+	// merchant 范围归一化：带多余目标也清空
+	u2, err := svc.CreateUser(ctx, "m1", "boss", "pass1234", "老板", "", "", false, "merchant", []string{"b1"})
 	if err != nil {
 		t.Fatalf("商户级创建应成功: %v", err)
 	}
-	if u2.ScopeType != "merchant" || u2.ScopeID != "" {
+	if u2.ScopeType != "merchant" || len(u2.ScopeIDs) != 0 {
 		t.Fatalf("merchant 范围应归一化: %+v", u2)
 	}
 
-	// UpdateUserScope：跨商户拒绝、合法更新成功
-	if err := svc.UpdateUserScope(ctx, u.ID, "brand", "b1", true); err != nil {
+	// UpdateUserScope：跨商户拒绝、合法更新成功。多个目标按 id 去重并排序后落库，
+	// 这样同一次勾选无论提交顺序如何，落库的行都一样。
+	if err := svc.UpdateUserScope(ctx, u.ID, "brand", []string{"b2", "b1", "b1"}, true); err != nil {
 		t.Fatalf("同商户品牌范围应成功: %v", err)
 	}
-	if users.users[u.ID].ScopeType != "brand" || users.users[u.ID].ScopeID != "b1" {
-		t.Fatalf("范围更新未落库: %+v", users.users[u.ID])
+	if got := users.users[u.ID]; got.ScopeType != "brand" || !reflect.DeepEqual(got.ScopeIDs, []string{"b1", "b2"}) {
+		t.Fatalf("范围更新未落库: %+v", got)
 	}
 	other := &model.MerchantUser{ID: "u-m2-1", MerchantID: "m2", Username: "m2user", ScopeType: "merchant"}
 	users.users[other.ID] = other
-	if err := svc.UpdateUserScope(ctx, other.ID, "store", "s1", false); !errors.Is(err, ErrScopeOutOfMerchant) {
+	if err := svc.UpdateUserScope(ctx, other.ID, "store", []string{"s1"}, false); !errors.Is(err, ErrScopeOutOfMerchant) {
 		t.Fatalf("跨商户门店范围应拒绝, got %v", err)
 	}
 }

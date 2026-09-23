@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/panda-dev/panda-v2/backend/platform/auth"
@@ -82,14 +83,16 @@ func TestMerchantAccessResolverMapping(t *testing.T) {
 
 func TestMerchantAccessResolverReturnsTheExpandedBoundary(t *testing.T) {
 	r := NewMerchantAccessResolver(&merchantAccessConn{reply: &userv1.GetMerchantAccessResponse{
-		MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeId: "b1", StoreIds: []string{"s1", "s2"},
+		MerchantId: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIds: []string{"b1", "b2"}, StoreIds: []string{"s1", "s2"},
 	}})
 	grants, err := r.Resolve(context.Background(), "tok")
 	if err != nil {
 		t.Fatalf("Resolve = %v", err)
 	}
-	want := authz.MerchantGrants{MerchantID: "m1", ScopeType: auth.ScopeTypeBrand, ScopeID: "b1", StoreIDs: []string{"s1", "s2"}}
-	if grants.MerchantID != want.MerchantID || grants.ScopeType != want.ScopeType || grants.ScopeID != want.ScopeID || len(grants.StoreIDs) != 2 {
+	// 目标整组跟着走：过滤只用 StoreIDs，但「边界是怎么来的」不能被展开结果盖掉。
+	want := authz.MerchantGrants{MerchantID: "m1", ScopeType: auth.ScopeTypeBrand, ScopeIDs: []string{"b1", "b2"}, StoreIDs: []string{"s1", "s2"}}
+	if grants.MerchantID != want.MerchantID || grants.ScopeType != want.ScopeType ||
+		!reflect.DeepEqual(grants.ScopeIDs, want.ScopeIDs) || len(grants.StoreIDs) != 2 {
 		t.Fatalf("grants=%+v want %+v", grants, want)
 	}
 }

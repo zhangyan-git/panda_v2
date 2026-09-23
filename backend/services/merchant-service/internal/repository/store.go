@@ -33,7 +33,10 @@ type StoreRepository interface {
 	// FindIDsByScope 把一个商户账号的数据范围展开成一组点位 id。范围的三个档位
 	// 只有这张表知道怎么落到 SQL 上，展开放在这里，下游的每个消费方就都能按一组
 	// 平板 id 过滤，不必各自重新解释「品牌档意味着什么」。
-	FindIDsByScope(ctx context.Context, merchantID, scopeType, scopeID string) ([]string, error)
+	//
+	// scopeIDs 是目标**集合**：品牌档可以有好几个品牌，门店档可以有好几家店，展开
+	// 出来的是它们的并集；商户档为空。
+	FindIDsByScope(ctx context.Context, merchantID, scopeType string, scopeIDs []string) ([]string, error)
 }
 
 // StoreFilter 列表过滤条件，零值表示不过滤
@@ -211,22 +214,28 @@ var ErrScopeTypeUnknown = errors.New("unknown store scope type")
 // FindIDsByScope 把一个商户账号的数据范围展开成一组点位 id。
 //
 // merchant_id 是**每一条分支的锚点**，不是可选的附加条件：品牌档拿到的是调用方给来的
-// scope_id，而那是一个值引用。少了这个锚点，A 商户的账号只要拿到 B 商户的一个品牌 id，
+// scope_ids，而那些是值引用。少了这个锚点，A 商户的账号只要拿到 B 商户的一个品牌 id，
 // 就能把自己看到点位扩到 B 家去——「伪造资源 ID 不能扩大权限」这条验收标准说的正是这个。
-func (r *pgStoreRepo) FindIDsByScope(ctx context.Context, merchantID, scopeType, scopeID string) ([]string, error) {
+// 锚点管的是「哪些点位能被选中」，筛选条件管的是「选中哪几个」，两者不能互相替代：
+// 一组 id 里混进一个别家的，那一支查不出点位（它不属于这个商户），而不是把 B 家的
+// 点位带进来。
+//
+// 一组目标取并集：同一个品牌下的点位只会出现一次（store 只有一行），所以不需要去重；
+// 空集合是一个正常答案（这个账号确实没有点位），不是错误。
+func (r *pgStoreRepo) FindIDsByScope(ctx context.Context, merchantID, scopeType string, scopeIDs []string) ([]string, error) {
 	// 三个档位都转成 text 再比，与 FindNames 同理：参数会被 PostgreSQL 按列类型解析，
 	// 非 uuid 的输入会在 uuid 列上直接报 22P02 而不是返回空集。
 	q := `SELECT s.id::text FROM stores s WHERE s.merchant_id = $1`
 	args := []any{merchantID}
 	switch scopeType {
 	case auth.ScopeTypeMerchant:
-		// 本商户全部点位，不加条件。空串的 scope_id 在这一档是正常的。
+		// 本商户全部点位，不加条件。空集合的 scope_ids 在这一档是正常的。
 	case auth.ScopeTypeBrand:
-		q += ` AND s.brand_id::text = $2`
-		args = append(args, scopeID)
+		q += ` AND s.brand_id::text = ANY($2::text[])`
+		args = append(args, scopeIDs)
 	case auth.ScopeTypeStore:
-		q += ` AND s.id::text = $2`
-		args = append(args, scopeID)
+		q += ` AND s.id::text = ANY($2::text[])`
+		args = append(args, scopeIDs)
 	default:
 		return nil, ErrScopeTypeUnknown
 	}

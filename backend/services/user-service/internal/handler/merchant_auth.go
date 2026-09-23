@@ -81,13 +81,13 @@ type merchantMeResponse struct {
 	Email        string `json:"email"`
 	MerchantID   string `json:"merchantId"`
 	MerchantName string `json:"merchantName"`
-	// 数据范围三列回显的就是列表接口真正用来过滤的那个边界，不是另算的一份描述。
-	ScopeType string `json:"scopeType"`
-	ScopeID   string `json:"scopeId"`
-	// ScopeName 是范围目标的名称：品牌档与门店档能查到，商户档留空——那一档的名字
-	// （「全部门店」）是界面文案，由前端自己出，服务端不替它定。
-	// 范围目标在授权之后被删除时同样留空，那是展示数据，不该把一次登录态查询变成错误。
-	ScopeName string `json:"scopeName"`
+	// 数据范围这几列回显的就是列表接口真正用来过滤的那个边界，不是另算的一份描述。
+	ScopeType string   `json:"scopeType"`
+	ScopeIDs  []string `json:"scopeIds"`
+	// ScopeNames 是范围目标的名称，与 scopeIds 同序等长：品牌档与门店档能查到，商户档
+	// 是空数组——那一档的名字（「全部门店」）是界面文案，由前端自己出，服务端不替它定。
+	// 范围目标在授权之后被删除时该位置留空串，那是展示数据，不该把一次登录态查询变成错误。
+	ScopeNames []string `json:"scopeNames"`
 }
 
 // Me godoc
@@ -160,7 +160,7 @@ func (h *MerchantAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "数据范围暂不可用")
 		return
 	}
-	scopeName, err := h.scope.MerchantScopeName(r.Context(), access)
+	scopeNames, err := h.scope.MerchantScopeNames(r.Context(), access)
 	if err != nil {
 		api.Error(w, http.StatusServiceUnavailable, api.CodeUnavailable, "数据范围暂不可用")
 		return
@@ -173,7 +173,7 @@ func (h *MerchantAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		MerchantID:   user.MerchantID,
 		MerchantName: merchantName,
 		ScopeType:    access.ScopeType,
-		ScopeID:      access.ScopeID,
-		ScopeName:    scopeName,
+		ScopeIDs:     nonNilStrings(access.ScopeIDs),
+		ScopeNames:   nonNilStrings(scopeNames),
 	})
 }

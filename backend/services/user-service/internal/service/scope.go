@@ -19,7 +19,10 @@ type MerchantResourceAccess interface {
 	// reading a database it does not own (§5.2.4), and doing it at each consumer
 	// would mean three implementations of one rule.
 	//
+	// scopeIDs is the whole set of targets, not one: several brands widen the
+	// answer to the union of their stores. Empty at merchant level.
+	//
 	// The result is never nil for an empty scope — see the note on the repository
 	// method — but callers must not read nil as "everything" either way.
-	ListStoreIDs(ctx context.Context, merchantID, scopeType, scopeID string) ([]string, error)
+	ListStoreIDs(ctx context.Context, merchantID, scopeType string, scopeIDs []string) ([]string, error)
 }

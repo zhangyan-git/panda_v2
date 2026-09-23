@@ -20,7 +20,7 @@ type MerchantUserRepository interface {
 	FindByID(ctx context.Context, id string) (*model.MerchantUser, error)
 	Create(ctx context.Context, u *model.MerchantUser) error
 	UpdateStatus(ctx context.Context, id, status string) error
-	UpdateScope(ctx context.Context, id, scopeType, scopeID string, isAdmin bool) error
+	UpdateScope(ctx context.Context, id, scopeType string, scopeIDs []string, isAdmin bool) error
 	ResetScopeByTarget(ctx context.Context, scopeType, scopeID string) error
 	HasUsers(ctx context.Context, merchantID string) (bool, error)
 	TouchLogin(ctx context.Context, id, ip string) error
@@ -28,24 +28,24 @@ type MerchantUserRepository interface {
 }
 
 // merchantUserSnapshot 同样不含 PasswordHash，理由见 adminUserSnapshot。
-// 数据范围（scope_type/scope_id）必须记：它决定这个账号能看哪些门店。
+// 数据范围（scope_type/scope_ids）必须记：它决定这个账号能看哪些门店。
 type merchantUserSnapshot struct {
-	MerchantID string `json:"merchant_id"`
-	Username   string `json:"username"`
-	Name       string `json:"name"`
-	Email      string `json:"email,omitempty"`
-	Phone      string `json:"phone,omitempty"`
-	Status     string `json:"status"`
-	IsAdmin    bool   `json:"is_admin"`
-	ScopeType  string `json:"scope_type"`
-	ScopeID    string `json:"scope_id,omitempty"`
+	MerchantID string   `json:"merchant_id"`
+	Username   string   `json:"username"`
+	Name       string   `json:"name"`
+	Email      string   `json:"email,omitempty"`
+	Phone      string   `json:"phone,omitempty"`
+	Status     string   `json:"status"`
+	IsAdmin    bool     `json:"is_admin"`
+	ScopeType  string   `json:"scope_type"`
+	ScopeIDs   []string `json:"scope_ids,omitempty"`
 }
 
 func snapshotOfMerchantUser(u *model.MerchantUser) merchantUserSnapshot {
 	return merchantUserSnapshot{
 		MerchantID: u.MerchantID, Username: u.Username, Name: u.Name,
 		Email: u.Email, Phone: u.Phone, Status: u.Status,
-		IsAdmin: u.IsAdmin, ScopeType: u.ScopeType, ScopeID: u.ScopeID,
+		IsAdmin: u.IsAdmin, ScopeType: u.ScopeType, ScopeIDs: scopeIDsParameter(u.ScopeIDs),
 	}
 }
 
@@ -53,14 +53,31 @@ func snapshotOfMerchantUser(u *model.MerchantUser) merchantUserSnapshot {
 func selectMerchantUserForUpdate(ctx context.Context, tx pgx.Tx, id string) (merchantUserSnapshot, error) {
 	const q = `
 		SELECT merchant_id, username, name, COALESCE(email, ''), COALESCE(phone, ''),
-			status, is_admin, scope_type, COALESCE(scope_id::text, '')
+			status, is_admin, scope_type, scope_ids::text[]
 		FROM merchant_users WHERE id = $1 FOR UPDATE`
 	var s merchantUserSnapshot
 	err := tx.QueryRow(ctx, q, id).Scan(
 		&s.MerchantID, &s.Username, &s.Name, &s.Email, &s.Phone,
-		&s.Status, &s.IsAdmin, &s.ScopeType, &s.ScopeID,
+		&s.Status, &s.IsAdmin, &s.ScopeType, &s.ScopeIDs,
 	)
+	if s.ScopeIDs == nil {
+		// 与 scanMerchantUser 同一条不变式，理由见那里。
+		s.ScopeIDs = []string{}
+	}
 	return s, err
+}
+
+// scopeIDsParameter 保证交给 uuid[] 列的切片不是 nil。
+//
+// nil 在那个参数位置上编码成 SQL NULL，而 scope_ids 是 NOT NULL 列；更要紧的是空数组与
+// NULL 在展开处读法相反——空数组是「一个点位都没授权」，NULL 是「不过滤」。写入口的
+// 兜底放在这里，和读出口的 scanMerchantUser、平台层的 auth.WithStoreScope 是同一件事
+// 的三道：任何一道漏了，这个区别就会在某条路径上被抹平。
+func scopeIDsParameter(ids []string) []string {
+	if ids == nil {
+		return []string{}
+	}
+	return ids
 }
 
 type pgMerchantUserRepo struct {
@@ -76,14 +93,17 @@ func NewMerchantUserRepository(pool *pgxpool.Pool, recorder audit.Recorder) Merc
 }
 
 // merchantUserColumns 统一 SELECT 列表；可空列归一化为空字符串方便扫描。
-// 末尾的 scope_name 是展示用的范围名称：brands/stores 属于商户库，身份库这边
+// scope_ids 转成 text[] 之后再扫：列是 uuid[]，扫进 []string 要么靠 pgx 的数组编解码
+// 逐元素转，要么像这里一样让服务端先转好——同一条 SQL 里 COALESCE 那一列就是这么做的。
+//
+// 末尾的 scope_names 是展示用的范围名称：brands/stores 属于商户库，身份库这边
 // 联不到，这里只占位，由 service 层经 gRPC 批量解析后填上。
 const merchantUserColumns = `u.id, u.merchant_id, u.username, u.password_hash, u.name,
 	COALESCE(u.email, ''), COALESCE(u.phone, ''), u.status,
-	u.is_admin, u.scope_type, COALESCE(u.scope_id::text, ''), COALESCE(u.avatar, ''),
+	u.is_admin, u.scope_type, u.scope_ids::text[], COALESCE(u.avatar, ''),
 	u.last_login_at, COALESCE(u.last_login_ip, ''), u.login_count,
 	u.created_at, u.updated_at,
-	''`
+	'{}'::text[]`
 
 // FindByUsername 按全局唯一 username 查询（003 迁移加约束）；
 // 不过滤 status，登录链路需要区分「账号已禁用」和「账号不存在」
@@ -140,12 +160,12 @@ func (r *pgMerchantUserRepo) Create(ctx context.Context, u *model.MerchantUser) 
 	defer tx.Rollback(ctx) //nolint:errcheck
 	const q = `
 		INSERT INTO merchant_users (id, merchant_id, username, password_hash, name, email, phone, status,
-			is_admin, scope_type, scope_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+			is_admin, scope_type, scope_ids, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text[]::uuid[], $12, $13)`
 	if _, err := tx.Exec(ctx, q,
 		u.ID, u.MerchantID, u.Username, u.PasswordHash,
 		u.Name, u.Email, u.Phone, u.Status,
-		u.IsAdmin, u.ScopeType, nullEmpty(u.ScopeID),
+		u.IsAdmin, u.ScopeType, scopeIDsParameter(u.ScopeIDs),
 		u.CreatedAt, u.UpdatedAt,
 	); err != nil {
 		return err
@@ -218,8 +238,9 @@ func (r *pgMerchantUserRepo) Delete(ctx context.Context, id string) error {
 	return tx.Commit(ctx)
 }
 
-// UpdateScope 更新账号数据范围与管理员标记；scopeID 为空时在库中存 NULL
-func (r *pgMerchantUserRepo) UpdateScope(ctx context.Context, id, scopeType, scopeID string, isAdmin bool) error {
+// UpdateScope 更新账号数据范围与管理员标记；空范围存空数组而**不是** NULL——两者在
+// 展开处读法相反，见 scopeIDsParameter。
+func (r *pgMerchantUserRepo) UpdateScope(ctx context.Context, id, scopeType string, scopeIDs []string, isAdmin bool) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -232,13 +253,13 @@ func (r *pgMerchantUserRepo) UpdateScope(ctx context.Context, id, scopeType, sco
 	}
 	const q = `
 		UPDATE merchant_users
-		SET scope_type = $2, scope_id = $3, is_admin = $4, updated_at = NOW()
+		SET scope_type = $2, scope_ids = $3::text[]::uuid[], is_admin = $4, updated_at = NOW()
 		WHERE id = $1`
-	if _, err := tx.Exec(ctx, q, id, scopeType, nullEmpty(scopeID), isAdmin); err != nil {
+	if _, err := tx.Exec(ctx, q, id, scopeType, scopeIDsParameter(scopeIDs), isAdmin); err != nil {
 		return err
 	}
 	after := before
-	after.ScopeType, after.ScopeID, after.IsAdmin = scopeType, scopeID, isAdmin
+	after.ScopeType, after.ScopeIDs, after.IsAdmin = scopeType, scopeIDsParameter(scopeIDs), isAdmin
 	if err := r.audit.Record(ctx, tx, audit.Entry{
 		Module: "merchant_users", Action: "update_scope", Operation: "调整商户账号范围",
 		TargetType: "merchant_user", TargetID: id, TargetName: before.Username,
@@ -250,12 +271,24 @@ func (r *pgMerchantUserRepo) UpdateScope(ctx context.Context, id, scopeType, sco
 	return tx.Commit(ctx)
 }
 
-// ResetScopeByTarget 品牌/门店删除时，把指向它的账号回收为商户级范围
+// ResetScopeByTarget 品牌/门店删除时收回它：把那个 id 从各账号的范围里摘掉。
+//
+// 摘完范围为空（这个账号原本只指向它）的账号回落成商户档——这正是范围只能有一个目标
+// 时每一个被回收的账号都会走到的结果（004 的产品口径：回收为 scope_type=merchant）。
+// 还有别的目标的账号保持原档位，只是少了一个目标。
+//
+// 一条语句做完：先摘后判空必须看到**同一个**数组，分两条的话第二条读的是已经更新过的行，
+// 判断会跟第一条的实际结果错开。
 func (r *pgMerchantUserRepo) ResetScopeByTarget(ctx context.Context, scopeType, scopeID string) error {
 	const q = `
 		UPDATE merchant_users
-		SET scope_type = 'merchant', scope_id = NULL, updated_at = NOW()
-		WHERE scope_id = $2 AND scope_type = $1`
+		SET scope_ids = array_remove(scope_ids, $2::uuid),
+			scope_type = CASE
+				WHEN cardinality(array_remove(scope_ids, $2::uuid)) = 0 THEN 'merchant'
+				ELSE scope_type
+			END,
+			updated_at = NOW()
+		WHERE scope_type = $1 AND $2::uuid = ANY(scope_ids)`
 	_, err := r.pool.Exec(ctx, q, scopeType, scopeID)
 	return err
 }
@@ -283,13 +316,18 @@ func scanMerchantUser(row pgx.Row) (*model.MerchantUser, error) {
 	err := row.Scan(
 		&u.ID, &u.MerchantID, &u.Username, &u.PasswordHash,
 		&u.Name, &u.Email, &u.Phone, &u.Status,
-		&u.IsAdmin, &u.ScopeType, &u.ScopeID, &u.Avatar,
+		&u.IsAdmin, &u.ScopeType, &u.ScopeIDs, &u.Avatar,
 		&u.LastLoginAt, &u.LastLoginIP, &u.LoginCount,
 		&u.CreatedAt, &u.UpdatedAt,
-		&u.ScopeName,
+		&u.ScopeNames,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if u.ScopeIDs == nil {
+		// 列是 NOT NULL，正常读不出 nil；真读出来了也归一成空切片——它一旦流到边界上，
+		// nil 就是「不过滤」，而这件事只该在 WithStoreScope 那一处收口，不该靠调用方自觉。
+		u.ScopeIDs = []string{}
 	}
 	return u, nil
 }
