@@ -34,9 +34,14 @@ export default function access(initialState: {
     // 不看这一档。同名的死键留着，下一个人会以为它在某处生效着。
     canWriteBindings: has('admin:bindings:manage'),
 
-    // 管理员用户管理。key 同上去掉了 canViewAdminUsers：admin-users 页的「新建管理员 / 禁用 /
-    // 启用」三处判的都是 access.can('admin:users:manage')。
-    // `access.can` 与这两组键是两种写法，都留着（页面在用了）；死的是没人引用的**键名**。
+    // 管理员用户管理。**canViewAdminUsers 不能删**：路由 `.umirc.ts` 的 /admin-users 挂的
+    // 就是这个键名，umi 拿它来求值，键不在表里就是 undefined → 判为无权限 → 整页一张 403。
+    // 它与后端那道门是同一个码（user-service 的 List / Get 都挂 admin:users:view）。
+    //
+    // 页面里的「新建管理员 / 禁用 / 启用」判的是 access.can('admin:users:manage')，
+    // 所以没有对应的 canWriteAdminUsers——`access.can` 与这里这组键是两种写法，页面在用的是前者，
+    // 一个没有读者的键名留着只会让下一个人以为它在某处生效着。
+    canViewAdminUsers: has('admin:users:view'),
 
     // 菜单管理
     canViewMenus:   has('admin:menus:view'),
@@ -118,7 +123,7 @@ export default function access(initialState: {
     // 写是**单独的** account:manage：调整能把余额凭空加大（充值就是正数），
     // 没有审批、没有额度上限，所以「能看的人就能改别人余额」是不能接受的。
     // 后端 routes/admin.go 把 GET 挂在 account:read、POST /adjustments 挂在 account:manage，
-    // 权限数据见 migrations/identity/021。只绑了 super_admin。
+    // 权限数据见 migrations/identity。只绑了 super_admin。
     canAdjustCoffeeBeans: has('account:manage'),
 
     // 抽奖域（lottery-service）。三个码的破坏力差三档（差得比订单域还开），与后端
@@ -134,7 +139,7 @@ export default function access(initialState: {
     canManageLottery: has('lottery:manage'),
     canDrawLottery: has('lottery:draw'),
 
-    // 会员域（membership-service）。三枚，权限数据见 migrations/identity/025：
+    // 会员域（membership-service）。三枚，权限数据见 migrations/identity：
     //   read   看套餐、看会员列表与详情、看变更流水。这一档迟早要发给客服——用户问
     //          「我是不是会员、什么时候到期、为什么被冻了」，答这三句只需要它。
     //   manage 建改套餐、上下架。改的是**接下来卖什么**，已购会员的条款在快照列上，
@@ -150,39 +155,40 @@ export default function access(initialState: {
     canAdjustMembership: has('membership:adjust'),
 
     // 支付域（payment-service）。**只剩一枚**：read 看支付单列表与详情。权限数据见
-    // migrations/identity/026（027 发过第二枚，032 又把它删了）。
+    // migrations/identity（支付域今天只有 read 这一枚）。
     //
     // 这里**没有 manage**，别照旧版把 canManagePayments 加回来：它原来管「接下来怎么收钱」
     // ——新增/修改/启停支付方式与渠道——而收钱的方式已经从运营数据变成了 internal/catalog
-    // 里的常量表，那两张表连同两个写接口一起删了，032 也就把 `payment:manage` 从
-    // admin_permissions 里删了。一枚已不存在的码写在这里**不报错**：它永远算 false，
+    // 里的常量表，那两张表与两个写接口今天都不在了，`payment:manage` 也已经不在
+    // admin_permissions 里。一枚已不存在的码写在这里**不报错**：它永远算 false，
     // 结果是某个按钮静默不出现——不是 403，控制台也没有一行线索。
     //
     // 「能看订单」不等于「能看支付单」：订单域只有一份快照式的 payment_no，渠道、出资行、
     // 记账流水与回调报文全在这个域里，所以是单独一枚码。
     canViewPayments: has('payment:read'),
 
-    // 分账（同一个 payment-service 的另一半，identity/035 发的两枚）。权限数据见
-    // migrations/identity/035_settlement_admin.sql：
+    // 分账（同一个 payment-service 的另一半，migrations/identity 发的两枚）。权限数据见
+    // migrations/identity：
     //   read   看分账规则、看收款账户、看分账明细（每条任务分给了谁、分了多少）。
     //          这一档迟早要发给运营——「这笔钱分给谁了」答这一句只需要它。
     //   manage 新增 / 修改 / 删除规则与账户，包括每一档分法的比例、固定额与收款方。
     //          **它决定的是「接下来这笔钱怎么分」**：把一条按门店的规则的比例从 45% 改成 90%，
     //          下一笔订单就开始按新的分，没有任何东西会拦一下。所以它与 read 分开。
     //
-    // **它们刻意不并进 payment:read / payment:manage**，这是 008 的文件头（第 11–13 行）定死的
+    // **它们刻意不并进 payment:read / payment:manage**，这是分账那三枚码
+    // （`settlement:read` / `settlement:manage` / `settlement:payout`）定死的
     // 三分：「谁能看支付单」与「谁能改分账配置」是两件事。前者是所有客服都要的（用户问
     // 「我这笔钱扣了没」就得看），后者决定钱分给谁——并进去之后，一次「给他开个支付单查询吧」
     // 会连带把分账的写权限一起送出去，而那是这个后台里最不该顺手送人的一枚。
     //
-    // 这里**没有第三枚**（008 那三分里的 settlement:payout）：分账在 V2 是**随支付一次下发**的
+    // 这里**没有第三枚**（那三分里的 settlement:payout）：分账在 V2 是**随支付一次下发**的
     // （下单报文里带 divisionFlag / subOrders，支付成功即分账成功），没有一个「向渠道发起打款」
-    // 的动作可以授权。identity/035 里写着为什么不发它——发一个永远勾不出对应行为、勾了也没有
+    // 的动作可以授权。migrations/identity 里写着为什么不发它——发一个永远勾不出对应行为、勾了也没有
     // 任何接口认的码，只会让权限页在骗人。
     canViewSettlement: has('settlement:read'),
     canManageSettlement: has('settlement:manage'),
 
-    // 开放平台 / 合作方（partner-service）。两枚，权限数据见 migrations/identity/028：
+    // 开放平台 / 合作方（partner-service）。两枚，权限数据见 migrations/identity：
     //   read   看合作方、看密钥（**只有掩码**）、看调用日志。这一档是给客服与排查用的：
     //          「他到底调没调进来、被哪一条挡了」答这一句只需要它。
     //   manage 新增改合作方、签发新密钥、启停、改 IP 白名单与限流。**它动的不是数据，是
