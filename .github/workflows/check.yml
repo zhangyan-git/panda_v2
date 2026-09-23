@@ -255,7 +255,15 @@ jobs:
       - uses: actions/setup-go@v5
         with: {go-version: '1.25'}
       - uses: bufbuild/buf-setup-action@v1
-        with: {version: '1.72.0'}
+        with:
+          version: '1.72.0'
+          # Without a token this action queries the GitHub API anonymously, which is
+          # 60 requests per hour **per IP** — and the runner pool shares its IPs with
+          # everyone else's jobs. It does not fail politely either: the whole job dies
+          # in about nine seconds, before checkout's work is even reached, so it reads
+          # like a broken workflow rather than a busy neighbour. Seen 2026-09-23: green
+          # on one push, rate-limited on the next, same tree.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       # Pin the plugins to the versions that produced the committed bindings; a
       # newer generator would rewrite them and fail this job for no good reason.
       - run: |
