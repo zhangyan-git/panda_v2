@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -52,7 +52,7 @@ type throttle struct {
 // 限流器退化成进程内令牌桶——服务照常起，只是额度按副本数放大，见 platform/ratelimit。
 func newThrottle(ctx context.Context) (*throttle, error) {
 	if !envBool(rateLimitEnabled, true) {
-		log.Print("gateway-service: rate limiting is disabled")
+		slog.Info("gateway-service: rate limiting is disabled")
 		return &throttle{enabled: false}, nil
 	}
 	client, err := cache.NewFromEnv(ctx)
@@ -75,7 +75,7 @@ func newThrottle(ctx context.Context) (*throttle, error) {
 		return nil, err
 	}
 	if len(trustedProxies) == 0 {
-		log.Print("gateway-service: no trusted proxies configured; rate limiting keys on the immediate peer address")
+		slog.Info("gateway-service: no trusted proxies configured; rate limiting keys on the immediate peer address")
 	}
 
 	defaultBudget := ratelimit.Budget{Limit: limit, Window: rateLimitWindow}

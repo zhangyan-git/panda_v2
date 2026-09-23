@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,8 +14,16 @@ import (
 	"time"
 
 	"github.com/panda-dev/panda-v2/backend/platform/health"
+	"github.com/panda-dev/panda-v2/backend/platform/observability"
 	"github.com/panda-dev/panda-v2/backend/services/gateway-service/internal/proxy"
+	"github.com/panda-dev/panda-v2/backend/services/gateway-service/internal/tracing"
 )
+
+// observabilityShutdownGrace 是退场前发完最后一批 span/日志的预算。
+//
+// 批处理器攒着的那一批不发出去就随进程一起丢，表现是「最后几秒的日志在
+// OpenSearch 里怎么都查不到」。这里给的是上限，发完立刻返回。
+const observabilityShutdownGrace = 5 * time.Second
 
 // startupTimeout 限制启动期连 Redis 的等待时间：网关必须在可预期的时间内
 // 要么起来要么失败，不能卡在「正在连一个连不上的地址」上。
@@ -42,6 +51,33 @@ const (
 )
 
 func main() {
+	// 观测最先起：后面所有 slog 都走它装的 handler，网关这一跳才会出现在 Tempo
+	// 与 OpenSearch 里。OTEL_EXPORTER_OTLP_ENDPOINT 没配时它退化成「只落
+	// stdout」，本地不起采集端也能照常跑，不会因此起不来。
+	//
+	// 启动期失败仍然走 log.Fatalf（stderr）：那几行是给运维在控制台/编排器里看
+	// 的，而这会儿采集端可能压根没起来，塞进管道只会丢。进程起来之后的日志才走
+	// slog，也就是这条管道。
+	providers, err := observability.Init(context.Background(), observability.Config{
+		// 兜底写死 gateway-service：SERVICE_NAME 漏配时 observability 会替成
+		// panda-service，网关的 span 就和别的服务顶同一个名字，时间线上分不出
+		// 哪一跳是网关——那正是这个改动要解决的问题的一半。
+		ServiceName:  envOr("SERVICE_NAME", "gateway-service"),
+		OTELEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+	})
+	if err != nil {
+		log.Fatalf("gateway-service: init observability: %v", err)
+	}
+	// 进程退出前把攒着的那批 span 与日志发出去。两条退出路径都要走一遍：
+	// 正常排空之后，以及 serve 直接失败时。
+	shutdownObservability := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), observabilityShutdownGrace)
+		defer cancel()
+		if err := providers.Shutdown(ctx); err != nil {
+			slog.Error("gateway-service: shutdown observability", "error", err)
+		}
+	}
+
 	timeout, err := durationEnv("GATEWAY_REQUEST_TIMEOUT_MS", 10*time.Second)
 	if err != nil {
 		log.Fatalf("gateway-service: %v", err)
@@ -97,8 +133,11 @@ func main() {
 	state.SetReady(true)
 
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           newMux(state, throttle, h),
+		Addr: addr,
+		// tracing.Server 放在限流**里面**：限流的职责是把请求挡在昂贵的路径之外，
+		// 而每请求一条 span 加一次导出正是昂贵的那部分。被 429 掉的请求本来也
+		// 没进上游，链路故事里没有它。
+		Handler:           newMux(state, throttle, tracing.Server(providers.Tracer, h)),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       idleTimeout,
 	}
@@ -111,7 +150,7 @@ func main() {
 		}
 		serveErr <- err
 	}()
-	log.Printf("gateway-service: listening on %s", addr)
+	slog.Info("gateway-service: listening", "addr", addr)
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -119,21 +158,25 @@ func main() {
 	select {
 	case err := <-serveErr:
 		if err != nil {
-			log.Fatalf("gateway-service: serve: %v", err)
+			slog.Error("gateway-service: serve", "error", err)
+			// 先发完最后一批再退出：os.Exit 不跑 defer。
+			shutdownObservability()
+			os.Exit(1)
 		}
 	case <-sigCtx.Done():
 		// 恢复默认信号处理：第二次信号直接退出，不让人卡在排空里等第二轮。
 		stop()
-		log.Print("gateway-service: shutting down; readiness is off")
+		slog.Info("gateway-service: shutting down; readiness is off")
 		state.SetReady(false)
 		time.Sleep(drainDelay)
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), uploadTimeout+shutdownGrace)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("gateway-service: shutdown: %v", err)
+			slog.Error("gateway-service: shutdown", "error", err)
 		}
 	}
+	shutdownObservability()
 }
 
 // newMux 把探针、限流、代理接成一条链。抽出来是为了让这段接线能被测到——
@@ -186,6 +229,16 @@ func durationEnv(name string, defaultValue time.Duration) (time.Duration, error)
 		return defaultValue, nil
 	}
 	return time.Duration(ms) * time.Millisecond, nil
+}
+
+// envOr 读一个环境变量，空串当成「没配」。
+//
+// 与 platform/observability 里的同名函数是一个意思，只是那个没导出。
+func envOr(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func requiredEnv(name string) string {

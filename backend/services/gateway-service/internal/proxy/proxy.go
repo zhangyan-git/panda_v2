@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/panda-dev/panda-v2/backend/services/gateway-service/internal/tracing"
 )
 
 const (
@@ -485,6 +487,13 @@ func newProxy(rawURL string, client *http.Client) (*httputil.ReverseProxy, error
 				}
 			}
 			setXForwarded(req)
+			// 把这一跳的 span 写进出向头，下游据此把链路接上。
+			//
+			// 放在剥头之后：剥头那一轮删的是 x-user* / x-tenant* / x-roles /
+			// x-service-token / x-forwarded*，traceparent 不在其列，但顺序固定成
+			// 「先剥后注」能保证客户端自己塞的 traceparent 一律被这一跳覆盖掉——
+			// 否则外部可以伪造一个父 span，把别人的链路拼到自己的请求上。
+			tracing.Inject(req.Out.Context(), req.Out.Header)
 		},
 		Transport: client.Transport,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
