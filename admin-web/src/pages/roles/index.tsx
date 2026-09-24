@@ -338,6 +338,10 @@ const RolesPage: React.FC = () => {
             .finally(() => setPermSaving(false));
         }}
         width={600}
+        // 全仓 57 枚权限按分组平铺，弹窗实测 1926px 高（视口才 913px）：底栏被推到
+        // 视口下方 1000 多 px，得把整个弹窗滚到底才够得着「确定」，标题也一并滚没了。
+        // 和 ModalForm 一样限高，底栏就钉在视口里了。
+        {...scrollableModalBody}
       >
         <div style={{ marginBottom: 12 }}>
           <Checkbox
