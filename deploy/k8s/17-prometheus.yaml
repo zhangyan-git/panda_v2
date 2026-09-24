@@ -1,0 +1,86 @@
+# Prometheus。抓取目标只有 otel-collector:8889 一个 —— 服务的指标先经 OTLP 汇总到
+# collector，再由它以 Prometheus 格式暴露出来（见 deploy/observability/prometheus.yml）。
+# 所以**不要**在这里逐个加服务；加服务的指标要在应用侧埋点。
+#
+# 配置来自 deploy/observability/prometheus.yml，apply 前做成 ConfigMap。
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: pandaaaa
+spec:
+  clusterIP: None
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus
+  namespace: pandaaaa
+spec:
+  serviceName: prometheus
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      # 需要能读 configmap，但 prometheus 官方镜像本身不是 root 运行，
+      # 这里不额外设 securityContext。
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.54.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            - name: data
+              mountPath: /prometheus
+          readinessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 10Gi

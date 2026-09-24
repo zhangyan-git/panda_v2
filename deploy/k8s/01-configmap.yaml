@@ -1,0 +1,36 @@
+# 各服务共用的**非敏感**配置。
+#
+# 这里只放「所有工作负载取值都完全一样、且不含凭据」的键。其余全部写在各自的
+# Deployment 里 —— 与 deploy/compose/dev/docker-compose.yml 一一对应，便于复核。
+#
+# 有几项**刻意不放进本 ConfigMap**，因为它们的存在与否本身就是配置：
+#   - REDIS_ADDR：只有 user-service 与 partner-service 该有。其余九个服务不设它是
+#     有意的（见 compose 里 merchant-service 那段注释）——配上一个连不上的 Redis 是
+#     启动失败而不是降级，所以不能让 envFrom 把这一行推给所有人。
+#   - GRPC_ADDR / HTTP_ADDR：gateway-service 用 GATEWAY_ADDR，lottery-service 本轮
+#     没有入向 gRPC，取值并不一致。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: panda-common
+  namespace: pandaaaa
+data:
+  PANDA_ENV: "dev"
+
+  # SERVICE_VERSION **故意不在这里**：写在这里就等于和各个 Deployment 的 image tag
+  # 成了两个地方，迟早有一个过期，而过期的版本号比没有版本号更糟 ——
+  # 它会让链路里看到的版本看起来是可信的。各服务从自己的 Pod 标签取，见
+  # 20-user-service.yaml 里那一段。
+
+  # 服务发现。所有服务都从这里注册/发现，包括网关。
+  REGISTRY_ENDPOINT: "http://etcd:2379"
+
+  # 链路与日志。日志经 OTLP 进 collector，再由它分流到 OpenSearch / Tempo。
+  # 这个开关就是「日志管道通不通」的唯一开关，置空即整条链路静默关闭。
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+
+  # 事件总线里那个 topic exchange 的名字。所有发布方与订阅方必须一致，
+  # 不一致的表现是发布方报成功、消息静默丢弃。
+  RABBITMQ_EXCHANGE: "panda.events"
+
+  JWT_ISSUER: "panda-v2"

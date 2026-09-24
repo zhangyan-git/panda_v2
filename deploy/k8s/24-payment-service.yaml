@@ -1,0 +1,176 @@
+# 支付域：支付单、支付方式与渠道、退款、分账任务、连续包月的签约与代扣。
+#
+# 对外有**两处**必须能从公网回到本服务，靠的都是网关那一个域名：
+#   1. 渠道的支付结果回调 POST /v1/payments/callback/{channelCode}
+#   2. H5 支付结束后的结果页回跳
+# 所以下面 PAYMENT_NOTIFY_BASE_URL 填的是 api.pandaaaa.51qituan.com，**不是**
+# 集群内的服务名。渠道在集群外面，它解析不了 payment-service 这个名字，
+# 填成内网地址的表现是回调永远到不了、而渠道那边以为通知成功了。
+#
+# 渠道相关的非机密参数（商户号、终端号、来源码……）也走 Secret 而不写在本文件里：
+# 它们不是密码，但都是按环境开通的，写死在仓库清单里迟早会有一份对不上。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: pandaaaa
+  labels:
+    app.kubernetes.io/name: payment-service
+    app.kubernetes.io/part-of: panda-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+        app.kubernetes.io/version: "ae557f0"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: payment-service
+          image: registry.dev.51qituan.com/pandaaaa/payment-service:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: panda-common
+          env:
+            # 链路里的 service.version。**取的是 Pod 标签，不是写死的字符串** ——
+            # 写死的那个值和镜像 tag 是两个地方，迟早有一个过期，
+            # 而过期的版本号比没有版本号更糟：它会让你相信链路看到的是对的。
+            # 换版本时改上面的 image tag 和下面的 version 标签，两处都在这个文件里。
+            - name: SERVICE_VERSION
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app.kubernetes.io/version']
+            - name: SERVICE_NAME
+              value: payment-service
+            - name: HTTP_ADDR
+              value: ":8080"
+            - name: GRPC_ADDR
+              value: ":9090"
+            - name: PAYMENT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: PAYMENT_DATABASE_URL
+            # config 里必填。填内网地址的后果见文件头。
+            - name: PAYMENT_NOTIFY_BASE_URL
+              value: https://api.pandaaaa.51qituan.com
+            - name: PAYMENT_RETURN_PAGE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: PAYMENT_RETURN_PAGE_URL
+            # 咖啡豆支付要走账户域扣减，**必填**。漏了不是「服务照常起、某类请求 5xx」
+            # 而是每一笔豆支付在用户点下去那一刻才 5xx —— 与下游挂了长得一样，但下游没挂。
+            - name: ACCOUNT_GRPC_ADDR
+              value: account-service:9090
+            # 后台的支付单/支付方式/渠道查询要走实时授权，授权关系住在身份库，
+            # 所以这个服务也要问用户服务。它同样必填，而且是**拒绝启动**那种必填。
+            - name: USER_GRPC_ADDR
+              value: user-service:9090
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: RABBITMQ_URL
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: JWT_SECRET
+            - name: MERCHANT_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: MERCHANT_INTERNAL_TOKEN
+
+            # 银联商务（UMS）。APP_KEY 出站签名、COMM_KEY 入站验签，**两个不能混用**：
+            # 拿 APP_KEY 去验回调会让所有回调整体被拒，看起来像渠道那边签名算错了。
+            - name: PAYMENT_UMS_BASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_UMS_BASE_URL}}
+            - name: PAYMENT_UMS_APP_ID
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_UMS_APP_ID}}
+            - name: PAYMENT_UMS_MID
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_UMS_MID}}
+            - name: PAYMENT_UMS_TID
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_UMS_TID}}
+            - name: PAYMENT_UMS_SOURCE_CODE
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_UMS_SOURCE_CODE}}
+            - name: PAYMENT_UMS_DOMAIN_NAME
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_UMS_DOMAIN_NAME}}
+            - name: PAYMENT_UMS_SCENE_TYPE
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_UMS_SCENE_TYPE}}
+            - name: PAYMENT_UMS_MER_APP_NAME
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_UMS_MER_APP_NAME}}
+            - name: PAYMENT_UMS_MER_APP_ID
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_UMS_MER_APP_ID}}
+            # 这两个是密钥，按变量名在签名那一刻现读（catalog.Channel.SecretEnv）。
+            - name: PAYMENT_UMS_APP_KEY
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_UMS_APP_KEY}}
+            - name: PAYMENT_UMS_COMM_KEY
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_UMS_COMM_KEY}}
+
+            # 微信支付。本轮未接通（无证书），参数先按占位走，
+            # 缺这些变量不影响其余四种支付方式。
+            - name: WECHAT_PAY_BASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: WECHAT_PAY_BASE_URL}}
+            - name: WECHAT_PAY_APP_ID
+              valueFrom: {secretKeyRef: {name: panda-secret, key: WECHAT_PAY_APP_ID}}
+            - name: WECHAT_PAY_MCH_ID
+              valueFrom: {secretKeyRef: {name: panda-secret, key: WECHAT_PAY_MCH_ID}}
+            - name: WECHAT_PAY_CERT_PATH
+              valueFrom: {secretKeyRef: {name: panda-secret, key: WECHAT_PAY_CERT_PATH}}
+            - name: WECHAT_PAY_KEY_PATH
+              valueFrom: {secretKeyRef: {name: panda-secret, key: WECHAT_PAY_KEY_PATH}}
+            - name: WECHAT_PAY_SIGN_MINI_PROGRAM_APP_ID
+              valueFrom: {secretKeyRef: {name: panda-secret, key: WECHAT_PAY_SIGN_MINI_PROGRAM_APP_ID}}
+            - name: WECHAT_PAY_API_V2_KEY
+              valueFrom: {secretKeyRef: {name: panda-secret, key: WECHAT_PAY_API_V2_KEY}}
+            - name: DB_MIGRATE_ON_START
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: 400m
+              memory: 768Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: pandaaaa
+spec:
+  selector:
+    app: payment-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 9090
+      targetPort: grpc

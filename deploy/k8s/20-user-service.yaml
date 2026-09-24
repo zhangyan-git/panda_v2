@@ -1,0 +1,148 @@
+# 用户与身份域。整个平台唯一的认证入口：发 JWT、小程序登录、后台账号与角色，
+# 以及在它里面维护的那张授权关系表 —— **其余九个服务后台路由的授权都实时问它**。
+# 所以它挂了不是「登录不了」这一件事，是所有后台页面的写操作一起 503。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: pandaaaa
+  labels:
+    app.kubernetes.io/name: user-service
+    app.kubernetes.io/part-of: panda-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+        app.kubernetes.io/version: "ae557f0"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: user-service
+          # 镜像名按手册 §5：registry.dev.51qituan.com/<namespace>/<service>:<git-sha>。
+          # tag 是不变的 commit SHA，不用 latest。
+          #
+          # **这个 tag 现在还不存在**：CI 首次构建推上去之后才会有。在那之前
+          # Pod 停在 ImagePullBackOff —— 那是预期的，不是配错了。
+          image: registry.dev.51qituan.com/pandaaaa/user-service:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: panda-common
+          env:
+            # 链路里的 service.version。**取的是 Pod 标签，不是写死的字符串** ——
+            # 写死的那个值和镜像 tag 是两个地方，迟早有一个过期，
+            # 而过期的版本号比没有版本号更糟：它会让你相信链路看到的是对的。
+            # 换版本时改上面的 image tag 和下面的 version 标签，两处都在这个文件里。
+            - name: SERVICE_VERSION
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app.kubernetes.io/version']
+            - name: SERVICE_NAME
+              value: user-service
+            - name: HTTP_ADDR
+              value: ":8080"
+            - name: GRPC_ADDR
+              value: ":9090"
+            - name: USER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: USER_DATABASE_URL
+            # 注册时要问商户服务「这个账号归哪家」，读接口要拿商户身份。
+            - name: MERCHANT_GRPC_ADDR
+              value: merchant-service:9090
+            # 这个服务**要用** Redis（会话与限流）。其余九个刻意不设，见 01-configmap.yaml。
+            - name: REDIS_ADDR
+              value: redis:6379
+            # 本部署的 Redis 没有密码（集群内可达、无 Ingress）。显式传一个空值，
+            # 而不是靠「变量没设」—— 那两种写法在代码里走的是同一条路，
+            # 但只有一种能在清单上读出来。
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: REDIS_PASSWORD
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: RABBITMQ_URL
+            # 审计事件的消费方。队列名必须稳定：每次重启声明一个新队列名，
+            # 重启期间的事件就没人取了。
+            - name: RABBITMQ_QUEUE
+              value: admin.operation.logged
+            - name: RABBITMQ_ROUTING_KEY
+              value: admin.operation.logged
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: JWT_SECRET
+            # 服务间互相认身份用的令牌。**必须与其余服务是同一个值**：
+            # 让每个服务各自兜底成不同的随机值，跨服务调用会假 503。
+            - name: MERCHANT_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: MERCHANT_INTERNAL_TOKEN
+            - name: WECHAT_MINIAPP_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: WECHAT_MINIAPP_APP_ID
+            - name: WECHAT_MINIAPP_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: WECHAT_MINIAPP_APP_SECRET
+            # 迁移统一由 50-migrate-job.yaml 做，服务启动时不做。
+            # 一半靠服务自迁移、一半靠 Job 会让「迁移到哪一版」要读两处才能回答。
+            - name: DB_MIGRATE_ON_START
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: 400m
+              memory: 768Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: pandaaaa
+spec:
+  selector:
+    app: user-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 9090
+      targetPort: grpc

@@ -1,0 +1,90 @@
+# RabbitMQ：事件总线。用户、商户、咖啡机、券、订单、账户、抽奖、会员、合作方
+# 九个域都挂在这上面，包括 outbox 的发布侧与各域自己的消费队列。
+#
+# 队列名是**声明参数**（DLX 的 x-dead-letter-routing-key 取的就是路由键原文），
+# 队列名或路由键变更后已存在的队列无法被重新声明，报 PRECONDITION_FAILED，
+# 表现出来是「连不上 RabbitMQ」。要改名先手工删旧队列。
+# 本部署是全新实例，不存在这个升级问题；一并记在这里是给下一次改的人看。
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: pandaaaa
+spec:
+  clusterIP: None
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+    # 管理界面。**不建 Ingress**：手册只开通了三个域名，`rabbitmq.pandaaaa.*`
+    # 不在其中。要看它得用 `kubectl port-forward`（见 README）。
+    - name: management
+      port: 15672
+      targetPort: management
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  namespace: pandaaaa
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.13-management
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: panda
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: RABBITMQ_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/rabbitmq
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi

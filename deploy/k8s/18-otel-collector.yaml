@@ -1,0 +1,86 @@
+# OpenTelemetry Collector：唯一的 OTLP 入口（4317 gRPC / 4318 HTTP）。
+#
+# **这个实例是日志与链路的总开关。** 服务的 OTEL_EXPORTER_OTLP_ENDPOINT 指向它；
+# 那个变量为空时，日志与链路是静默关闭的 —— 面板上没有数据，采集端一切正常，
+# 看不出哪里断了。所以本 Deployment 不到万不得已不要 scale 到 0。
+#
+# 配置来自 deploy/observability/otel-collector.yaml，apply 前做成 ConfigMap。
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: pandaaaa
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+    - name: metrics
+      port: 8889
+      targetPort: metrics
+    - name: health
+      port: 13133
+      targetPort: health
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: pandaaaa
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.103.1
+          args: ["--config=/etc/otelcol-contrib/config.yaml"]
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: metrics
+              containerPort: 8889
+            - name: health
+              containerPort: 13133
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol-contrib
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config

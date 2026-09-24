@@ -1,0 +1,132 @@
+# 券域：券类型、批次、模板、发放、核销与流水。
+#
+# 它是十个自有库里**唯一不做启动迁移**的服务（cmd/main.go 里没有
+# DB_MIGRATE_ON_START 那一段）。所以券库的建表只能由 50-migrate-job.yaml 做 ——
+# 那个 Job 之所以存在，直接原因就是这一个服务。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coupon-service
+  namespace: pandaaaa
+  labels:
+    app.kubernetes.io/name: coupon-service
+    app.kubernetes.io/part-of: panda-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: coupon-service
+  template:
+    metadata:
+      labels:
+        app: coupon-service
+        app.kubernetes.io/version: "ae557f0"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: coupon-service
+          image: registry.dev.51qituan.com/pandaaaa/coupon-service:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          ports:
+            - name: http
+              containerPort: 8080
+            # 本轮没有入向 gRPC（coupon.proto 还是空壳），但仍然**显式写出来**：
+            # 不写会让它照着 image 里的默认值注册一个自己其实没有的地址，
+            # 今天没人调所以不出错，属于等着被下一个人踩的那类。
+            - name: grpc
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: panda-common
+          env:
+            # 链路里的 service.version。**取的是 Pod 标签，不是写死的字符串** ——
+            # 写死的那个值和镜像 tag 是两个地方，迟早有一个过期，
+            # 而过期的版本号比没有版本号更糟：它会让你相信链路看到的是对的。
+            # 换版本时改上面的 image tag 和下面的 version 标签，两处都在这个文件里。
+            - name: SERVICE_VERSION
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app.kubernetes.io/version']
+            - name: SERVICE_NAME
+              value: coupon-service
+            - name: HTTP_ADDR
+              value: ":8080"
+            - name: GRPC_ADDR
+              value: ":9090"
+            - name: COUPON_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: COUPON_DATABASE_URL
+            # 硬依赖：后台每条券路由都要现取一次授权（coupon:read / coupon:manage），
+            # 问不到就 fail-closed 成 503，不是放行。
+            - name: USER_GRPC_ADDR
+              value: user-service:9090
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: RABBITMQ_URL
+            # 队列名与路由键**不能沿用审计队列的值**：那是 user-service 的
+            # admin.operation.logged（见 .env.example 里那一行，它是全仓最容易被照抄的
+            # 一个值）。照抄的后果不报错：审计事件被两个消费者对半分，而会员域那三条
+            # 事件根本不会投过来，于是「买了会员没有券」，两边都看不出异常。
+            #
+            # 绑三条而不是 "#"：本服务只认这三种事件，绑全量只会让其余每条
+            # 走一遍再被 ack 掉。
+            #
+            # 队列名一旦声明就不能改（改了等于换一个新队列，旧队列上原有的绑定还留在
+            # broker 里继续收消息，那些消息再也没人 ack）。要改名先手工删旧队列。
+            - name: RABBITMQ_QUEUE
+              value: coupon.membership.dev
+            - name: RABBITMQ_ROUTING_KEY
+              value: "membership.activated,membership.renewed,membership.campaign.claimed"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: JWT_SECRET
+            - name: MERCHANT_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: MERCHANT_INTERNAL_TOKEN
+            - name: DB_MIGRATE_ON_START
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: 400m
+              memory: 768Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coupon-service
+  namespace: pandaaaa
+spec:
+  selector:
+    app: coupon-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 9090
+      targetPort: grpc

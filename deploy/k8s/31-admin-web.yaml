@@ -1,0 +1,70 @@
+# admin-web 前端。容器里是 nginx，静态资源 + 反代到网关。
+#
+# nginx 配置来自 deploy/docker/nginx.conf，镜像里已经烤好了，这里不重复。
+# 其中两行是**非默认值且必须保留**：
+#   client_max_body_size 12m  —— 罩住 10MiB 的上传上限，nginx 默认 1m 会在
+#                                Go 的任何超时之前就把请求 413 掉；
+#   proxy_read_timeout 180s   —— 必须**大于**网关自己的上传超时 120s，
+#                                反过来会把一个正在完成的请求变成 504。
+# 预算由外到内：nginx 180s > 网关 120s > merchant-service 90s > OSS SDK 60s。
+#
+# nginx.conf 里 proxy_pass 的目标是 http://gateway-service:8080。那个名字就是
+# 下面这个 Service —— 同 namespace，直接解析得到，不需要改动。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-web
+  namespace: pandaaaa
+  labels:
+    app.kubernetes.io/name: admin-web
+    app.kubernetes.io/part-of: panda-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-web
+  template:
+    metadata:
+      labels:
+        app: admin-web
+    spec:
+      containers:
+        - name: admin-web
+          image: registry.dev.51qituan.com/pandaaaa/admin-web:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-web
+  namespace: pandaaaa
+spec:
+  selector:
+    app: admin-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

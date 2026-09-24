@@ -1,0 +1,60 @@
+# 迁移执行体：panda-migrate。第 14 个镜像，也是唯一一个不是服务的。
+#
+# 为什么必须有它：十个自有库里有九个会随服务启动自动迁移（DB_MIGRATE_ON_START），
+# 但 **coupon-service 不会** —— 它的 cmd/main.go 里没有那一段。所以券库建表这件事
+# 没有任何「服务自己会做」的路径，必须由一个独立的执行体来做。
+#
+# 有了它之后，其余九个也一并交给它，理由是**只有一个迁移入口**：一半靠服务自迁移、
+# 一半靠 Job，会让「这次部署到底迁移到哪一版了」变成一个要读两处才能回答的问题，
+# 而 schema 版本不一致的表现是某几个接口报列不存在 —— 不像迁移问题。
+#
+# 构建上下文同样是**仓库根目录**：
+#
+#   docker build -f deploy/docker/Dockerfile.migrate -t <tag> .
+#
+# 与 Dockerfile.backend 的两点不同，都是刻意的：
+#
+#   1. 基础镜像是 alpine 而不是 distroless。distroless 没有 shell，而这个容器要
+#      在一个进程里依次 apply 十次（`apply` 是每库一次的命令行动作）。要么十次
+#      写成十个 Job，要么给它一个 shell。一个 Job + 一段脚本更清楚。
+#      alpine 也在本仓别的镜像里用着（postgres:16-alpine、redis:7-alpine），
+#      不是新引入的东西。
+#   2. 只 COPY backend 与 migrations。migrations 模块只 replace ../backend，
+#      backend 模块不依赖 contracts，所以 contracts 不需要进来。
+
+ARG GO_IMAGE=golang:1.25
+ARG RUNTIME_IMAGE=alpine:3.20
+
+# ARG 声明在第一个 FROM 之前：在 stage 内声明的 ARG 不作用于后面的 FROM，
+# 报错是 "base name should not be blank"，读起来像拼写错误而不是作用域规则。
+FROM ${GO_IMAGE} AS builder
+
+WORKDIR /src
+
+# 清单先于源码，让依赖层不被 .go 的改动作废。
+COPY backend/go.mod backend/go.sum ./backend/
+COPY migrations/go.mod migrations/go.sum ./migrations/
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd migrations && go mod download
+
+COPY backend/ ./backend/
+COPY migrations/ ./migrations/
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd migrations && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/panda-migrate ./cmd/panda-migrate
+
+FROM ${RUNTIME_IMAGE}
+
+# 非 root 跑。alpine 没有现成的 nonroot 用户，明写 uid/gid 而不是 adduser：
+# 固定 uid 才能让它在任何一次重建里都是同一个身份。
+USER 65532:65532
+
+COPY --from=builder /out/panda-migrate /panda-migrate
+
+# 没有 ENTRYPOINT：这个镜像的调用方永远要带上 -database 与 set 名，
+# 写死一个默认值只会让「忘了传参数」表现成「迁移了错误的库」。
+# 用法见 deploy/k8s/50-migrate-job.yaml。
+CMD ["/panda-migrate"]

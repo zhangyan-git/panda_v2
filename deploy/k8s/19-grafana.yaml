@@ -1,0 +1,111 @@
+# Grafana：日志 / 链路 / 指标三类数据源都在这里汇合。
+#
+# **刻意不建 Ingress。** 手册只开通了三个域名，没有 grafana.pandaaaa.*；
+# 集群本来就有一个 grafana.dev.51qituan.com 由维护方提供（凭据单独交付），
+# 那是看集群层面的入口。本实例是给本项目看日志与链路的，走 kubectl port-forward
+# （见 README），不打公网。
+#
+# 也正因为没有 Ingress，下面那两行匿名 Viewer 才成立 —— 改成要登录、或者给它
+# 加 Ingress 时，这两行要一起改。
+#
+# provisioning 来自 deploy/observability/grafana/provisioning/，apply 前按目录
+# 做成两个 ConfigMap（datasources 与 dashboards 各自一个，见 README）。
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: pandaaaa
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: grafana
+  namespace: pandaaaa
+spec:
+  serviceName: grafana
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.2.0
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: GRAFANA_ADMIN_PASSWORD
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: Viewer
+            # 界面语言与配色。变量名里必须有 USERS：这两项属于 [users] 段，
+            # 写成 GF_DEFAULT_LANGUAGE / GF_DEFAULT_THEME 不报错、只是被忽略。
+            - name: GF_USERS_DEFAULT_LANGUAGE
+              value: zh-Hans
+            - name: GF_USERS_DEFAULT_THEME
+              value: light
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: dashboards
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi

@@ -1,0 +1,126 @@
+# 资产账户域（福卡）。福卡**只能抽奖、不能出资** —— 它不是一种支付方式。
+# 订单完成时发卡、申请退款时冻结、退款成功时追回，都靠消费订单域的事件。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account-service
+  namespace: pandaaaa
+  labels:
+    app.kubernetes.io/name: account-service
+    app.kubernetes.io/part-of: panda-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: account-service
+  template:
+    metadata:
+      labels:
+        app: account-service
+        app.kubernetes.io/version: "ae557f0"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: account-service
+          image: registry.dev.51qituan.com/pandaaaa/account-service:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: panda-common
+          env:
+            # 链路里的 service.version。**取的是 Pod 标签，不是写死的字符串** ——
+            # 写死的那个值和镜像 tag 是两个地方，迟早有一个过期，
+            # 而过期的版本号比没有版本号更糟：它会让你相信链路看到的是对的。
+            # 换版本时改上面的 image tag 和下面的 version 标签，两处都在这个文件里。
+            - name: SERVICE_VERSION
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app.kubernetes.io/version']
+            - name: SERVICE_NAME
+              value: account-service
+            - name: HTTP_ADDR
+              value: ":8080"
+            - name: GRPC_ADDR
+              value: ":9090"
+            - name: ACCOUNT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: ACCOUNT_DATABASE_URL
+            # 后台的福卡查询要走实时授权，授权关系住在身份库。必填，少了拒绝启动。
+            - name: USER_GRPC_ADDR
+              value: user-service:9090
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: RABBITMQ_URL
+            # 队列名与路由键**不能沿用审计队列的值**：照抄的后果是福卡账户跟着去
+            # 消费审计事件，永远收不到 order.completed，订单完成了福卡却一张不到账，
+            # 而且两边都不报错。
+            #
+            # 六条路由键对应六个动作，少任何一条都不会报错，只会安静地少做一件事：
+            #   完成 ⇒ 发卡；申请退款 ⇒ 冻结；审核驳回 ⇒ 解冻；用户撤销 ⇒ 解冻；
+            #   退款成功 ⇒ 追回；退款失败 ⇒ 解冻。
+            # 漏掉「退款成功」是「钱退了卡还在」，漏掉「退款失败」是「卡永远冻着」。
+            # 改这里要和 service/event.go 的 switch 一起看。
+            #
+            # 路由键是队列声明参数，改它要先手工删旧队列（见 order-service 同处说明）。
+            - name: RABBITMQ_QUEUE
+              value: account.order.dev
+            - name: RABBITMQ_ROUTING_KEY
+              value: "order.completed,order.after_sale.applied,order.after_sale.reviewed,order.after_sale.cancelled,order.after_sale.refunded,order.after_sale.refund_failed"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: JWT_SECRET
+            - name: MERCHANT_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: MERCHANT_INTERNAL_TOKEN
+            - name: DB_MIGRATE_ON_START
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: 400m
+              memory: 768Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: account-service
+  namespace: pandaaaa
+spec:
+  selector:
+    app: account-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 9090
+      targetPort: grpc

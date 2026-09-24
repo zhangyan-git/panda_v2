@@ -1,0 +1,69 @@
+# 三个对外入口。**只有这三个** —— 其余二十个工作负载都在集群内，
+# 靠 Service 名互调，不开 Ingress。
+#
+# 与手册 §6 的模板一致：
+#   - ingressClassName: traefik
+#   - **没有 tls: 段**。TLS 由云端 Nginx 终止，集群里这一段是明文 HTTP。
+#     加上 tls: 会让 Traefik 去找一份它没有的证书，表现为整站连接失败。
+#
+# 三个域名都在已开通的 *.pandaaaa.51qituan.com 泛域名之下（手册 §1、README）。
+# 泛域名不覆盖更深层级，所以不要写 a.b.pandaaaa.51qituan.com 这种。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: admin-web
+  namespace: pandaaaa
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: admin.pandaaaa.51qituan.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-web
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: merchant-web
+  namespace: pandaaaa
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: merchant.pandaaaa.51qituan.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: merchant-web
+                port:
+                  name: http
+---
+# 网关：小程序、后台与商户端的前端、渠道回调、合作方开放接口，全走这一个域名。
+# 路径前缀就是网关自己那几棵树的根，不做 rewrite：
+#   /v1/miniapp/*、/v1/admin/*、/v1/openapi/*、/v1/payments/callback/*
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway-service
+  namespace: pandaaaa
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: api.pandaaaa.51qituan.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway-service
+                port:
+                  name: http

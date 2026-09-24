@@ -1,0 +1,103 @@
+# 建表 / 迁移。**必须在任何服务之前跑完。**
+#
+# 为什么要有这个 Job 而不是靠服务自己迁移（DB_MIGRATE_ON_START）：
+# 十个自有库里 coupon-service **不会**自己迁移（它的 cmd/main.go 里没有那一段），
+# 所以无论如何都得有一个独立的执行体。既然有了，其余九个也一并交给它 ——
+# 一半靠服务自迁移、一半靠 Job，会让「这次部署到底迁移到哪一版了」变成一个
+# 要读两处才能回答的问题，而 schema 版本不一致的表现是某几个接口报「列不存在」，
+# 完全不像迁移问题。所以所有服务都设了 DB_MIGRATE_ON_START=false。
+#
+# 幂等：apply 只跑数据库尚未记录的那几个文件，重复执行没有副作用。
+# 所以重跑这个 Job 是安全的，改完迁移文件重跑也是安全的。
+#
+# 顺序是按依赖排的；实际上各库之间没有外键，顺序只影响读日志的方便程度。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: panda-migrate
+  namespace: pandaaaa
+spec:
+  backoffLimit: 6
+  # 跑完保留一天再回收，出问题时日志还查得到。
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: panda-migrate
+    spec:
+      restartPolicy: OnFailure
+      # postgres 起来需要时间，而 distroless/alpine 里都没有 psql 客户端。
+      # 用 postgres 镜像自带的 pg_isready 等，比让主容器反复失败重试干净。
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -U panda -d panda_identity; do
+                echo "waiting for postgres"
+                sleep 3
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+      containers:
+        - name: panda-migrate
+          # 第 14 个镜像。见 deploy/docker/Dockerfile.migrate。
+          image: registry.dev.51qituan.com/pandaaaa/panda-migrate:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              apply() {
+                echo "=== applying "
+                /panda-migrate -database "" apply ""
+              }
+
+              apply identity           ""
+              apply merchant           ""
+              apply coupon             ""
+              apply coffee_machine     ""
+              apply order              ""
+              apply payment            ""
+              apply account            ""
+              apply lottery            ""
+              apply membership         ""
+              apply partner            ""
+
+              echo "=== all sets applied"
+          env:
+            - name: USER_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: USER_DATABASE_URL}}
+            - name: MERCHANT_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: MERCHANT_DATABASE_URL}}
+            - name: COUPON_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: COUPON_DATABASE_URL}}
+            - name: COFFEE_MACHINE_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: COFFEE_MACHINE_DATABASE_URL}}
+            - name: ORDER_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: ORDER_DATABASE_URL}}
+            - name: PAYMENT_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PAYMENT_DATABASE_URL}}
+            - name: ACCOUNT_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: ACCOUNT_DATABASE_URL}}
+            - name: LOTTERY_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: LOTTERY_DATABASE_URL}}
+            - name: MEMBERSHIP_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: MEMBERSHIP_DATABASE_URL}}
+            - name: PARTNER_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: panda-secret, key: PARTNER_DATABASE_URL}}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

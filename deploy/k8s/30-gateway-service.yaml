@@ -1,0 +1,119 @@
+# 网关：唯一对外的后端入口，也是**唯一**一个不拥有数据库、不校验 JWT 的服务。
+#
+# 它按路径段转发到十个域。每多一个域的上游就要在这里多一行 —— 少了那一行的症状
+# 有两种，而且都误导人：
+#   - 落在前面某条 catch-all 上的（尤其是 /v1/miniapp），客户端拿到 404，
+#     看着像「用户服务没有这个接口」；
+#   - 没有 catch-all 接的，是网关自己的 404，页面上写「接口不存在」。
+# 两种都不会在日志里留下「配置漏了」的痕迹，所以下面每一行都不是装饰。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-service
+  namespace: pandaaaa
+  labels:
+    app.kubernetes.io/name: gateway-service
+    app.kubernetes.io/part-of: panda-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway-service
+  template:
+    metadata:
+      labels:
+        app: gateway-service
+        app.kubernetes.io/version: "ae557f0"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: gateway-service
+          image: registry.dev.51qituan.com/pandaaaa/gateway-service:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: panda-common
+          env:
+            # 链路里的 service.version。**取的是 Pod 标签，不是写死的字符串** ——
+            # 写死的那个值和镜像 tag 是两个地方，迟早有一个过期，
+            # 而过期的版本号比没有版本号更糟：它会让你相信链路看到的是对的。
+            # 换版本时改上面的 image tag 和下面的 version 标签，两处都在这个文件里。
+            - name: SERVICE_VERSION
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app.kubernetes.io/version']
+            - name: SERVICE_NAME
+              value: gateway-service
+            # 注意变量名是 GATEWAY_ADDR，不是 HTTP_ADDR —— 网关不是用
+            # platform/server 起的那一套，自己起 http.Server。
+            # 但它同样提供 /livez 与 /readyz，所以探针一样。
+            - name: GATEWAY_ADDR
+              value: ":8080"
+
+            - name: USER_SERVICE_URL
+              value: http://user-service:8080
+            - name: MERCHANT_SERVICE_URL
+              value: http://merchant-service:8080
+            - name: COFFEE_MACHINE_SERVICE_URL
+              value: http://coffee-machine-service:8080
+            - name: ORDER_SERVICE_URL
+              value: http://order-service:8080
+            - name: PAYMENT_SERVICE_URL
+              value: http://payment-service:8080
+            - name: ACCOUNT_SERVICE_URL
+              value: http://account-service:8080
+            - name: LOTTERY_SERVICE_URL
+              value: http://lottery-service:8080
+            - name: MEMBERSHIP_SERVICE_URL
+              value: http://membership-service:8080
+            - name: COUPON_SERVICE_URL
+              value: http://coupon-service:8080
+            - name: PARTNER_SERVICE_URL
+              value: http://partner-service:8080
+
+            # **这一行不能省。** 不配的话网关按入口组件的地址做限流分桶，
+            # 全站共用一个桶 —— 一个人刷就把所有人一起 429，限流不再是限流。
+            #
+            # 取值必须是**入口组件所在的网段**：本集群里 Traefik 也是一个 Pod，
+            # 所以 10.42.0.0/16（k3s 默认 pod CIDR）是对的。
+            # **待维护方确认**：若集群改过 cluster-cidr，这里要跟着改。
+            # 与 partner-service 的 PARTNER_TRUSTED_PROXY_CIDRS 是同一个值。
+            - name: TRUSTED_PROXY_CIDRS
+              value: "10.42.0.0/16"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: 400m
+              memory: 768Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-service
+  namespace: pandaaaa
+spec:
+  selector:
+    app: gateway-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

@@ -1,0 +1,15 @@
+# namespace 由集群维护方预置并授予最小 RBAC（手册 §2.5、§6）。
+#
+# 这个文件是一份「我们希望长这样」的草案，不是让我们自己 apply 的：
+# 手册明确写了普通开发者不应直接创建 Namespace。提交给维护方复核后由他们创建。
+#
+# 名称来自 Issue #10 的申请；若维护方给了别的名字，本目录下所有
+# namespace: pandaaaa 都要一起改。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pandaaaa
+  labels:
+    app.kubernetes.io/part-of: panda-v2
+    # 开发测试用途，不是生产。手册 §1 说得很清楚。
+    environment: dev

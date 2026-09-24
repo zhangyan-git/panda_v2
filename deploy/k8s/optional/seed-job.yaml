@@ -1,0 +1,68 @@
+# 可选：建初始管理员账号。**不属于常规部署，按需执行一次。**
+#
+# 放在 optional/ 子目录里，是因为 `kubectl apply -f deploy/k8s/` 不递归读子目录
+# —— 它不会被误当成常规部署的一部分 apply 进去。
+#
+# 为什么需要它：identity 那套迁移建的是表与菜单/权限的种子，**不建账号**。
+# 没有这个 Job 就没有任何账号能登录后台，三个域名里有两个打不开内容。
+#
+# 为什么要单独一个镜像：seed 是 user-service 模块里的**第二个 main 包**
+# （backend/services/user-service/cmd/seed）。Dockerfile.backend 的 CMD 默认是
+# ./cmd，要出这个二进制得显式换：
+#
+#   docker build -f deploy/docker/Dockerfile.backend \
+#     --build-arg SERVICE=user-service \
+#     --build-arg CMD=./cmd/seed \
+#     -t registry.dev.51qituan.com/pandaaaa/user-service-seed:<git-sha> .
+#
+# 安全边界（代码里也有，这里重复一遍因为它是这个 Job 唯一的危险之处）：
+# 它**会覆盖**已有管理员的密码，并给那个账号授予 super_admin。
+# 二进制自带 requireDevEnvironment()，PANDA_ENV 不是 dev 时直接退出 ——
+# 所以下面那行 PANDA_ENV: dev 不是可选项，改掉它这个 Job 就拒绝运行。
+# 目标集群按手册 §1 是开发测试集群，符合前置条件。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: panda-seed
+  namespace: pandaaaa
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: panda-seed
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: registry.dev.51qituan.com/pandaaaa/user-service-seed:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          env:
+            - name: PANDA_ENV
+              value: "dev"
+            - name: USER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: USER_DATABASE_URL
+            - name: DEV_ADMIN_USERNAME
+              value: admin
+            - name: DEV_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: DEV_ADMIN_PASSWORD
+            - name: DEV_MERCHANT_USERNAME
+              value: merchant
+            - name: DEV_MERCHANT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: DEV_MERCHANT_PASSWORD
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

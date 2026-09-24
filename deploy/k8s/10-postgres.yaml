@@ -1,0 +1,99 @@
+# PostgreSQL：身份库（POSTGRES_DB）+ 其余九个服务自有的库（由 initdb 脚本建）。
+#
+# initdb 的 SQL 不在这里复制一份 —— 它就在 deploy/compose/dev/initdb/01-databases.sql，
+# 复制进仓库第二处必然漂移。apply 前先把它做成 ConfigMap（见 README 的 apply 顺序）。
+#
+# **只在数据卷首次初始化时执行一次。** 卷已存在时改了脚本不会重跑，
+# 需要手工 createdb；这一点与 compose 栈的行为完全一致。
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: pandaaaa
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: pandaaaa
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: panda_identity
+            - name: POSTGRES_USER
+              value: panda
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: panda-secret
+                  key: POSTGRES_PASSWORD
+            # 看库的人直接读到北京时间。timestamptz 存的是绝对时刻，改这个不动数据、
+            # 不动查询结果（全仓没有依赖会话时区的写法），只决定渲染。
+            - name: TZ
+              value: Asia/Shanghai
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "panda", "-d", "panda_identity"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "panda", "-d", "panda_identity"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: initdb
+          configMap:
+            name: postgres-initdb
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # 手册 §1：集群存储是 local-path，PV 带节点亲和性 —— 第一次调度到哪个节点，
+        # 卷就钉在哪个节点。所以这里**不**做节点亲和，让它跟着调度器走；
+        # 代价是 Pod 换节点会 Pending（不等于数据丢了，见手册 §6）。
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 25Gi

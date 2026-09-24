@@ -1,0 +1,53 @@
+# 把 search.max_buckets 从默认的 65535 抬到 100000。
+#
+# 默认值在「1 秒一桶查 24 小时」时会正好撞上：24*3600+1 = 86401 > 65535，
+# OpenSearch 直接拒掉整个查询，Grafana 面板上表现为整片 **No data** ——
+# 看着像「这段时间没日志」，实际是查询根本没执行。
+# 真正的止血在面板侧（datasources.yml 的 interval 已经把自动间隔兜到 1m），
+# 这里挡的是不走那个面板的调用：Explore、Dashboards、手写的 curl。
+#
+# compose 里这是个跑完即退的一次性服务；在 K8s 里就是 Job。
+# 集群设置本身是持久的，所以这个 Job **只在首次部署时必要** —— 但它每次都幂等，
+# 留着当 apply 顺序里的一环，比「记得在某处手工执行一次」可靠。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: opensearch-settings
+  namespace: pandaaaa
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: opensearch-settings
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: raise-max-buckets
+          # 复用 opensearch 自己的镜像：curl 它里面本来就有，
+          # 开发机上拉不到任何新镜像这一条也一并躲开。
+          image: opensearchproject/opensearch:2.15.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              for i in $(seq 1 60); do
+                if curl -fsS -XPUT http://opensearch:9200/_cluster/settings \
+                     -H 'Content-Type: application/json' \
+                     -d '{"persistent":{"search.max_buckets":100000}}'; then
+                  echo "search.max_buckets raised"
+                  exit 0
+                fi
+                echo "waiting for opensearch (attempt $i)"
+                sleep 10
+              done
+              echo "opensearch did not become reachable in time" >&2
+              exit 1
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

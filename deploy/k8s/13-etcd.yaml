@@ -1,0 +1,83 @@
+# etcd：服务注册与发现（REGISTRY_ENDPOINT）。单节点，够开发测试用。
+#
+# 这个实例**不存业务数据**，只存「哪个服务在哪个地址」这类注册项，重启后由各服务
+# 重新注册即可。它的持久卷只有一个意义：重启时不必等所有服务重新注册。
+#
+# 手册 §6 提醒：local-path 的 PV 带节点亲和性。这个卷钉在哪个节点都无所谓，
+# 数据本来就可以重建。真正需要关心亲和性的是 postgres 和 opensearch。
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+  namespace: pandaaaa
+spec:
+  clusterIP: None
+  selector:
+    app: etcd
+  ports:
+    - name: client
+      port: 2379
+      targetPort: client
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: etcd
+  namespace: pandaaaa
+spec:
+  serviceName: etcd
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etcd
+  template:
+    metadata:
+      labels:
+        app: etcd
+    spec:
+      containers:
+        - name: etcd
+          image: quay.io/coreos/etcd:v3.5.15
+          # 与 compose 同一组参数：单节点、无 TLS、监听 0.0.0.0。
+          # 生产要 3 或 5 成员 + TLS + 认证（手册 §6 / deploy/prod/README.md），
+          # 这是开发测试集群，按手册 §1 的定位不加。
+          command:
+            - /usr/local/bin/etcd
+            - --name=etcd0
+            - --advertise-client-urls=http://0.0.0.0:2379
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --data-dir=/etcd-data
+          ports:
+            - name: client
+              containerPort: 2379
+          volumeMounts:
+            - name: data
+              mountPath: /etcd-data
+          readinessProbe:
+            exec:
+              command: ["/usr/local/bin/etcdctl", "endpoint", "health"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["/usr/local/bin/etcdctl", "endpoint", "health"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi
