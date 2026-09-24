@@ -25,6 +25,15 @@ export type CouponType = {
  */
 export const MEMBERSHIP_PRICE_COUPON_TYPE_CODE = 'MEMBERSHIP_PRICE_EXPERIENCE';
 
+/**
+ * 兑换券的类型编码。同 MEMBERSHIP_PRICE_COUPON_TYPE_CODE，是 migrations/coupon 里
+ * coupon_types 那行种子数据写死的约定值——改名必须连同种子一起改。
+ *
+ * 它在这里只服务一件事：兑换券**没有面值**（见 pages/coupon-templates/templateForm.ts
+ * 的 couponTypeUsesAmounts）。
+ */
+export const COFFEE_EXCHANGE_COUPON_TYPE_CODE = 'COFFEE_EXCHANGE';
+
 export type CouponTemplate = {
   id: string;
   couponTypeId: string;

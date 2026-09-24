@@ -27,6 +27,7 @@ import {
   type CouponTemplate,
 } from '../../services/coupon';
 import {
+  couponTypeUsesAmounts,
   fenToYuan,
   toFormValues,
   toPayload,
@@ -147,6 +148,9 @@ export default function CouponTemplatesPage() {
   // 做法）。先开再填的话，抽屉会先用空值挂一次，值回来时整片重画，用户看得见闪。
   const [detailLoadingID, setDetailLoadingID] = useState<string>();
   const [typeNames, setTypeNames] = useState<Record<string, string>>({});
+  // id → 券类型编码。只用来判「这个类型有没有面值」（见 couponTypeUsesAmounts）——
+  // 那件事必须按编码判，id 是每套环境各生成一次的 uuid。和 typeNames 同一次请求填。
+  const [typeCodes, setTypeCodes] = useState<Record<string, string>>({});
   const [merchantNames, setMerchantNames] = useState<Record<string, string>>({});
   const [brandNames, setBrandNames] = useState<Record<string, string>>({});
   const [storeNames, setStoreNames] = useState<Record<string, string>>({});
@@ -183,6 +187,7 @@ export default function CouponTemplatesPage() {
       try {
         const types = await listCouponTypes();
         setTypeNames(Object.fromEntries(types.map((item) => [item.id, item.name])));
+        setTypeCodes(Object.fromEntries(types.map((item) => [item.id, item.code])));
       } catch {
         // 忽略：同上，退回显示原始 id
       }
@@ -230,6 +235,12 @@ export default function CouponTemplatesPage() {
     if (kept.length !== current.length) formRef.current?.setFieldsValue({ storeIds: kept });
   };
 
+  // 这张券的类型有没有面值/最低消费这个概念。判定按 coupon_types.code 走
+  // （见 couponTypeUsesAmounts），拿不到类型列表时返回 true——宁可多显示一格
+  // 「0.00」，也不要把一张代金券的面值显示成「—」。
+  const hasAmounts = (template: CouponTemplate) =>
+    couponTypeUsesAmounts(typeCodes[template.couponTypeId]);
+
   const columns: ProColumns<CouponTemplate>[] = [
     {
       // 老系统那一列就摆在最前面（ID 之后）。用 Image 而不是 Avatar：封面上是券的
@@ -257,12 +268,16 @@ export default function CouponTemplatesPage() {
       render: (_, record) => typeNames[record.couponTypeId] ?? record.couponTypeId,
     },
     // 接口给的是「分」，直接铺出来就是「1250」；列表按元展示成「12.50」。
+    //
+    // 兑换券/会员价体验券这格是「—」：它们的 faceValue 恒为 0（表单不收集、
+    // toPayload 强制归零），铺成「0.00」会让读的人以为「这张券的面值是 0 元」，
+    // 而实际是「这张券没有面值这个概念」。这两件事在运营那边是两句话。
     {
       title: '面值',
       dataIndex: 'faceValue',
       search: false,
       width: 100,
-      render: (_, record) => formatYuan(record.faceValue),
+      render: (_, record) => (hasAmounts(record) ? formatYuan(record.faceValue) : '—'),
     },
     // 「满 50 减 10」以前只写在名字里，接口有 minPurchaseAmount 却不显示：名字是
     // 人随手起的，改个名字这张券的用法就从界面上消失了。
@@ -271,7 +286,7 @@ export default function CouponTemplatesPage() {
       dataIndex: 'minPurchaseAmount',
       search: false,
       width: 100,
-      render: (_, record) => thresholdText(record.minPurchaseAmount),
+      render: (_, record) => (hasAmounts(record) ? thresholdText(record.minPurchaseAmount) : '—'),
     },
     {
       title: '售价',
@@ -550,11 +565,16 @@ export default function CouponTemplatesPage() {
                   />
                 ),
               },
-              { title: '面值', dataIndex: 'faceValue', render: (_, record) => formatYuan(record.faceValue) },
+              // 这两格与列表同一条口径：无面值的券类型显示「—」，理由见列表那边的注释。
+              {
+                title: '面值',
+                dataIndex: 'faceValue',
+                render: (_, record) => (hasAmounts(record) ? formatYuan(record.faceValue) : '—'),
+              },
               {
                 title: '最低消费',
                 dataIndex: 'minPurchaseAmount',
-                render: (_, record) => thresholdText(record.minPurchaseAmount),
+                render: (_, record) => (hasAmounts(record) ? thresholdText(record.minPurchaseAmount) : '—'),
               },
               { title: '售价', dataIndex: 'purchasePrice', render: (_, record) => priceText(record.purchasePrice) },
               { title: '有效期', render: (_, record) => validityText(record) },
@@ -657,7 +677,11 @@ export default function CouponTemplatesPage() {
         onFinish={async (values) => {
           // 表单里金额是元，后端要的是分的整数，toPayload 里统一换算；
           // claimLimitMode 是后端必填项，漏了会 400。
-          const payload = toPayload(values);
+          //
+          // 类型编码要一起传：兑换券/会员价体验券没有面值，toPayload 会把那两个字段
+          // 强制归零。查不到编码（类型列表没加载出来）时它按「有面值」处理，见
+          // couponTypeUsesAmounts 的注释。
+          const payload = toPayload(values, typeCodes[values.couponTypeId]);
           try {
             await (editing ? updateCouponTemplate(editing.id, payload) : createCouponTemplate(payload));
           } catch (error) {
@@ -766,9 +790,35 @@ export default function CouponTemplatesPage() {
         <ProFormTextArea name="useRuleDescription" label="使用规则说明" fieldProps={{ maxLength: 500, showCount: true }} />
         <ProFormImageUpload name="coverImage" label="封面图" upload={uploadImage} />
         {/* 单位是元：填 12.5，提交时 ×100 成分。precision 限死两位小数，
-            否则 12.505 这种值会被 Math.round 悄悄修成 12.51，用户看不出来。 */}
-        <ProFormDigit name="faceValue" label="面值（元）" min={0} fieldProps={{ precision: 2 }} rules={[{ required: true }]} />
-        <ProFormDigit name="minPurchaseAmount" label="最低消费（元）" min={0} fieldProps={{ precision: 2 }} />
+            否则 12.505 这种值会被 Math.round 悄悄修成 12.51，用户看不出来。
+
+            面值与最低消费只对代金券有意义，兑换券/会员价体验券不渲染这两格
+            （判定见 couponTypeUsesAmounts）。**光靠不渲染是不够的**——antd 卸载
+            字段时保留值，旧值会跟着提交载荷发出去，所以 toPayload 那边还要按类型
+            把它强制归零，两处缺一不可。 */}
+        <ProFormDependency name={['couponTypeId']}>
+          {({ couponTypeId }) =>
+            couponTypeUsesAmounts(typeCodes[couponTypeId]) ? (
+              <>
+                <ProFormDigit
+                  name="faceValue"
+                  label="面值（元）"
+                  min={0}
+                  fieldProps={{ precision: 2 }}
+                  rules={[{ required: true }]}
+                />
+                <ProFormDigit
+                  name="minPurchaseAmount"
+                  label="最低消费（元）"
+                  min={0}
+                  fieldProps={{ precision: 2 }}
+                />
+              </>
+            ) : null
+          }
+        </ProFormDependency>
+        {/* 购买价格不跟着券类型走：三种券都可能被售卖，今天会员价体验券的售价是 0
+            （列表里显示「免费领取」），不是「没有售价」这个概念。 */}
         <ProFormDigit name="purchasePrice" label="购买价格（元）" min={0} fieldProps={{ precision: 2 }} />
         <ProFormDigit name="totalQuantity" label="发行总量" min={1} rules={[{ required: true }]} />
         <ProFormSelect

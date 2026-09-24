@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { CouponTemplate } from '../../services/coupon';
-import { fenToYuan, toFormValues, toPayload, yuanToFen } from './templateForm';
+import {
+  couponTypeUsesAmounts,
+  fenToYuan,
+  toFormValues,
+  toPayload,
+  yuanToFen,
+} from './templateForm';
 
 /**
  * 这一组钉的是**编辑保存之后库里还剩什么**。
@@ -184,5 +190,58 @@ describe('券模板表单 ↔ 载荷', () => {
     );
     expect('claimPeriodUnit' in payload).toBe(false);
     expect('claimPeriodQuantity' in payload).toBe(false);
+  });
+});
+
+/**
+ * 兑换券与会员价体验券没有面值/最低消费。
+ *
+ * 这一组的入参是**故意带着值的**（`template` 的 faceValue=1000 / minPurchase=5000）：
+ * 编辑一条已有的券时，那两个输入框根本不渲染，但 antd 卸载字段默认 preserve，值仍
+ * 会跟着 onFinish 的 values 一起交到 toPayload 手里。所以「载荷里是 0」这件事只能
+ * 由 toPayload 保证——断言回显是抓不住它的。
+ */
+describe('无面值的券类型（兑换券 / 会员价体验券）', () => {
+  it('会员价体验券：表单里带着 10 元也发 0 出去', () => {
+    const values = toFormValues(template);
+    expect(values.faceValue).toBe(10); // 表单值仍在，只是没有输入框给它
+
+    const payload = toPayload(values, 'MEMBERSHIP_PRICE_EXPERIENCE');
+    expect(payload.faceValue).toBe(0);
+    expect(payload.minPurchaseAmount).toBe(0);
+  });
+
+  it('兑换券：同样归零', () => {
+    const payload = toPayload(toFormValues(template), 'COFFEE_EXCHANGE');
+    expect(payload.faceValue).toBe(0);
+    expect(payload.minPurchaseAmount).toBe(0);
+  });
+
+  it('代金券不受影响：面值与门槛照旧发出去', () => {
+    // 这一条是防护栏。判定写成「只认会员价体验券」或者把集合写反，前两条照样绿。
+    const payload = toPayload(toFormValues(template), 'COFFEE_CASH');
+    expect(payload.faceValue).toBe(1000);
+    expect(payload.minPurchaseAmount).toBe(5000);
+  });
+
+  it('售价不在这条规则里：三种券都照发', () => {
+    // 用户点名的是面值与最低消费两项。哪天要给会员价体验券定价，不该撞上这个判定。
+    for (const code of ['COFFEE_CASH', 'COFFEE_EXCHANGE', 'MEMBERSHIP_PRICE_EXPERIENCE']) {
+      const payload = toPayload({ ...toFormValues(template), purchasePrice: 9.9 }, code);
+      expect(payload.purchasePrice).toBe(990);
+    }
+  });
+
+  it('认不出编码时按「有面值」处理，不清零', () => {
+    // 券类型列表走 coupon:type:manage 权限，与模板列表的 coupon:read 不是一套。
+    // 拿不到列表时 typeCodes 是空的，传进来的就是 undefined。这时候必须退回今天的
+    // 行为——默认成「没有金额」的话，一次权限缺口会把所有券的面值静默清掉。
+    expect(couponTypeUsesAmounts(undefined)).toBe(true);
+    expect(couponTypeUsesAmounts('')).toBe(true);
+    expect(couponTypeUsesAmounts('SOME_FUTURE_TYPE')).toBe(true);
+
+    const payload = toPayload(toFormValues(template), undefined);
+    expect(payload.faceValue).toBe(1000);
+    expect(payload.minPurchaseAmount).toBe(5000);
   });
 });

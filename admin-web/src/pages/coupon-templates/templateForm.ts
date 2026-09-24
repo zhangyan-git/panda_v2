@@ -14,8 +14,39 @@
  *     卸载字段时默认 preserve，值还留在 store 里，切走模式之后旧值会照原样发出去，
  *     撞上库里那条 CHECK —— 表现是保存失败（500），而不是「填错了」。
  */
-import type { CouponTemplate, TemplateInput } from '../../services/coupon';
+import {
+  COFFEE_EXCHANGE_COUPON_TYPE_CODE,
+  MEMBERSHIP_PRICE_COUPON_TYPE_CODE,
+  type CouponTemplate,
+  type TemplateInput,
+} from '../../services/coupon';
 import { toRFC3339 } from '../../services/datetime';
+
+/**
+ * 哪些券类型**没有**面值与最低消费。
+ *
+ * 面值与门槛是「抵扣多少固定金额」的两个参数，只有代金券（COFFEE_CASH）答得上来：
+ * 兑换券兑的是实物（一杯饮品），会员价体验券给的是「按会员价买」这个权益，两者都
+ * 不对应一个可抵扣的金额。库里那两列是 `NOT NULL DEFAULT 0`，所以 `0` 就是「没有」，
+ * 不需要第三个取值。
+ */
+const NO_AMOUNT_CODES = new Set<string>([
+  COFFEE_EXCHANGE_COUPON_TYPE_CODE,
+  MEMBERSHIP_PRICE_COUPON_TYPE_CODE,
+]);
+
+/**
+ * 这个券类型要不要面值/最低消费。表单据此决定渲不渲染那两格，载荷据此决定归不归零。
+ *
+ * **认不出编码时返回 true**（照旧显示、照旧发出去）。这是有意的兜底：券类型列表走的是
+ * coupon:type:manage 权限，与模板列表的 coupon:read 不是一套（见 index.tsx 里那段
+ * 注释），拿不到列表时 typeCodes 是空的。那种情况下必须退回今天的行为——若在这里
+ * 默认成「没有金额」，一次权限缺口就会变成把所有券的面值静默清零。
+ *
+ * 按**编码**判而不是按 couponTypeId：id 是每套环境各生成一次的 uuid，写死在代码里
+ * 换台机器就失效。
+ */
+export const couponTypeUsesAmounts = (code?: string) => !code || !NO_AMOUNT_CODES.has(code);
 
 // 表单里金额用 InputNumber **按元**编辑（运营的习惯），提交时换成分。
 export type TemplateFormValues = Omit<TemplateInput, 'faceValue' | 'minPurchaseAmount' | 'purchasePrice'> & {
@@ -79,12 +110,23 @@ export const toFormValues = (template: CouponTemplate): TemplateFormValues => ({
 
 /**
  * 把表单值拼成提交载荷。创建与编辑走的是同一个函数（后端也是一条 validateTemplate）。
+ *
+ * `couponTypeCode` 是要保存的这张券的类型编码，调用方从类型列表里查出来传进来。
+ * 它只影响一件事：无面值的类型（兑换券 / 会员价体验券）那两个金额字段强制归零。
+ *
+ * **为什么非要在载荷里归零，而不是「表单不渲染这一格就够了」**：antd 表单卸载字段时
+ * 默认 preserve，值还留在 store 里，跟着 onFinish 的 values 一起发出去。编辑一条
+ * 面值 ¥10 的会员价体验券时，只把输入框藏起来的话，PUT 照样把 1000 写回去——界面上
+ * 看不见、接口回 200、库里那格纹丝不动，正是本文件开头写的那种「看不出来的错」。
  */
-export const toPayload = (values: TemplateFormValues): TemplateInput => {
+export const toPayload = (values: TemplateFormValues, couponTypeCode?: string): TemplateInput => {
+  const usesAmounts = couponTypeUsesAmounts(couponTypeCode);
   const payload: TemplateInput = {
     ...values,
-    faceValue: yuanToFen(values.faceValue),
-    minPurchaseAmount: yuanToFen(values.minPurchaseAmount),
+    faceValue: usesAmounts ? yuanToFen(values.faceValue) : 0,
+    minPurchaseAmount: usesAmounts ? yuanToFen(values.minPurchaseAmount) : 0,
+    // 购买价格不在这条规则里：用户点名的是面值与最低消费两项。会员价体验券今天
+    // 售价恒为 0（列表里显示「免费领取」），将来真做售卖时再单独议。
     purchasePrice: yuanToFen(values.purchasePrice),
     claimLimitMode: values.claimLimitMode ?? 'once_ever',
     redemptionType: values.redemptionType ?? 'platform',
