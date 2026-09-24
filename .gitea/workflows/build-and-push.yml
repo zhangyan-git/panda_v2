@@ -34,6 +34,13 @@ env:
   # 注意推送与拉取用的是**同一个字符串**：deploy/k8s/*.yaml 的 image 字段也是它。
   # 两处写成不一样的地址，症状是 kubelet 报 ImagePullBackOff，看起来像「没推上去」。
   REGISTRY: 192.168.18.75:30500/pandaaaa
+  # runner 上的 docker 默认是 legacy builder，而 Dockerfile.backend / Dockerfile.migrate
+  # 里用了 `RUN --mount=type=cache`（BuildKit 语法）。不设这一行，构建会走到
+  # `Step 12/21 : RUN --mount=...` 才报 "the --mount option requires BuildKit" ——
+  # 那时基础镜像**已经拉完了**，日志上看像是拉取阶段出的问题，其实是解析阶段。
+  DOCKER_BUILDKIT: "1"
+  # BuildKit 默认的进度输出是给终端用的，在 CI 日志里会变成一屏刷新的控制字符。
+  BUILDKIT_PROGRESS: plain
 
 jobs:
   # 构建上下文一律是**仓库根目录**：Go 服务模块通过相对 replace 引用
