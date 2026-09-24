@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -36,7 +37,7 @@ func toAdminUserResponse(u *model.AdminUser) adminUserResponse {
 		Name:      u.Name,
 		Email:     u.Email,
 		Status:    u.Status,
-		CreatedAt: u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt: u.CreatedAt.Format(time.RFC3339),
 	}
 }
 

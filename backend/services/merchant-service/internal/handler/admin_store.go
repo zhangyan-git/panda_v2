@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/model"
@@ -61,7 +62,7 @@ func toStoreResponse(s *model.Store) storeResponse {
 	}
 	auditAt := ""
 	if s.AuditAt != nil {
-		auditAt = s.AuditAt.Format("2006-01-02T15:04:05Z")
+		auditAt = s.AuditAt.Format(time.RFC3339)
 	}
 	return storeResponse{
 		ID:            s.ID,
@@ -96,7 +97,7 @@ func toStoreResponse(s *model.Store) storeResponse {
 		AuditBy:       s.AuditBy,
 		Remark:        s.Remark,
 		Visible:       s.Visible,
-		CreatedAt:     s.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt:     s.CreatedAt.Format(time.RFC3339),
 	}
 }
 

@@ -78,7 +78,7 @@ func formatTimePtr(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
-	return t.Format("2006-01-02T15:04:05Z")
+	return t.Format(time.RFC3339)
 }
 
 func toAdminMiniappUserResponse(u *model.User) adminMiniappUserResponse {
@@ -100,7 +100,7 @@ func toAdminMiniappUserResponse(u *model.User) adminMiniappUserResponse {
 		LastLoginAt:    formatTimePtr(u.LastLoginAt),
 		LastLoginIP:    u.LastLoginIP,
 		LoginCount:     u.LoginCount,
-		CreatedAt:      u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt:      u.CreatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -168,7 +168,7 @@ func (h *AdminMiniappUserHandler) Get(w http.ResponseWriter, r *http.Request) {
 			OpenID:      ident.OpenID,
 			UnionID:     ident.UnionID,
 			LastLoginAt: formatTimePtr(ident.LastLoginAt),
-			CreatedAt:   ident.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt:   ident.CreatedAt.Format(time.RFC3339),
 		}
 	}
 	logins := make([]adminLoginEventResponse, len(detail.LoginEvents))
@@ -180,7 +180,7 @@ func (h *AdminMiniappUserHandler) Get(w http.ResponseWriter, r *http.Request) {
 			FailReason: e.FailReason,
 			IP:         e.IP,
 			UserAgent:  e.UserAgent,
-			CreatedAt:  e.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			CreatedAt:  e.CreatedAt.Format(time.RFC3339),
 		}
 	}
 	api.Success(w, adminMiniappUserDetailResponse{

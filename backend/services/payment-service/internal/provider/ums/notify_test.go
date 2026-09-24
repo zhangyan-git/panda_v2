@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/panda-dev/panda-v2/backend/services/payment-service/internal/provider"
 )
@@ -426,19 +427,23 @@ func TestAmountFenAcceptsBothShapes(t *testing.T) {
 //
 // 零值表示「渠道没给或给的东西看不懂」，调用方看到零值会退回 NOW()。**不能拿 0 直接建
 // time.Unix(0)**：那会写成 1970 年，一条 1970 年的流水会让对账报表永远对不平。
+//
+// want 那一列是**往返**断言：解析与格式化用同一个时区，所以把东八区改成 UTC 也照样过，
+// 抓不到时区改错。utc 那一列是给它的回归锁——同一个形状必须落在同一个绝对时刻上。
 func TestParsePayTime(t *testing.T) {
 	cases := []struct {
 		name string
 		raw  string
 		want string
+		utc  string
 	}{
-		{"渠道的墙上时间", "2026-09-17 10:20:30", "2026-09-17 10:20:30"},
-		{"紧凑格式", "20260917102030", "2026-09-17 10:20:30"},
-		{"RFC3339", "2026-09-17T10:20:30+08:00", "2026-09-17 10:20:30"},
-		{"空", "", ""},
-		{"看不懂", "昨天下午", ""},
+		{"渠道的墙上时间", "2026-09-17 10:20:30", "2026-09-17 10:20:30", "2026-09-17T02:20:30Z"},
+		{"紧凑格式", "20260917102030", "2026-09-17 10:20:30", "2026-09-17T02:20:30Z"},
+		{"RFC3339", "2026-09-17T10:20:30+08:00", "2026-09-17 10:20:30", "2026-09-17T02:20:30Z"},
+		{"空", "", "", ""},
+		{"看不懂", "昨天下午", "", ""},
 		// 8 位是日期不是时间戳：当成 Unix 秒会得到一个 1970 年的日子。
-		{"一个八位数", "20260917", ""},
+		{"一个八位数", "20260917", "", ""},
 	}
 
 	for _, tc := range cases {
@@ -455,6 +460,12 @@ func TestParsePayTime(t *testing.T) {
 			}
 			if formatted := got.Format(requestTimestampLayout); formatted != tc.want {
 				t.Fatalf("parsePayTime(%q) = %q, want %q", tc.raw, formatted, tc.want)
+			}
+			if wantUTC := tc.utc; wantUTC != "" {
+				if gotUTC := got.UTC().Format(time.RFC3339); gotUTC != wantUTC {
+					t.Fatalf("parsePayTime(%q) 落在 %s，want %s（回调里的墙上时间是东八区）",
+						tc.raw, gotUTC, wantUTC)
+				}
 			}
 		})
 	}

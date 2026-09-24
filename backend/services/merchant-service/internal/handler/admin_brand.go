@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/panda-dev/panda-v2/backend/platform/api"
@@ -82,7 +83,7 @@ type brandResponse struct {
 func toBrandResponse(b *model.Brand) brandResponse {
 	auditAt := ""
 	if b.AuditAt != nil {
-		auditAt = b.AuditAt.Format("2006-01-02T15:04:05Z")
+		auditAt = b.AuditAt.Format(time.RFC3339)
 	}
 	return brandResponse{
 		ID:           b.ID,
@@ -100,7 +101,7 @@ func toBrandResponse(b *model.Brand) brandResponse {
 		Remark:       b.Remark,
 		Visible:      b.Visible,
 		Sort:         b.Sort,
-		CreatedAt:    b.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt:    b.CreatedAt.Format(time.RFC3339),
 	}
 }
 

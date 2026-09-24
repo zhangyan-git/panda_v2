@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"time"
+
 	"github.com/panda-dev/panda-v2/backend/services/user-service/internal/model"
 )
 
@@ -27,7 +29,7 @@ func toRoleResponse(r *model.AdminRole) roleResponse {
 		Code:        r.Code,
 		Name:        r.Name,
 		Description: r.Description,
-		CreatedAt:   r.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt:   r.CreatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -64,7 +66,7 @@ func toMiniappUserResponse(u *model.User) miniappUserResponse {
 		Birthday:   birthday,
 		RegionCode: u.RegionCode,
 		RegionName: u.RegionName,
-		CreatedAt:  u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt:  u.CreatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -75,6 +77,6 @@ func toPermResponse(p *model.AdminPermission) permResponse {
 		Name:        p.Name,
 		Description: p.Description,
 		Group:       p.PermGroup,
-		CreatedAt:   p.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt:   p.CreatedAt.Format(time.RFC3339),
 	}
 }

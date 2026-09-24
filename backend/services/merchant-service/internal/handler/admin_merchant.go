@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/panda-dev/panda-v2/backend/platform/api"
 	"github.com/panda-dev/panda-v2/backend/services/merchant-service/internal/model"
@@ -35,7 +36,7 @@ func toMerchantResponse(m *model.Merchant) merchantResponse {
 		ContactName:  m.ContactName,
 		ContactPhone: m.ContactPhone,
 		ContactEmail: m.ContactEmail,
-		CreatedAt:    m.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt:    m.CreatedAt.Format(time.RFC3339),
 	}
 }
 

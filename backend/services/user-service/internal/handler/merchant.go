@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/panda-dev/panda-v2/backend/platform/api"
@@ -37,7 +38,7 @@ type merchantUserResponse struct {
 func toMerchantUserResponse(u *model.MerchantUser) merchantUserResponse {
 	lastLogin := ""
 	if u.LastLoginAt != nil {
-		lastLogin = u.LastLoginAt.Format("2006-01-02T15:04:05Z")
+		lastLogin = u.LastLoginAt.Format(time.RFC3339)
 	}
 	return merchantUserResponse{
 		ID:          u.ID,
@@ -51,7 +52,7 @@ func toMerchantUserResponse(u *model.MerchantUser) merchantUserResponse {
 		ScopeIDs:    nonNilStrings(u.ScopeIDs),
 		ScopeNames:  nonNilStrings(u.ScopeNames),
 		LastLoginAt: lastLogin,
-		CreatedAt:   u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		CreatedAt:   u.CreatedAt.Format(time.RFC3339),
 	}
 }
 

@@ -23,12 +23,15 @@ export function toRFC3339(value?: unknown): string | undefined {
 }
 
 /**
- * RFC3339 → 'YYYY-MM-DD HH:mm'（浏览器本地时区），只给人看。
+ * RFC3339 → 'YYYY-MM-DD HH:mm:ss'（浏览器本地时区），只给人看。
  *
  * 表格里交给 ProTable 的 valueType: 'dateTime' 就行，这是给**表格之外**的地方用的
- * （卡片底部那行小字）。不引 dayjs：这个仓库没直接依赖它，而为了格式化一个时间戳
- * 去 import 一个 antd 的传递依赖，装得上装不上全看提升结果。秒不显示——这几处看的
- * 都是「上次大概什么时候」，多两位只让那行小字更难扫。
+ * （卡片底部那行小字、详情页里嵌在句子里的时间）。不引 dayjs：这个仓库没直接依赖它，
+ * 而为了格式化一个时间戳去 import 一个 antd 的传递依赖，装得上装不上全看提升结果。
+ *
+ * 秒要显示，与 valueType: 'dateTime' 的默认格式对齐：全站口径是 Y-m-d H:i:s。
+ * 原先这里省了秒（理由是小字只表达「上次大概什么时候」），但同一个单子在两处显示成
+ * 两种精度，客服和运营对着屏幕核时间时会先怀疑自己看错了行。
  */
 export function formatDateTime(value?: string | null): string {
   if (!value) return '';
@@ -37,5 +40,5 @@ export function formatDateTime(value?: string | null): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
     date.getHours(),
-  )}:${pad(date.getMinutes())}`;
+  )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }

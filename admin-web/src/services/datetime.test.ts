@@ -36,21 +36,25 @@ describe('toRFC3339', () => {
 });
 
 /**
- * 设备卡片底部那行小字用它。要点是**补零**和**本地时区**：后端给的是带 Z 的 RFC3339，
- * 而管理员看的是自己手表上的时间。这两件事错了都不会抛异常，只会显示成
- * 「2026-9-3 4:0」或者差 8 小时，而差 8 小时在一眼扫过去时特别像「就是那时候」。
+ * 卡片底部那行小字、详情页里嵌在句子里的时间用它。要点是**补零**、**本地时区**和**带秒**：
+ * 后端给的是带 Z 的 RFC3339，而管理员看的是自己手表上的时间；秒是为了和表格里
+ * valueType: 'dateTime' 的默认格式（YYYY-MM-DD HH:mm:ss）对齐——同一个单子在两处
+ * 显示成两种精度，客服和运营对着屏幕核时间时会先怀疑自己看错了行。这几件事错了都不会
+ * 抛异常，只会显示成「2026-9-3 4:0」或者差 8 小时，而差 8 小时在一眼扫过去时特别像
+ * 「就是那时候」。
  */
 describe('formatDateTime', () => {
-  it('pads month, day, hour and minute', () => {
+  it('pads month, day, hour, minute and second', () => {
     // 造一个本地时间再转成 ISO，断言的是「读回来还是同一个本地时刻」，
     // 所以这条用例在任何时区下都成立。
-    const local = new Date(2026, 8, 3, 4, 5);
-    expect(formatDateTime(local.toISOString())).toBe('2026-09-03 04:05');
+    const local = new Date(2026, 8, 3, 4, 5, 6);
+    expect(formatDateTime(local.toISOString())).toBe('2026-09-03 04:05:06');
   });
 
-  it('drops the seconds', () => {
+  it('keeps the seconds rather than truncating them', () => {
+    // 59 秒既不能被丢掉（显示成 04:05），也不能被进位成 04:06——两种都是「看起来对」的错。
     const local = new Date(2026, 8, 3, 4, 5, 59);
-    expect(formatDateTime(local.toISOString())).toBe('2026-09-03 04:05');
+    expect(formatDateTime(local.toISOString())).toBe('2026-09-03 04:05:59');
   });
 
   it.each([undefined, null, ''])('returns an empty string for %j', (value) => {

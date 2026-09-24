@@ -467,7 +467,7 @@ func amountFen(raw json.RawMessage) (int64, bool) {
 // 里 paidAt.IsZero() 那一处）。**不能拿 0 直接建 time.Unix(0)**：那会写成 1970 年，一条 1970 年
 // 的流水会让对账报表永远对不平。
 //
-// 形状认三种（这一族的报文里没有时区信息，所以一律按本地时区解析）：老系统 RecoverStuckCoffeeOrder
+// 形状认三种（前两种报文里没有时区信息，按东八区解析）：老系统 RecoverStuckCoffeeOrder
 // 用的那个墙上时间格式、紧凑格式、RFC3339。多认两种的成本是几行，收益是一条时间戳格式与
 // 查单不同的回调不会退化成 NOW()。
 func parsePayTime(raw string) time.Time {
@@ -476,9 +476,20 @@ func parsePayTime(raw string) time.Time {
 		return time.Time{}
 	}
 	for _, layout := range []string{requestTimestampLayout, signTimestampLayout, time.RFC3339} {
-		if parsed, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
+		if parsed, err := time.ParseInLocation(layout, raw, callbackZone); err == nil {
 			return parsed
 		}
 	}
 	return time.Time{}
 }
+
+// callbackZone 是回调里那个不带时区的墙上时间所属的时区。
+//
+// 原先是 time.Local：本机跑（东八区）是对的，但服务一旦进容器就会被当成 UTC 读
+// ——compose 里没给服务设 TZ，容器默认 UTC，而**运行环境缺 tzdata 时这个错法不会报错**。
+// 成交通知时间会整体差 8 小时，且只在容器里错、在本机不错。
+//
+// 用 FixedZone 而不是 LoadLocation("Asia/Shanghai")：后者依赖运行环境里有 tzdata，
+// 缺了会不报错、悄悄退回 UTC，正好落回同一个错法。中国从 1991 年起没有夏令时，固定
+// +08:00 就是准的。同一取舍见 membership-service 的 model.ChargePeriod。
+var callbackZone = time.FixedZone("CST", 8*3600)

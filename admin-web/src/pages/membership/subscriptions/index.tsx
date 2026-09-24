@@ -9,6 +9,7 @@ import { useAccess } from '@umijs/max';
 import { Alert, Button, Card, Col, Descriptions, Drawer, Row, Statistic, Table, Tag, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { formatDateTime } from '../../../services/datetime';
 import { enumMeta, searchOptions } from '../../../services/labels';
 import { formatYuan } from '../../../services/money';
 import { periodLabel, SUBSCRIPTION_SCENE, SUBSCRIPTION_STATUS } from '../../../services/membershipLabels';
@@ -41,6 +42,15 @@ import { scrollableModalBody } from '../../../components/common/modalProps';
 
 /** 接口给的空值一律显示成「—」：留白与「有个空字符串」在表里分不出来。 */
 const dash = (value?: string | null) => (value ? value : '—');
+
+/**
+ * 时间字段专用：先按 Y-m-d H:i:s 格式化，再套 dash 的空值口径。
+ *
+ * 不能直接改 dash——它还管着协议号、渠道流水号这些**不是时间**的字段，那些值必须原样
+ * 显示。这一页原先把后端的 RFC3339 原串（2026-09-23T09:46:05Z）直接摆到运营眼前，是
+ * 全后台唯一一处没走格式化的地方，也正因如此漏在「所有时间统一成 Y-m-d H:i:s」之外。
+ */
+const time = (value?: string | null) => (value ? formatDateTime(value) : '—');
 
 /**
  * 「同步」按钮该不该出现。还活着的三种状态才给：`pending_sign`（等用户去微信点同意）、
@@ -170,7 +180,7 @@ export default function MembershipSubscriptionsPage() {
       title: '扣款时间',
       dataIndex: 'chargedAt',
       width: 180,
-      render: (_, row) => dash(row.chargedAt),
+      render: (_, row) => time(row.chargedAt),
     },
     {
       title: '金额',
@@ -390,16 +400,16 @@ export default function MembershipSubscriptionsPage() {
               <Descriptions.Item label="首月支付">
                 {dash(detail.firstPaymentOrderId)}
               </Descriptions.Item>
-              <Descriptions.Item label="下次扣款">{dash(detail.nextChargeAt)}</Descriptions.Item>
-              <Descriptions.Item label="上次扣款">{dash(detail.lastChargeAt)}</Descriptions.Item>
+              <Descriptions.Item label="下次扣款">{time(detail.nextChargeAt)}</Descriptions.Item>
+              <Descriptions.Item label="上次扣款">{time(detail.lastChargeAt)}</Descriptions.Item>
               <Descriptions.Item label="扣款次数">
                 {detail.chargeCount} 次（累计失败 {detail.failedCount} 次，连续失败{' '}
                 {detail.consecutiveFailedCount} 次）
               </Descriptions.Item>
-              <Descriptions.Item label="签约时间">{detail.createdAt}</Descriptions.Item>
+              <Descriptions.Item label="签约时间">{time(detail.createdAt)}</Descriptions.Item>
               {detail.cancelAt ? (
                 <>
-                  <Descriptions.Item label="取消时间">{detail.cancelAt}</Descriptions.Item>
+                  <Descriptions.Item label="取消时间">{time(detail.cancelAt)}</Descriptions.Item>
                   <Descriptions.Item label="取消原因">{dash(detail.cancelReason)}</Descriptions.Item>
                   <Descriptions.Item label="取消人">{dash(detail.cancelledBy)}</Descriptions.Item>
                 </>
@@ -455,7 +465,7 @@ export default function MembershipSubscriptionsPage() {
                     {dash(detail.firstPayment.providerTransactionId)}
                   </Descriptions.Item>
                   <Descriptions.Item label="支付时间">
-                    {dash(detail.firstPayment.paidAt)}
+                    {time(detail.firstPayment.paidAt)}
                   </Descriptions.Item>
                 </Descriptions>
               </Card>
