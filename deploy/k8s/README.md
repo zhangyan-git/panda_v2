@@ -21,7 +21,9 @@
 | --- | --- | --- |
 | namespace `pandaaaa` | 维护方 | `00-namespace.yaml` 是一份草案，不是让我们 apply 的 |
 | 该 namespace 的最小 RBAC | 维护方 | 至少 Deployment/StatefulSet/Service/Ingress/ConfigMap/Secret/Job/PVC |
-| 14 个镜像推入内网 registry | CI | 见下面的「镜像」一节 |
+| 仓库 Actions 已启用 | 维护方 | workflow 在 `.gitea/workflows/`，runner 标签 `ubuntu-latest`（手册 §2、§4） |
+| 14 个镜像推入内网 registry | CI | `.gitea/workflows/build-and-push.yml` 手动触发；也可本地按「镜像」一节构建 |
+| registry 能被节点拉取 | 维护方 | 明文 HTTP 的话节点要配 insecure registry，见「待确认」第 2 条 |
 | `panda-secret` | 我们自己 | 从 `02-secret.example.yaml` 改一版，**不进仓库** |
 | 入口网段确认 | 维护方 | `TRUSTED_PROXY_CIDRS` / `PARTNER_TRUSTED_PROXY_CIDRS`，见「待确认」 |
 
@@ -131,11 +133,21 @@ kubectl -n pandaaaa logs job/panda-seed
 
 ## 镜像
 
-14 个，全部从本仓库构建，构建上下文**都必须是仓库根目录**：
+14 个，全部从本仓库构建，构建上下文**都必须是仓库根目录**。
+
+**正常路径是 CI，不是下面的命令**：`.gitea/workflows/build-and-push.yml`
+（Gitea Actions，`workflow_dispatch` 手动触发，填要构建的 SHA）。它是构建的
+唯一入口 —— 下面的命令是同一件事的本地版，用来说清构建矩阵，手工跑仅用于
+排查（本机拉不到 Docker Hub 时也跑不了）。
 
 ```bash
 SHA=$(git rev-parse HEAD)
-REG=registry.dev.51qituan.com/pandaaaa
+# 维护方在 Issue #10 里给的内网 registry 地址。手册 §5/§6 的模板写的是
+# registry.dev.51qituan.com —— 同一个 registry 的另一个地址，仓库路径
+# （pandaaaa/<service>）相同。**清单里用的是这一个**，因为推送与拉取用同一个
+# 字符串才不会出现「推到一个地址、kubelet 去另一个地址找」这种
+# 只表现为 ImagePullBackOff 的错配。
+REG=192.168.18.75:30500/pandaaaa
 
 # 11 个 Go 服务
 for s in gateway-service user-service merchant-service coffee-machine-service \
@@ -229,10 +241,13 @@ kubectl -n pandaaaa port-forward svc/rabbitmq 15672:15672
    集群改过 `cluster-cidr` 的话这两个值是错的，而**错了不会报错**：
    网关会按入口地址给全站分一个限流桶（一个人刷，所有人一起 429），
    合作方 IP 白名单会把所有调用判成 `401 IP_NOT_ALLOWED`，看着像对方填错了 IP。
-2. **registry 主机名。** 清单里用的是手册 §5 的名字
-   `registry.dev.51qituan.com`。Issue #10 里维护方提到 CI 侧是
-   `192.168.18.75:30500`。如果集群内解析不了前者，全部换成后者即可
-   （`sed -i '' 's#registry.dev.51qituan.com#192.168.18.75:30500#' deploy/k8s/*.yaml`）。
+2. **registry 是不是 HTTP（insecure）。** 已按维护方给的
+   `192.168.18.75:30500/pandaaaa` 统一了推送与拉取。剩下的问题是 containerd
+   能不能直接拉它：如果它是明文 HTTP，节点上的 `/etc/rancher/k3s/registries.yaml`
+   必须把这个地址配成 `insecure: true`，否则拉取会以
+   `http: server gave HTTP response to HTTPS client` 失败 —— 报错在
+   `kubectl describe pod` 的 Events 里，不在镜像构建那侧，所以容易被当成
+   「镜像没推上去」。这个配置在节点上，得由维护方确认。
 3. **`PAYMENT_NOTIFY_BASE_URL`。** 现在填 `https://api.pandaaaa.51qituan.com`。
    它必须是一个**渠道能从公网到达**的地址（渠道在集群外面，解析不了服务名）。
    按手册 §1 的拓扑（公网 HTTPS → 云端 Nginx → WireGuard → Traefik）这三个域名

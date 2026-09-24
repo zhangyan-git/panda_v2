@@ -13,7 +13,7 @@
 #   docker build -f deploy/docker/Dockerfile.backend \
 #     --build-arg SERVICE=user-service \
 #     --build-arg CMD=./cmd/seed \
-#     -t registry.dev.51qituan.com/pandaaaa/user-service-seed:<git-sha> .
+#     -t 192.168.18.75:30500/pandaaaa/user-service-seed:<git-sha> .
 #
 # 安全边界（代码里也有，这里重复一遍因为它是这个 Job 唯一的危险之处）：
 # 它**会覆盖**已有管理员的密码，并给那个账号授予 super_admin。
@@ -36,7 +36,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: seed
-          image: registry.dev.51qituan.com/pandaaaa/user-service-seed:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          image: 192.168.18.75:30500/pandaaaa/user-service-seed:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
           env:
             - name: PANDA_ENV
               value: "dev"

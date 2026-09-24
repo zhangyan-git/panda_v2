@@ -49,7 +49,7 @@ spec:
       containers:
         - name: panda-migrate
           # 第 14 个镜像。见 deploy/docker/Dockerfile.migrate。
-          image: registry.dev.51qituan.com/pandaaaa/panda-migrate:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          image: 192.168.18.75:30500/pandaaaa/panda-migrate:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
           command:
             - /bin/sh
             - -c

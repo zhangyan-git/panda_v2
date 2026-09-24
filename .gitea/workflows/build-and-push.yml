@@ -1,0 +1,192 @@
+# 构建 panda_v2 的十四个镜像并推到内网 registry。
+#
+# **这里只做构建与推送，不做部署。** 部署用的最小 RBAC 还没签发（Issue #10），
+# 而且 apply 之前还有三件待确认的事（见 deploy/k8s/README.md）。等 RBAC 到位后，
+# 部署会作为单独的一步加在这里，用它自己的 kubeconfig Secret，不与构建共用凭据。
+#
+# 为什么是手动触发而不是 push 触发：部署引用的 tag 是一个**具体的 commit SHA**
+# （见 deploy/k8s/*.yaml 的 image 字段），不是「最新的 main」。每次 push 都构建
+# 十四个镜像，只会往共享 runner 上排一堆没人部署的产物（手册 §4 专门讲了排队
+# 诊断，说明队列是稀缺的）。要哪个 SHA 的镜像，就在 Run workflow 里填哪个 SHA。
+name: build-and-push
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要构建的 commit SHA 或分支（留空 = 触发时所在的分支 HEAD）'
+        required: false
+        default: ''
+      build_seed:
+        description: '同时构建 user-service-seed（首次需要能登录后台时才填 true）'
+        required: false
+        default: 'false'
+
+# 基础镜像。写在文件顶部是为了留一个**唯一的**修改点：这四个值同时也是
+# deploy/docker/Dockerfile.* 里 ARG 的默认值，office 的 runner 上如果拉不到
+# Docker Hub，改这里指向内网镜像即可，不用改 Dockerfile。
+env:
+  GO_IMAGE: golang:1.25
+  RUNTIME_IMAGE: gcr.io/distroless/static-debian12:nonroot
+  NODE_IMAGE: node:20-alpine
+  NGINX_IMAGE: nginx:1.27-alpine
+  # 维护方在 Issue #10 里指定的地址，无认证。
+  # 注意推送与拉取用的是**同一个字符串**：deploy/k8s/*.yaml 的 image 字段也是它。
+  # 两处写成不一样的地址，症状是 kubelet 报 ImagePullBackOff，看起来像「没推上去」。
+  REGISTRY: 192.168.18.75:30500/pandaaaa
+
+jobs:
+  # 构建上下文一律是**仓库根目录**：Go 服务模块通过相对 replace 引用
+  # backend / contracts / migrations，前端是 pnpm workspace 成员并引用 packages/*。
+  # 缩小上下文会直接解析不了，所以每个 build 的最后都是 `.`。
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      # 一个服务挂了不要取消其余十个：失败的那个看日志，其余的先推上去。
+      fail-fast: false
+      # 共享 runner 的并发有限，一次只排三个，别把一个 push 变成十一份排队。
+      max-parallel: 3
+      matrix:
+        service:
+          - gateway-service
+          - user-service
+          - merchant-service
+          - coffee-machine-service
+          - coupon-service
+          - payment-service
+          - order-service
+          - account-service
+          - lottery-service
+          - membership-service
+          - partner-service
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 全量历史不必要，但浅克隆要够 checkout 到指定 ref。
+          fetch-depth: 1
+
+      # tag 用 commit SHA 而不是 latest（手册 §5）：latest 会让「线上跑的是哪版」
+      # 变成一个只能靠时间猜的问题。
+      - name: Resolve the commit to build
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.ref }}" ]; then
+            git fetch --depth=1 origin "${{ github.event.inputs.ref }}"
+            git checkout --detach FETCH_HEAD
+          fi
+          echo "SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "building ${{ matrix.service }} at $(git rev-parse HEAD)"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          docker build \
+            -f deploy/docker/Dockerfile.backend \
+            --build-arg "SERVICE=${{ matrix.service }}" \
+            --build-arg "GO_IMAGE=$GO_IMAGE" \
+            --build-arg "RUNTIME_IMAGE=$RUNTIME_IMAGE" \
+            -t "$REGISTRY/${{ matrix.service }}:$SHA" \
+            .
+
+      - name: Push
+        run: |
+          set -euo pipefail
+          docker push "$REGISTRY/${{ matrix.service }}:$SHA"
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        app: [admin-web, merchant-web]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve the commit to build
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.ref }}" ]; then
+            git fetch --depth=1 origin "${{ github.event.inputs.ref }}"
+            git checkout --detach FETCH_HEAD
+          fi
+          echo "SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          docker build \
+            -f deploy/docker/Dockerfile.web \
+            --build-arg "APP=${{ matrix.app }}" \
+            --build-arg "NODE_IMAGE=$NODE_IMAGE" \
+            --build-arg "NGINX_IMAGE=$NGINX_IMAGE" \
+            -t "$REGISTRY/${{ matrix.app }}:$SHA" \
+            .
+
+      - name: Push
+        run: |
+          set -euo pipefail
+          docker push "$REGISTRY/${{ matrix.app }}:$SHA"
+
+  # 迁移执行体。它存在的理由不是顺手加的：十个自有库里 coupon-service 不会自己
+  # 迁移（它的 cmd/main.go 里没有 DB_MIGRATE_ON_START 那一段），而券库建表没有
+  # 任何「服务自己会做」的路径。既然无论如何都要有独立执行体，其余九个也一并
+  # 交给它 —— 一半靠服务自迁移、一半靠 Job，会让「迁移到哪一版」要读两处才能回答。
+  tooling:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve the commit to build
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.ref }}" ]; then
+            git fetch --depth=1 origin "${{ github.event.inputs.ref }}"
+            git checkout --detach FETCH_HEAD
+          fi
+          echo "SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build panda-migrate
+        run: |
+          set -euo pipefail
+          docker build \
+            -f deploy/docker/Dockerfile.migrate \
+            --build-arg "GO_IMAGE=$GO_IMAGE" \
+            --build-arg "RUNTIME_IMAGE=alpine:3.20" \
+            -t "$REGISTRY/panda-migrate:$SHA" \
+            .
+
+      # 初始账号 Job 用的镜像。它不是常规部署的一部分（跑一次就够，
+      # 而且它会**覆盖**管理员密码并授予 super_admin），所以默认不构建。
+      - name: Build user-service-seed
+        if: github.event.inputs.build_seed == 'true'
+        run: |
+          set -euo pipefail
+          docker build \
+            -f deploy/docker/Dockerfile.backend \
+            --build-arg "SERVICE=user-service" \
+            --build-arg "CMD=./cmd/seed" \
+            --build-arg "GO_IMAGE=$GO_IMAGE" \
+            --build-arg "RUNTIME_IMAGE=$RUNTIME_IMAGE" \
+            -t "$REGISTRY/user-service-seed:$SHA" \
+            .
+
+      - name: Push
+        run: |
+          set -euo pipefail
+          docker push "$REGISTRY/panda-migrate:$SHA"
+          if [ "${{ github.event.inputs.build_seed }}" = "true" ]; then
+            docker push "$REGISTRY/user-service-seed:$SHA"
+          fi
+
+      # 把这行 SHA 抄到 deploy/k8s 的 image 字段和 Pod 标签里（两处都要改，
+      # 后者经 downward API 变成 SERVICE_VERSION，也就是链路里看到的版本号）。
+      - name: Summary
+        run: echo "images pushed for $SHA"

@@ -24,12 +24,17 @@ spec:
         runAsNonRoot: true
       containers:
         - name: user-service
-          # 镜像名按手册 §5：registry.dev.51qituan.com/<namespace>/<service>:<git-sha>。
+          # 镜像名按维护方在 Issue #10 里指定的内网 registry：
+          # <node>:30500/pandaaaa/<service>:<git-sha>。
+          # 手册 §5/§6 的模板写的是 registry.dev.51qituan.com/<namespace>/<service>
+          # ——同一个 registry 的两个地址，仓库路径部分（pandaaaa/<service>）是同一个。
+          # 这里用 NodePort 地址是为了**推送和拉取用同一个字符串**：两个地址写成两样，
+          # 一旦有一个解析不了，症状是 ImagePullBackOff，而不是「推错了」。
           # tag 是不变的 commit SHA，不用 latest。
           #
           # **这个 tag 现在还不存在**：CI 首次构建推上去之后才会有。在那之前
           # Pod 停在 ImagePullBackOff —— 那是预期的，不是配错了。
-          image: registry.dev.51qituan.com/pandaaaa/user-service:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          image: 192.168.18.75:30500/pandaaaa/user-service:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
           ports:
             - name: http
               containerPort: 8080
