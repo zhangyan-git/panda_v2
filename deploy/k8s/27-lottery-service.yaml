@@ -18,13 +18,13 @@ spec:
     metadata:
       labels:
         app: lottery-service
-        app.kubernetes.io/version: "ae557f0"
+        app.kubernetes.io/version: "bb2c1d7"
     spec:
       securityContext:
         runAsNonRoot: true
       containers:
         - name: lottery-service
-          image: 192.168.18.75:30500/pandaaaa/lottery-service:ae557f024e9dc815df77f5183d5bd0db1f2c9be9
+          image: 192.168.18.75:30500/pandaaaa/lottery-service:bb2c1d7d1f7a426ec3ec84eaf08a10c13a3e4143
           ports:
             - name: http
               containerPort: 8080

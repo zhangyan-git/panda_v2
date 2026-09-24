@@ -168,7 +168,7 @@ for a in admin-web merchant-web; do
 done
 ```
 
-清单里的 tag 是 `ae557f024e9dc815df77f5183d5bd0db1f2c9be9`（当前 `main`）。
+清单里的 tag 是 `bb2c1d7d1f7a426ec3ec84eaf08a10c13a3e4143`（当前 `main`）。
 **换版本要同时改两处**：各 Deployment 的 `image`，和同一文件里
 `app.kubernetes.io/version` 那个 Pod 标签 —— 后者经 downward API 变成
 `SERVICE_VERSION`，也就是链路里看到的版本号。
