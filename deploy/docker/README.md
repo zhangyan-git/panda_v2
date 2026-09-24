@@ -62,9 +62,12 @@ different depths. Both need a connected machine to confirm fully.
   module cache bind-mounted in place of `go mod download`, and the resulting
   binaries were run against the dev stack: `/livez` and `/readyz` both
   answered, both listeners came up, and `ldd` reports "not a dynamic
-  executable" (so running on distroless is safe). What remains untested is the
+  executable" (so a runtime with no libc is safe). What remains untested is the
   `golang:1.25` pull, the `go mod download` layer, and the runtime stage —
-  no distroless image was available to build it against.
+  no runtime base image was available locally to build it against. The base has
+  since changed from distroless to `debian:bookworm-slim` (see
+  `Dockerfile.backend`), and CI has not yet produced a green image, so treat the
+  runtime stage as unverified until it has.
 - **Web images** — not built at all. `pnpm install` needs the package registry
   and no nginx image was present locally, so neither the install layer nor
   `nginx.conf` has been executed. Run `--profile app up --build` once on a

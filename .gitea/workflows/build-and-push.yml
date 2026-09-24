@@ -27,7 +27,10 @@ on:
 # Docker Hub，改这里指向内网镜像即可，不用改 Dockerfile。
 env:
   GO_IMAGE: golang:1.25
-  RUNTIME_IMAGE: gcr.io/distroless/static-debian12:nonroot
+  # 原来是 gcr.io/distroless/static-debian12:nonroot（run 121 实测拉不到，
+  # 见 Dockerfile.backend 里那段说明）。debian:bookworm-slim + 换阿里云 apt 源
+  # 装 ca-certificates/tzdata，是本 registry 里其他项目已有的写法。
+  RUNTIME_IMAGE: debian:bookworm-slim
   NODE_IMAGE: node:20-alpine
   NGINX_IMAGE: nginx:1.27-alpine
   # 维护方在 Issue #10 里指定的地址，无认证。

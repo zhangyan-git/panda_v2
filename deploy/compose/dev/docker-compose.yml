@@ -193,9 +193,10 @@ services:
   # .env is written for services running on the host, so the in-network values
   # are overridden here rather than edited there.
   #
-  # Note for anyone adding a healthcheck: the Go images are distroless and have
-  # no shell, so CMD-SHELL cannot run. Health is the load balancer's job via
-  # /livez and /readyz on the HTTP port.
+  # Note for anyone adding a healthcheck: the Go images are built on
+  # debian:bookworm-slim, which ships neither curl nor wget, so a CMD-SHELL
+  # healthcheck would have nothing to call. Health is the load balancer's job
+  # via /livez and /readyz on the HTTP port.
   # ---------------------------------------------------------------------------
 
   user-service:

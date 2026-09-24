@@ -25,7 +25,16 @@
 # the build fails with "base name should not be blank" -- which reads like a
 # typo rather than a scoping rule.
 ARG GO_IMAGE=golang:1.25
-ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot
+# Was gcr.io/distroless/static-debian12:nonroot. It changed because it cannot be
+# pulled, not out of preference: the office CI runner's egress does not reach
+# gcr.io (`dial tcp 142.250.107.82:443: i/o timeout`) or github.com, while
+# Docker Hub works -- the golang:1.25 above is pulled from it.
+#
+# debian:bookworm-slim plus the two packages distroless used to supply is what
+# the other projects in this registry already do (qituan-gateway, bianbot,
+# newapi-rs). Going back to distroless is one value: point this ARG -- and
+# RUNTIME_IMAGE in .gitea/workflows/build-and-push.yml -- at a copy of it.
+ARG RUNTIME_IMAGE=debian:bookworm-slim
 
 FROM ${GO_IMAGE} AS builder
 
@@ -52,8 +61,10 @@ COPY backend/ ./backend/
 COPY contracts/ ./contracts/
 COPY migrations/ ./migrations/
 
-# CGO off so the result is a static binary. That is what lets it run on
-# distroless/static, which has no libc.
+# CGO off so the result is a static binary. That is what makes the runtime image
+# a choice rather than a constraint -- the binary does not care whether the base
+# has a libc, which is how distroless/static and debian:bookworm-slim are both
+# usable without rebuilding anything.
 #
 # -trimpath keeps the build directory out of stack traces and the binary's
 # embedded file paths, so an image built here and one built on a laptop produce
@@ -63,13 +74,26 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     cd backend/services/${SERVICE} && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app "${CMD}"
 
-# distroless/static carries ca-certificates and tzdata, which the services need
-# for outbound TLS (the OSS client) and for local-time log fields.
 FROM ${RUNTIME_IMAGE}
 
-# distroless/static:nonroot already runs as nonroot; repeated here so the
-# intent survives a change of base image.
-USER nonroot:nonroot
+# ca-certificates for outbound TLS (the OSS client) and tzdata for the
+# local-time log fields. distroless/static carried both; a bare debian carries
+# neither, so they are installed here rather than assumed.
+#
+# The apt mirror is part of that pattern, not a speed tweak: deb.debian.org is
+# not reachable from these builders either. DEBIAN_FRONTEND is inline because
+# tzdata's postinst is a debconf prompt, and a build that stops to ask a
+# question in a CI log looks like a hang rather than a failure.
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
+    sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true; \
+    DEBIAN_FRONTEND=noninteractive apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates tzdata && \
+    rm -rf /var/lib/apt/lists/*
+
+# Numeric, because 65532 is distroless/static's `nonroot` and debian has no such
+# user. The number is the part that survives a change of base image; a name
+# would have to exist in every one of them.
+USER 65532:65532
 
 # The migrations are embedded into the binary (migrations.Identity and friends
 # are embed.FS), so no .sql files are shipped -- DB_MIGRATE_ON_START works in
@@ -79,8 +103,9 @@ COPY --from=builder /out/app /app
 # Documentation only; the real addresses come from HTTP_ADDR and GRPC_ADDR.
 EXPOSE 8080 9090
 
-# No HEALTHCHECK: distroless has no shell, so CMD-SHELL cannot run. Probes are
-# the load balancer's job -- /livez and /readyz on the HTTP port, which is also
-# the only version that answers "is THIS replica able to serve", rather than
-# "did a process start".
+# No HEALTHCHECK. Probes are the load balancer's job -- /livez and /readyz on
+# the HTTP port, which is also the only version that answers "is THIS replica
+# able to serve", rather than "did a process start". The base image having a
+# shell now does not change that; it only removes the reason it used to be
+# impossible.
 ENTRYPOINT ["/app"]
