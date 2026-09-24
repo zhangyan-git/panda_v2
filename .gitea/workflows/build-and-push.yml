@@ -101,12 +101,19 @@ jobs:
             docker buildx version
             exit 0
           fi
-          docker create --name buildx-extract docker/buildx-bin:latest >/dev/null
+          # 结尾那个 /buildx 是必须的：这个镜像**没有默认 CMD**，不给命令时
+          # docker create 直接报 "no command specified"。容器不会被启动，
+          # 那个命令永远不会被执行，它只是为了满足 create 的参数校验。
+          docker create --name buildx-extract docker/buildx-bin:latest /buildx >/dev/null
           mkdir -p "$HOME/.docker/cli-plugins"
           docker cp buildx-extract:/buildx "$HOME/.docker/cli-plugins/docker-buildx"
           docker rm -f buildx-extract >/dev/null
           chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
           docker buildx version
+          # 两行诊断：buildx 装上了不等于它有一个能用的 builder 实例。
+          # 真出问题时，这两行比 "BuildKit is enabled but ..." 那句有用得多。
+          docker version --format 'docker client={{.Client.Version}} server={{.Server.Version}}'
+          docker buildx ls
 
       - name: Build
         run: |
@@ -154,12 +161,19 @@ jobs:
             docker buildx version
             exit 0
           fi
-          docker create --name buildx-extract docker/buildx-bin:latest >/dev/null
+          # 结尾那个 /buildx 是必须的：这个镜像**没有默认 CMD**，不给命令时
+          # docker create 直接报 "no command specified"。容器不会被启动，
+          # 那个命令永远不会被执行，它只是为了满足 create 的参数校验。
+          docker create --name buildx-extract docker/buildx-bin:latest /buildx >/dev/null
           mkdir -p "$HOME/.docker/cli-plugins"
           docker cp buildx-extract:/buildx "$HOME/.docker/cli-plugins/docker-buildx"
           docker rm -f buildx-extract >/dev/null
           chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
           docker buildx version
+          # 两行诊断：buildx 装上了不等于它有一个能用的 builder 实例。
+          # 真出问题时，这两行比 "BuildKit is enabled but ..." 那句有用得多。
+          docker version --format 'docker client={{.Client.Version}} server={{.Server.Version}}'
+          docker buildx ls
 
       - name: Build
         run: |
@@ -206,12 +220,19 @@ jobs:
             docker buildx version
             exit 0
           fi
-          docker create --name buildx-extract docker/buildx-bin:latest >/dev/null
+          # 结尾那个 /buildx 是必须的：这个镜像**没有默认 CMD**，不给命令时
+          # docker create 直接报 "no command specified"。容器不会被启动，
+          # 那个命令永远不会被执行，它只是为了满足 create 的参数校验。
+          docker create --name buildx-extract docker/buildx-bin:latest /buildx >/dev/null
           mkdir -p "$HOME/.docker/cli-plugins"
           docker cp buildx-extract:/buildx "$HOME/.docker/cli-plugins/docker-buildx"
           docker rm -f buildx-extract >/dev/null
           chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
           docker buildx version
+          # 两行诊断：buildx 装上了不等于它有一个能用的 builder 实例。
+          # 真出问题时，这两行比 "BuildKit is enabled but ..." 那句有用得多。
+          docker version --format 'docker client={{.Client.Version}} server={{.Server.Version}}'
+          docker buildx ls
 
       - name: Build panda-migrate
         run: |
