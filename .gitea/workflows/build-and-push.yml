@@ -39,6 +39,14 @@ env:
   # `Step 12/21 : RUN --mount=...` 才报 "the --mount option requires BuildKit" ——
   # 那时基础镜像**已经拉完了**，日志上看像是拉取阶段出的问题，其实是解析阶段。
   DOCKER_BUILDKIT: "1"
+  #
+  # 但只设这一行还不够：runner 上的 docker CLI **没有 buildx 插件**，打开 BuildKit
+  # 会直接报 "BuildKit is enabled but the buildx component is missing or broken"。
+  # 所以每个 job 在构建前都要先装一次插件 —— 插件从 Docker Hub 上的官方镜像
+  # `docker/buildx-bin` 里取，**不走 github.com**（runner 到那边的出口有问题，
+  # check.yml 的 setup-go 就是卡死在那里的）。实测 Docker Hub 是通的。
+  # 见每个 job 里的 “Install the buildx CLI plugin” 一步。
+  #
   # BuildKit 默认的进度输出是给终端用的，在 CI 日志里会变成一屏刷新的控制字符。
   BUILDKIT_PROGRESS: plain
 
@@ -85,6 +93,21 @@ jobs:
           echo "SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "building ${{ matrix.service }} at $(git rev-parse HEAD)"
 
+      # runner 的 docker CLI 不带 buildx（理由见文件头的 DOCKER_BUILDKIT）。
+      - name: Install the buildx CLI plugin
+        run: |
+          set -euo pipefail
+          if docker buildx version >/dev/null 2>&1; then
+            docker buildx version
+            exit 0
+          fi
+          docker create --name buildx-extract docker/buildx-bin:latest >/dev/null
+          mkdir -p "$HOME/.docker/cli-plugins"
+          docker cp buildx-extract:/buildx "$HOME/.docker/cli-plugins/docker-buildx"
+          docker rm -f buildx-extract >/dev/null
+          chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
+          docker buildx version
+
       - name: Build
         run: |
           set -euo pipefail
@@ -123,6 +146,21 @@ jobs:
           fi
           echo "SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
+      # runner 的 docker CLI 不带 buildx（理由见文件头的 DOCKER_BUILDKIT）。
+      - name: Install the buildx CLI plugin
+        run: |
+          set -euo pipefail
+          if docker buildx version >/dev/null 2>&1; then
+            docker buildx version
+            exit 0
+          fi
+          docker create --name buildx-extract docker/buildx-bin:latest >/dev/null
+          mkdir -p "$HOME/.docker/cli-plugins"
+          docker cp buildx-extract:/buildx "$HOME/.docker/cli-plugins/docker-buildx"
+          docker rm -f buildx-extract >/dev/null
+          chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
+          docker buildx version
+
       - name: Build
         run: |
           set -euo pipefail
@@ -159,6 +197,21 @@ jobs:
             git checkout --detach FETCH_HEAD
           fi
           echo "SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # runner 的 docker CLI 不带 buildx（理由见文件头的 DOCKER_BUILDKIT）。
+      - name: Install the buildx CLI plugin
+        run: |
+          set -euo pipefail
+          if docker buildx version >/dev/null 2>&1; then
+            docker buildx version
+            exit 0
+          fi
+          docker create --name buildx-extract docker/buildx-bin:latest >/dev/null
+          mkdir -p "$HOME/.docker/cli-plugins"
+          docker cp buildx-extract:/buildx "$HOME/.docker/cli-plugins/docker-buildx"
+          docker rm -f buildx-extract >/dev/null
+          chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
+          docker buildx version
 
       - name: Build panda-migrate
         run: |
